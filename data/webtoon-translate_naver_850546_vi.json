@@ -1,0 +1,1125 @@
+{
+  "version": 1,
+  "site": "naver",
+  "titleId": "850546",
+  "language": "vi",
+  "exportedAt": "2026-06-09T15:45:34.440Z",
+  "chapters": {
+    "1": [
+      {
+        "bbox": {
+          "h": 5.25,
+          "w": 28.18080357142857,
+          "x": 36.830357142857146,
+          "y": 93.125
+        },
+        "createdAt": "2026-06-09T14:09:19.154Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_1.jpg",
+        "imageIndex": 1,
+        "language": "vi",
+        "originalText": "죽은 이는 사라지지 않았다.",
+        "translatedText": "Người chết không biến mất."
+      },
+      {
+        "bbox": {
+          "h": 4.4375,
+          "w": 15.904017857142858,
+          "x": 43.30357142857143,
+          "y": 58.78124999999999
+        },
+        "createdAt": "2026-06-09T14:12:05.602Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_2.jpg",
+        "imageIndex": 2,
+        "language": "vi",
+        "originalText": "그 혼(魂)은 풀숲에서",
+        "translatedText": "Linh hồn đó đã ở trong bụi rậm"
+      },
+      {
+        "bbox": {
+          "h": 4.1875,
+          "w": 18.638392857142858,
+          "x": 42.075892857142854,
+          "y": 21.5
+        },
+        "createdAt": "2026-06-09T14:12:21.669Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_3.jpg",
+        "imageIndex": 3,
+        "language": "vi",
+        "originalText": "봉인된 나무 판자 속에서",
+        "translatedText": "bên trong tấm ván gỗ bịt kín"
+      },
+      {
+        "bbox": {
+          "h": 3.5000000000000004,
+          "w": 5.46875,
+          "x": 48.660714285714285,
+          "y": 80.59375
+        },
+        "createdAt": "2026-06-09T14:12:37.018Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_3.jpg",
+        "imageIndex": 3,
+        "language": "vi",
+        "originalText": "줄곧,",
+        "translatedText": "suốt thời gian đó,"
+      },
+      {
+        "bbox": {
+          "h": 4.1875,
+          "w": 16.908482142857142,
+          "x": 42.745535714285715,
+          "y": 45.71875
+        },
+        "createdAt": "2026-06-09T14:13:03.619Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_4.jpg",
+        "imageIndex": 4,
+        "language": "vi",
+        "originalText": "나를 기다렸다.",
+        "translatedText": "chờ đợi tôi."
+      },
+      {
+        "bbox": {
+          "h": 7.8125,
+          "w": 11.774553571428571,
+          "x": 44.419642857142854,
+          "y": 10.84375
+        },
+        "createdAt": "2026-06-09T14:27:37.029Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_18.jpg",
+        "imageIndex": 18,
+        "language": "vi",
+        "originalText": "아, 붙지 좀 말라고!!",
+        "translatedText": "Ê, đừng nằm sát thế!!"
+      },
+      {
+        "bbox": {
+          "h": 7.000000000000001,
+          "w": 16.238839285714285,
+          "x": 34.70982142857143,
+          "y": 49.53125
+        },
+        "createdAt": "2026-06-09T14:27:55.496Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_18.jpg",
+        "imageIndex": 18,
+        "language": "vi",
+        "originalText": "누나가 이불 가져갔잖아!",
+        "translatedText": "Chị lấy cái chăn rồi!"
+      },
+      {
+        "bbox": {
+          "h": 6.4375,
+          "w": 13.113839285714285,
+          "x": 46.372767857142854,
+          "y": 69.28125
+        },
+        "createdAt": "2026-06-09T14:28:09.795Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_18.jpg",
+        "imageIndex": 18,
+        "language": "vi",
+        "originalText": "니가 덥다고 안 덮는다며~!",
+        "translatedText": "Em bảo sẽ không đắp vì trời nóng còn gì~!"
+      },
+      {
+        "bbox": {
+          "h": 9.3125,
+          "w": 13.504464285714285,
+          "x": 44.419642857142854,
+          "y": 6.78125
+        },
+        "createdAt": "2026-06-09T14:28:20.662Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_19.jpg",
+        "imageIndex": 19,
+        "language": "vi",
+        "originalText": "아, 치사해 진짜-!!",
+        "translatedText": "Ah, bất công quá-!!"
+      },
+      {
+        "bbox": {
+          "h": 3.75,
+          "w": 17.681159420289855,
+          "x": 27.536231884057973,
+          "y": 57.59375
+        },
+        "createdAt": "2026-06-09T14:52:58.015Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_19.jpg",
+        "imageIndex": 19,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f8f8fd",
+          "bold": true,
+          "color": "#1a1a2e",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#ffffff",
+          "strokeWidth": 1
+        },
+        "translatedText": "Bỏ ra!"
+      },
+      {
+        "bbox": {
+          "h": 2.75,
+          "w": 12.173913043478262,
+          "x": 53.768115942028984,
+          "y": 75.40625
+        },
+        "createdAt": "2026-06-09T14:53:10.432Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_19.jpg",
+        "imageIndex": 19,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f8f8fe",
+          "bold": true,
+          "color": "#1a1a2e",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#ffffff",
+          "strokeWidth": 1
+        },
+        "translatedText": "Ứ chịu đâu!!"
+      },
+      {
+        "bbox": {
+          "h": 7.124999999999999,
+          "w": 17.246376811594203,
+          "x": 39.85507246376812,
+          "y": 90.03125
+        },
+        "createdAt": "2026-06-09T14:53:22.365Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_19.jpg",
+        "imageIndex": 19,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": true,
+          "color": "#1a1a2e",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#ffffff",
+          "strokeWidth": 1
+        },
+        "translatedText": "Tao bảo bỏ ra mà?!"
+      },
+      {
+        "bbox": {
+          "h": 9.3125,
+          "w": 24.492753623188406,
+          "x": 65.94202898550725,
+          "y": 4.96875
+        },
+        "createdAt": "2026-06-09T14:54:17.199Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_20.jpg",
+        "imageIndex": 20,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#ffffff",
+          "bold": true,
+          "color": "#1a1a2e",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#ffffff",
+          "strokeWidth": 1
+        },
+        "translatedText": "Ê, em méc mẹ cho coi!"
+      },
+      {
+        "bbox": {
+          "h": 10.5625,
+          "w": 35.94202898550725,
+          "x": 17.391304347826086,
+          "y": 47.65625
+        },
+        "createdAt": "2026-06-09T14:54:38.016Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_20.jpg",
+        "imageIndex": 20,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#ffffff",
+          "bold": true,
+          "color": "#1a1a2e",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#ffffff",
+          "strokeWidth": 1
+        },
+        "translatedText": "Hứ! Đang ở nhà bà ngoại mà, mẹ đâu ra cho mày méc!"
+      },
+      {
+        "bbox": {
+          "h": 7.375,
+          "w": 33.91304347826087,
+          "x": 61.44927536231884,
+          "y": 66.71875
+        },
+        "createdAt": "2026-06-09T14:55:13.117Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_20.jpg",
+        "imageIndex": 20,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#ffffff",
+          "strokeWidth": 1
+        },
+        "translatedText": "Th-thì em méc bà đó!"
+      },
+      {
+        "bbox": {
+          "h": 10.375,
+          "w": 34.492753623188406,
+          "x": 32.463768115942024,
+          "y": 94.71875
+        },
+        "createdAt": "2026-06-09T14:56:00.417Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_20.jpg",
+        "imageIndex": 20,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#ffffff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#ffffff",
+          "strokeWidth": 1
+        },
+        "translatedText": "Mắc cười quá à~ Mày á, sợ bà ngoại lắm còn gì~~"
+      },
+      {
+        "bbox": {
+          "h": 4,
+          "w": 28.26086956521739,
+          "x": 45.79710144927536,
+          "y": 22.40625
+        },
+        "createdAt": "2026-06-09T14:56:10.734Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_21.jpg",
+        "imageIndex": 21,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#ffffff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false
+        },
+        "translatedText": "Cái-cái đó..."
+      },
+      {
+        "bbox": {
+          "h": 7.4375,
+          "w": 34.92753623188406,
+          "x": 34.05797101449276,
+          "y": 71.21875
+        },
+        "createdAt": "2026-06-09T14:56:32.667Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_21.jpg",
+        "imageIndex": 21,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#ffffff",
+          "bold": true,
+          "color": "#000000",
+          "fontSize": 36,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#ffffff",
+          "strokeWidth": 1
+        },
+        "translatedText": "Sao giờ còn chưa ngủ ?!"
+      },
+      {
+        "bbox": {
+          "h": 4.5,
+          "w": 35.07246376811594,
+          "x": 33.47826086956522,
+          "y": 9.34375
+        },
+        "createdAt": "2026-06-09T14:56:40.484Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_22.jpg",
+        "imageIndex": 22,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 36,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#ffffff",
+          "strokeWidth": 1
+        },
+        "translatedText": "Bà!!"
+      },
+      {
+        "bbox": {
+          "h": 3.3125,
+          "w": 29.565217391304348,
+          "x": 35.65217391304348,
+          "y": 92.21875
+        },
+        "createdAt": "2026-06-09T14:58:12.052Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_25.jpg",
+        "imageIndex": 35,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#ffffff",
+          "bold": false,
+          "color": "#1a1a2e",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false
+        },
+        "translatedText": "Mau ngủ đi"
+      },
+      {
+        "bbox": {
+          "h": 3.6249999999999996,
+          "w": 64.05797101449275,
+          "x": 18.985507246376812,
+          "y": 0.21875000000000003
+        },
+        "createdAt": "2026-06-09T14:58:49.036Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_28.jpg",
+        "imageIndex": 38,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#000000",
+          "bold": false,
+          "color": "#ffffff",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false
+        },
+        "translatedText": "\"Ê, sao mày sợ bà vậy?\""
+      },
+      {
+        "bbox": {
+          "h": 4.625,
+          "w": 45.79710144927536,
+          "x": 25.79710144927536,
+          "y": 70.46875
+        },
+        "createdAt": "2026-06-09T14:59:05.157Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_28.jpg",
+        "imageIndex": 28,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#000000",
+          "bold": false,
+          "color": "#ffffff",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#ffffff",
+          "strokeWidth": 1
+        },
+        "translatedText": "\"Thì vì bà...\""
+      },
+      {
+        "bbox": {
+          "h": 5.1875,
+          "w": 49.42028985507246,
+          "x": 26.666666666666668,
+          "y": 80.15625
+        },
+        "createdAt": "2026-06-09T14:59:44.696Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_29.jpg",
+        "imageIndex": 39,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#000000",
+          "bold": false,
+          "color": "#ffffff",
+          "fontSize": 40,
+          "italic": false,
+          "noBg": false
+        },
+        "translatedText": "\"là pháp sư mà.\""
+      },
+      {
+        "bbox": {
+          "h": 12,
+          "w": 24.782608695652176,
+          "x": 68.98550724637681,
+          "y": 21
+        },
+        "createdAt": "2026-06-09T15:12:46.823Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_5.jpg",
+        "imageIndex": 5,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#fafafa",
+          "bold": true,
+          "color": "#0f1d67",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "* khắp phố phường tiếng ve kêu hè hè hè"
+      },
+      {
+        "bbox": {
+          "h": 6.4375,
+          "w": 22.028985507246375,
+          "x": 23.043478260869566,
+          "y": 1.7500000000000002
+        },
+        "createdAt": "2026-06-09T15:14:40.552Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_39.jpg",
+        "imageIndex": 39,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#fafafa",
+          "bold": true,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Cháu trai Donghae"
+      },
+      {
+        "bbox": {
+          "h": 5.125,
+          "w": 14.927536231884059,
+          "x": 65.07246376811594,
+          "y": 35.6875
+        },
+        "createdAt": "2026-06-09T15:14:50.731Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_39.jpg",
+        "imageIndex": 39,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#fafafa",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Cháu gái Hwarim"
+      },
+      {
+        "bbox": {
+          "h": 7.249999999999999,
+          "w": 30.289855072463766,
+          "x": 35.21739130434783,
+          "y": 24.8125
+        },
+        "createdAt": "2026-06-09T15:15:16.086Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_49.jpg",
+        "imageIndex": 49,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Khi nào mẹ mới tới?"
+      },
+      {
+        "bbox": {
+          "h": 8.375,
+          "w": 23.333333333333332,
+          "x": 14.492753623188406,
+          "y": 72.5625
+        },
+        "createdAt": "2026-06-09T15:15:58.916Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_50.jpg",
+        "imageIndex": 50,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Con hổng có làm!!"
+      },
+      {
+        "bbox": {
+          "h": 10.25,
+          "w": 27.97101449275362,
+          "x": 19.710144927536234,
+          "y": 98.5
+        },
+        "createdAt": "2026-06-09T15:16:14.332Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_50.jpg",
+        "imageIndex": 50,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Bà cứ bảo là còn làm thôi!"
+      },
+      {
+        "bbox": {
+          "h": 7.187499999999999,
+          "w": 21.304347826086957,
+          "x": 34.92753623188406,
+          "y": 43.1875
+        },
+        "createdAt": "2026-06-09T15:16:41.433Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_51.jpg",
+        "imageIndex": 51,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Lee Donghae làm chứ gì nữa!"
+      },
+      {
+        "bbox": {
+          "h": 6.0625,
+          "w": 34.05797101449276,
+          "x": 45.072463768115945,
+          "y": 80.875
+        },
+        "createdAt": "2026-06-09T15:17:17.650Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_51.jpg",
+        "imageIndex": 51,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 18,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Con là chị mà phải làm gương chứ!"
+      },
+      {
+        "bbox": {
+          "h": 6.125,
+          "w": 28.115942028985508,
+          "x": 42.46376811594203,
+          "y": 87.375
+        },
+        "createdAt": "2026-06-09T15:17:30.867Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_53.jpg",
+        "imageIndex": 53,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": true,
+          "color": "#000000",
+          "fontSize": 36,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Bà ơi?"
+      },
+      {
+        "bbox": {
+          "h": 10.1875,
+          "w": 35.21739130434783,
+          "x": 29.565217391304348,
+          "y": 37.625
+        },
+        "createdAt": "2026-06-09T15:18:11.701Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_57.jpg",
+        "imageIndex": 57,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Chị, bà đang làm gì vậy nhỉ?"
+      },
+      {
+        "bbox": {
+          "h": 6.812500000000001,
+          "w": 41.01449275362319,
+          "x": 16.52173913043478,
+          "y": 14.000000000000002
+        },
+        "createdAt": "2026-06-09T15:18:39.751Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_58.jpg",
+        "imageIndex": 58,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Cầu nguyện. Bà là pháp sư mà."
+      },
+      {
+        "bbox": {
+          "h": 5.625,
+          "w": 30.434782608695656,
+          "x": 34.92753623188406,
+          "y": 90.4375
+        },
+        "createdAt": "2026-06-09T15:19:35.268Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_60.jpg",
+        "imageIndex": 60,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#000000",
+          "bold": false,
+          "color": "#ffffff",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Nhưng mà người chết..."
+      },
+      {
+        "bbox": {
+          "h": 5.25,
+          "w": 20.28985507246377,
+          "x": 42.31884057971014,
+          "y": 27.375
+        },
+        "createdAt": "2026-06-09T15:19:44.885Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_61.jpg",
+        "imageIndex": 61,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#000000",
+          "bold": false,
+          "color": "#ffffff",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "...là ai?"
+      },
+      {
+        "bbox": {
+          "h": 3.1875,
+          "w": 17.971014492753625,
+          "x": 65.79710144927536,
+          "y": 58.5
+        },
+        "createdAt": "2026-06-09T15:20:02.252Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_64.jpg",
+        "imageIndex": 64,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 20,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Ai nhỉ?"
+      },
+      {
+        "bbox": {
+          "h": 4.5,
+          "w": 40,
+          "x": 30.869565217391305,
+          "y": 46.75
+        },
+        "createdAt": "2026-06-09T15:20:46.369Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_68.jpg",
+        "imageIndex": 68,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#030308",
+          "bold": false,
+          "color": "#ffffff",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Chào mình ư?"
+      },
+      {
+        "bbox": {
+          "h": 10.0625,
+          "w": 26.956521739130434,
+          "x": 35.21739130434783,
+          "y": 6.0625
+        },
+        "createdAt": "2026-06-09T15:21:38.703Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_76.jpg",
+        "imageIndex": 76,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Bà ơi, ban nãy có khách ạ?"
+      },
+      {
+        "bbox": {
+          "h": 6.5625,
+          "w": 27.246376811594203,
+          "x": 70.28985507246377,
+          "y": 50.6875
+        },
+        "createdAt": "2026-06-09T15:21:52.703Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_76.jpg",
+        "imageIndex": 76,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "...Con nói nhảm gì vậy?"
+      },
+      {
+        "bbox": {
+          "h": 13,
+          "w": 29.565217391304348,
+          "x": 34.63768115942029,
+          "y": 76.6875
+        },
+        "createdAt": "2026-06-09T15:22:19.400Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_76.jpg",
+        "imageIndex": 76,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Không đâu, ban nãy người ta còn chào con cơ mà."
+      },
+      {
+        "bbox": {
+          "h": 15.937499999999998,
+          "w": 31.73913043478261,
+          "x": 56.95652173913044,
+          "y": 4.375
+        },
+        "createdAt": "2026-06-09T15:22:59.855Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_77.jpg",
+        "imageIndex": 77,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Người đứng cạnh bà lúc bà đang cầu nguyện ở miếu ấy ạ"
+      },
+      {
+        "bbox": {
+          "h": 4.0625,
+          "w": 32.7536231884058,
+          "x": 45.21739130434783,
+          "y": 32.3125
+        },
+        "createdAt": "2026-06-09T15:23:17.671Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_77.jpg",
+        "imageIndex": 77,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 40,
+          "italic": true,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Cạch"
+      },
+      {
+        "bbox": {
+          "h": 8.375,
+          "w": 31.15942028985507,
+          "x": 30.869565217391305,
+          "y": 0.75
+        },
+        "createdAt": "2026-06-09T15:23:35.288Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_79.jpg",
+        "imageIndex": 79,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Bên cạnh...miếu thờ?"
+      },
+      {
+        "bbox": {
+          "h": 12.5,
+          "w": 27.246376811594203,
+          "x": 56.376811594202906,
+          "y": 88.125
+        },
+        "createdAt": "2026-06-09T15:25:14.472Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_84.jpg",
+        "imageIndex": 84,
+        "language": "vi",
+        "originalText": "아범. 내일 당장 화림이 데려가게.",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Ba nó này, ngày mai dẫn con bé Hwarim đi ngay đi."
+      },
+      {
+        "bbox": {
+          "h": 14.5625,
+          "w": 44.78260869565218,
+          "x": 14.927536231884059,
+          "y": 66.8125
+        },
+        "createdAt": "2026-06-09T15:27:27.924Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_85.jpg",
+        "imageIndex": 85,
+        "language": "vi",
+        "originalText": "자네도 화림이가 여기 자주 오면 안 되는 거 알고 있잖은가.",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Tụi mày cũng biết là con bé Hwarim không nên đến đây thường xuyên mà."
+      },
+      {
+        "bbox": {
+          "h": 7.75,
+          "w": 39.85507246376812,
+          "x": 35.507246376811594,
+          "y": 36.75
+        },
+        "createdAt": "2026-06-09T15:31:57.666Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_85.jpg",
+        "imageIndex": 85,
+        "language": "vi",
+        "originalText": "그래, 귀것들이 꼬이기 시작했어.",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "그래, 귀것들이 꼬이기 시작했어."
+      },
+      {
+        "bbox": {
+          "h": 7.000000000000001,
+          "w": 27.536231884057973,
+          "x": 54.05797101449276,
+          "y": 16.375
+        },
+        "createdAt": "2026-06-09T15:32:21.748Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_86.jpg",
+        "imageIndex": 86,
+        "language": "vi",
+        "originalText": "",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": false,
+          "color": "#000000",
+          "fontSize": 28,
+          "italic": false,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "Vì con bé..."
+      },
+      {
+        "bbox": {
+          "h": 15.562500000000002,
+          "w": 54.927536231884055,
+          "x": 23.6231884057971,
+          "y": 76.625
+        },
+        "createdAt": "2026-06-09T15:34:40.100Z",
+        "imageHash": "url:1/20260530230055_36ca1bd5b602577b59a9782f47298231_IMAG01_86.jpg",
+        "imageIndex": 86,
+        "language": "vi",
+        "originalText": "그릇이 아주 큰 무당이 될 몸이니까.",
+        "style": {
+          "bg": "#f9f9ff",
+          "bold": true,
+          "color": "#000000",
+          "fontSize": 48,
+          "italic": true,
+          "noBg": false,
+          "stroke": false,
+          "strokeColor": "#000000",
+          "strokeWidth": 1
+        },
+        "translatedText": "sinh ra đã có số mệnh làm thầy cúng."
+      }
+    ]
+  }
+}

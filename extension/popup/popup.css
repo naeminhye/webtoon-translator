@@ -1,0 +1,124 @@
+/* popup/popup.css */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 260px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: #1e293b;
+  background: #ffffff;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.logo {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.badge-naver  { background: #e0fce7; color: #166534; }
+.badge-ridi   { background: #ede9fe; color: #5b21b6; }
+.badge-kakao  { background: #fef9c3; color: #713f12; }
+
+#chapter-info {
+  padding: 10px 14px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.info-line {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  color: #475569;
+}
+
+.info-line:last-child { margin-bottom: 0; }
+
+.label {
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 1px;
+}
+
+.notice {
+  padding: 16px 14px;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mode-toggle {
+  display: flex;
+  margin: 10px 14px 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 7px 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mode-btn.active {
+  background: #6366f1;
+  color: #fff;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 14px 12px;
+}
+
+.action-btn {
+  padding: 7px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-size: 12px;
+  color: #475569;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.action-btn:hover {
+  background: #f1f5f9;
+  color: #1e293b;
+}
+
+footer {
+  padding: 6px 14px 10px;
+  font-size: 10px;
+  color: #cbd5e1;
+  text-align: center;
+}
+
+.hidden { display: none !important; }

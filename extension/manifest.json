@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Webtoon Translate",
+  "version": "0.1.0",
+  "description": "Community-driven webtoon translation overlay",
+
+  "permissions": ["storage", "scripting", "activeTab"],
+
+  "host_permissions": [
+    "https://comic.naver.com/*",
+    "https://m.comic.naver.com/*",
+    "https://www.ridi.com/*",
+    "https://page.kakao.com/*"
+  ],
+
+  "background": {
+    "service_worker": "background/worker.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://comic.naver.com/webtoon/detail*",
+        "https://m.comic.naver.com/webtoon/detail*",
+        "https://www.ridi.com/viewer/*",
+        "https://page.kakao.com/content/*"
+      ],
+      "js": ["content/bundle.js"],
+      "css": ["content/overlay.css"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup/popup.html"
+  }
+}
