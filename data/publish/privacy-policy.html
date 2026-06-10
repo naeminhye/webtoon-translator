@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — Webtoon Translate</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 16px; line-height: 1.7; color: #1e293b;
+      background: #f8fafc; padding: 0;
+    }
+    .container { max-width: 740px; margin: 0 auto; padding: 48px 24px 80px; background: #fff; }
+    header { margin-bottom: 48px; padding-bottom: 24px; border-bottom: 2px solid #e2e8f0; }
+    .logo { font-size: 13px; font-weight: 600; color: #6366f1; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+    h1 { font-size: 28px; font-weight: 700; color: #0f172a; margin-bottom: 8px; }
+    .effective { font-size: 14px; color: #94a3b8; }
+    h2 { font-size: 18px; font-weight: 600; color: #0f172a; margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 1px solid #f1f5f9; }
+    h3 { font-size: 15px; font-weight: 600; color: #334155; margin: 24px 0 6px; }
+    p { color: #475569; margin-bottom: 14px; }
+    ul { margin: 8px 0 16px 24px; }
+    li { color: #475569; margin-bottom: 6px; }
+    .highlight { background: #f0f9ff; border-left: 3px solid #6366f1; padding: 14px 18px; border-radius: 0 6px 6px 0; margin: 20px 0; }
+    .highlight p { margin: 0; color: #1e40af; font-weight: 500; }
+    footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid #e2e8f0; font-size: 13px; color: #94a3b8; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="logo">📖 Webtoon Translate</div>
+    <h1>Privacy Policy</h1>
+    <p class="effective">Effective date: <span id="date"></span></p>
+  </header>
+
+  <div class="highlight">
+    <p>Short version: Webtoon Translate stores your translation annotations locally on your device only. No data is ever sent to any server. We collect nothing about you.</p>
+  </div>
+
+  <h2>1. Overview</h2>
+  <p>Webtoon Translate is a Chrome browser extension that allows users to view and create translation overlays for webtoon content. This Privacy Policy explains what data the Extension collects, how it is used, and your rights as a user.</p>
+
+  <h2>2. Data We Collect</h2>
+
+  <h3>2.1 Data stored locally on your device</h3>
+  <p>The Extension stores the following data in your browser's local storage (<code>chrome.storage.local</code>):</p>
+  <ul>
+    <li>Translation text you type</li>
+    <li>Bounding box coordinates (position of text on the panel image)</li>
+    <li>Text styling preferences (font, color, size, stroke)</li>
+    <li>The webtoon title ID and chapter ID the annotation belongs to</li>
+  </ul>
+  <p><strong>This data never leaves your device.</strong> It is not transmitted to any server, third party, or the extension developer.</p>
+
+  <h3>2.2 Data we do NOT collect</h3>
+  <ul>
+    <li>We do not collect your name, email address, or any personally identifiable information</li>
+    <li>We do not collect or store browsing history</li>
+    <li>We do not use analytics, telemetry, or crash reporting</li>
+    <li>We do not transmit any data to external servers</li>
+    <li>We do not read or store the content of webtoon images</li>
+  </ul>
+
+  <h2>3. Permissions Explained</h2>
+
+  <h3>storage</h3>
+  <p>Used exclusively to save your translation annotations locally on your device. No data is sent anywhere.</p>
+
+  <h3>scripting, activeTab</h3>
+  <p>Used to inject the translation overlay UI into the webtoon reader page. The extension only activates when you are actively viewing a supported webtoon site.</p>
+
+  <h3>Host permissions (comic.naver.com, ridi.com, page.kakao.com)</h3>
+  <p>The Extension only runs on these specific webtoon reader websites. It does not access any other websites, does not intercept network requests, and does not modify any page content other than adding an overlay layer.</p>
+
+  <h2>4. Data Sharing</h2>
+  <p>We do not sell, rent, or share any data with third parties. The Extension has no backend server in its current version. All functionality operates entirely within your local browser.</p>
+  <p>If you use the <strong>Export</strong> feature, a JSON file containing your translation annotations is downloaded to your device. You are solely responsible for how you choose to share this file.</p>
+
+  <h2>5. Data Retention &amp; Deletion</h2>
+  <p>Your translation data is stored in your browser's local storage until you:</p>
+  <ul>
+    <li>Clear browser local storage / site data from Chrome settings</li>
+    <li>Uninstall the Extension (removes all stored data)</li>
+  </ul>
+
+  <h2>6. Children's Privacy</h2>
+  <p>The Extension does not knowingly collect data from children under 13. It contains no features directed at children and does not collect personal information from any user regardless of age.</p>
+
+  <h2>7. Changes to This Policy</h2>
+  <p>If we make material changes to this Privacy Policy, we will update the effective date above and publish the updated policy at this URL. Continued use of the Extension after changes constitutes acceptance of the updated policy.</p>
+
+  <h2>8. Contact</h2>
+  <p>If you have questions about this Privacy Policy, please open an issue on the project's GitHub repository or contact us via the Chrome Web Store developer contact page.</p>
+
+  <footer>
+    <p>Webtoon Translate · Chrome Extension · This policy applies to version 0.1.0 and later.</p>
+  </footer>
+</div>
+<script>
+  document.getElementById('date').textContent = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+</script>
+</body>
+</html>

@@ -14,7 +14,13 @@
   <section id="chapter-info" class="hidden">
     <p class="info-line"><span class="label">Title</span><span id="title-id">—</span></p>
     <p class="info-line"><span class="label">Chapter</span><span id="chapter-id">—</span></p>
-    <p class="info-line"><span class="label">Translations</span><span id="ann-count">—</span></p>
+    <p class="info-line">
+      <span class="label">Progress</span>
+      <span id="progress-text">—</span>
+    </p>
+    <div class="progress-bar-wrap">
+      <div id="progress-bar-fill" class="progress-bar-fill"></div>
+    </div>
   </section>
 
   <section id="no-chapter" class="notice">
@@ -27,12 +33,12 @@
   </div>
 
   <div class="actions hidden" id="action-buttons">
+    <button id="btn-panel"  class="action-btn">📋 Translation list</button>
     <button id="btn-export" class="action-btn">Export JSON</button>
     <button id="btn-import" class="action-btn">Import JSON</button>
   </div>
 
   <footer>v0.1.0 · Phase 1 (local only)</footer>
-
   <script src="popup.js"></script>
 </body>
 </html>
