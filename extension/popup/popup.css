@@ -54,6 +54,7 @@ header {
 }
 
 .chapter-title {
+  flex: 1; min-width: 0; /* allow flex item to shrink so ellipsis kicks in */
   font-weight: 600; font-size: 13px; color: #1e293b;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

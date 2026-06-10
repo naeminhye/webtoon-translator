@@ -1364,6 +1364,7 @@ function bootForPage() {
   let currentMode     = MODES.READ;
   let images          = [];
   let annotationCount = 0;
+  let disposed        = false; // set on cleanup — stops in-flight async render chains
 
   // Build floating toggle button (Read mode only)
   const toggleBtn = buildToggleButton();
@@ -1381,7 +1382,9 @@ function bootForPage() {
   // ── load & render ──────────────────────────────────────────────────────
 
   async function loadAndRender() {
+    if (disposed) return;
     const { annotations } = await sendToBackground({ type: MSG.LOAD_TRANSLATIONS, payload: meta });
+    if (disposed) return;
     const raw = annotations || [];
 
     // Dedupe by annKey (imageHash::bboxX::bboxY) — keep most recent
@@ -1439,6 +1442,7 @@ function bootForPage() {
 
   let attempts = 0;
   const tryGetImages = () => {
+    if (disposed) return;
     images = adapter.getImages();
     if (images.length === 0 && attempts++ < 20) {
       // For Kakao: images are lazy-loaded. After a few failed attempts,
@@ -1713,6 +1717,7 @@ function bootForPage() {
   }
 
   bootCleanup = () => {
+    disposed = true;
     stopWatching();
     urlObserver.disconnect();
     chrome.runtime.onMessage.removeListener(onRuntimeMessage);
