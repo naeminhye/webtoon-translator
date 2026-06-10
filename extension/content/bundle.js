@@ -979,6 +979,7 @@ class SidePanel {
     this._el.style.opacity   = '1';
     this._visible = true;
     document.body.style.marginRight = `${PANEL_W}px`;
+    document.body.classList.add('wt-panel-open');
   }
 
   hide() {
@@ -986,6 +987,7 @@ class SidePanel {
     this._el.style.opacity   = '0';
     this._visible = false;
     document.body.style.marginRight = '';
+    document.body.classList.remove('wt-panel-open');
   }
 
   toggle() {
@@ -1260,21 +1262,15 @@ function sendToBackground(message, retries = 3) {
 // ── Translation visibility toggle ────────────────────────────────────────────
 let _translationsVisible = true;
 
+const EYE_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_OFF_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-7 0-11-7-11-7a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
 function buildToggleButton() {
   const btn = document.createElement('button');
   btn.id = 'wt-toggle-btn';
-  btn.title = 'Toggle translations (T)';
-  btn.innerHTML = '👁 <span>Hide translations</span>';
-  btn.style.cssText = [
-    'position:fixed', 'bottom:24px', 'left:50%', 'transform:translateX(-50%)',
-    'z-index:99997', 'background:rgba(15,23,42,0.85)', 'color:#fff',
-    'border:none', 'border-radius:20px', 'padding:8px 18px',
-    'font-family:system-ui', 'font-size:13px', 'font-weight:500',
-    'cursor:pointer', 'display:flex', 'align-items:center', 'gap:6px',
-    'backdrop-filter:blur(4px)', 'box-shadow:0 2px 12px rgba(0,0,0,0.25)',
-    'transition:opacity 0.2s',
-  ].join(';');
-
+  btn.title = 'Hide translations (T)';
+  btn.setAttribute('aria-label', 'Toggle translations');
+  btn.innerHTML = EYE_ICON;
   btn.addEventListener('click', () => toggleTranslations());
   document.body.appendChild(btn);
   return btn;
@@ -1287,15 +1283,16 @@ function toggleTranslations(force) {
   // fixedLayer bubbles are also .wt-translation-bubble so covered above
   const btn = document.getElementById('wt-toggle-btn');
   if (btn) {
-    btn.querySelector('span').textContent = _translationsVisible ? 'Hide translations' : 'Show translations';
-    btn.style.background = _translationsVisible ? 'rgba(15,23,42,0.85)' : 'rgba(99,102,241,0.9)';
+    btn.innerHTML = _translationsVisible ? EYE_ICON : EYE_OFF_ICON;
+    btn.title = _translationsVisible ? 'Hide translations (T)' : 'Show translations (T)';
+    btn.classList.toggle('wt-toggle-off', !_translationsVisible);
   }
 }
 
 function showToast(text, color = '#22c55e') {
   const t = document.createElement('div');
   t.textContent = text;
-  t.style.cssText = `position:fixed;bottom:24px;right:24px;z-index:99999;background:${color};color:#fff;padding:10px 18px;border-radius:8px;font-family:system-ui;font-size:14px;font-weight:500;pointer-events:none;`;
+  t.style.cssText = `position:fixed;bottom:84px;right:24px;z-index:99999;background:${color};color:#fff;padding:10px 18px;border-radius:8px;font-family:system-ui;font-size:14px;font-weight:500;pointer-events:none;`;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 3000);
 }
@@ -1307,10 +1304,12 @@ const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter()];
 function findAdapter() { return ADAPTERS.find(a => a.detect()); }
 
 let bootCleanup = null;
+let _wtEnabled  = true;
 
 function bootForPage() {
   bootCleanup?.();
   bootCleanup = null;
+  if (!_wtEnabled) return;
 
   const adapter = findAdapter();
   if (!adapter) { console.log('[WebtoonTranslate] No adapter:', location.href); return; }
@@ -1638,7 +1637,7 @@ function bootForPage() {
 
   // ── message listener ───────────────────────────────────────────────────
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  const onRuntimeMessage = (message, _sender, sendResponse) => {
     if (message.type === 'GET_META') {
       // Get human-readable title from meta tags
       const ogTitle = document.querySelector('meta[property="og:title"]')?.content
@@ -1672,7 +1671,8 @@ function bootForPage() {
     }
     if (message.type === 'TRIGGER_EXPORT') triggerExport(meta);
     if (message.type === 'TRIGGER_IMPORT') triggerImport();
-  });
+  };
+  chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
   // ── export / import ────────────────────────────────────────────────────
 
@@ -1715,17 +1715,43 @@ function bootForPage() {
   bootCleanup = () => {
     stopWatching();
     urlObserver.disconnect();
+    chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     if (isKakao) { fixedLayer.disable(); fixedLayer.clearAll(); }
     else selector.disable();
+    renderer.clearAll();
     bubbleEditor.detach();
     toggleBtn.remove();
     panel.hide();
+    document.getElementById('wt-progress-bar')?.remove();
+    document.body.classList.remove('wt-annotate-mode');
     document.body.style.marginRight = '';
     document.removeEventListener('keydown', keyHandler);
     _translationsVisible = true;
   };
 }
 
-bootForPage();
+// ── Global on/off switch ──────────────────────────────────────────────────────
+// `wt:enabled` is a global flag in chrome.storage.local. When off, the content
+// script tears down all injected UI and stays dormant until re-enabled.
+
+function teardown() {
+  bootCleanup?.();
+  bootCleanup = null;
+}
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type !== 'SET_ENABLED') return;
+  _wtEnabled = !!message.enabled;
+  if (_wtEnabled) {
+    if (!bootCleanup) bootForPage();
+  } else {
+    teardown();
+  }
+});
+
+chrome.storage.local.get({ 'wt:enabled': true }, (result) => {
+  _wtEnabled = !!result['wt:enabled'];
+  if (_wtEnabled) bootForPage();
+});
 
 })();

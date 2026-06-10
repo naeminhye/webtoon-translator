@@ -97,6 +97,27 @@ async function handleImport({ jsonString }) {
   return { ok: true, imported: count };
 }
 
+// ── extension on/off badge ────────────────────────────────────────────────────
+// `wt:enabled` (default true) is the global switch toggled from the popup.
+// Reflect it on the toolbar icon so the state is visible without opening the popup.
+
+const ENABLED_KEY = 'wt:enabled';
+
+async function updateBadge() {
+  const stored  = await chrome.storage.local.get({ [ENABLED_KEY]: true });
+  const enabled = stored[ENABLED_KEY];
+  await chrome.action.setBadgeText({ text: enabled ? '' : 'OFF' });
+  if (!enabled) await chrome.action.setBadgeBackgroundColor({ color: '#94a3b8' });
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && ENABLED_KEY in changes) updateBadge();
+});
+
+chrome.runtime.onInstalled.addListener(updateBadge);
+chrome.runtime.onStartup.addListener(updateBadge);
+updateBadge();
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /** Stable unique key for an annotation — survives round-trips */
