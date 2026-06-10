@@ -54,8 +54,9 @@ async function hashImage(img) {
 // All drag coords are converted back to % of the target image.
 
 class FixedOverlayLayer {
-  constructor({ onSelect }) {
+  constructor({ onSelect, getImages }) {
     this._onSelect  = onSelect;
+    this._getImages = getImages || null; // live image list — survives lazy-load/remount
     this._el        = null;
     this._images    = [];
     this._active    = false;
@@ -149,11 +150,17 @@ class FixedOverlayLayer {
       const pw = Math.abs(endX - startX), ph = Math.abs(endY - startY);
       if (pw < 10 || ph < 10) return;
 
-      // Find which image this drag is over (center of selection)
+      // Find which image this drag is over (center of selection).
+      // Hit-test against the live image list — this._images can be a stale
+      // snapshot on Kakao (lazy-loaded / React-remounted panels).
       const cx = (Math.min(startX, endX) + pw / 2);
       const cy = (Math.min(startY, endY) + ph / 2);
-      const img = this._imageAtViewportPoint(cx, cy);
-      if (!img) return;
+      const imgs = this._liveImages();
+      const img = this._imageAtViewportPoint(cx, cy, imgs);
+      if (!img) {
+        showToast('✗ No panel image found under selection. Scroll so the panel is fully loaded, then try again.', '#ef4444');
+        return;
+      }
 
       const rect = img.getBoundingClientRect();
       const bbox = {
@@ -167,13 +174,18 @@ class FixedOverlayLayer {
       bbox.w = Math.min(100 - bbox.x, bbox.w);
       bbox.h = Math.min(100 - bbox.y, bbox.h);
 
-      const imageIndex = this._images.indexOf(img);
+      const imageIndex = imgs.indexOf(img);
       this._onSelect({ bbox, imageEl: img, imageIndex });
     });
   }
 
-  _imageAtViewportPoint(vx, vy) {
-    for (const img of this._images) {
+  _liveImages() {
+    const live = this._getImages?.();
+    return (live && live.length) ? live : this._images;
+  }
+
+  _imageAtViewportPoint(vx, vy, imgs = this._images) {
+    for (const img of imgs) {
       const r = img.getBoundingClientRect();
       if (vx >= r.left && vx <= r.right && vy >= r.top && vy <= r.bottom) return img;
     }
@@ -528,6 +540,8 @@ class InputDialog {
   }
 
   show(screenPos, prefill = {}) {
+    // SPA sites (Kakao/Next.js) can wipe body children on re-render — re-attach
+    if (!this._el.isConnected) document.body.appendChild(this._el);
     this._isEdit = !!prefill.translatedText;
     // Update title and show/hide delete button
     this._el.querySelector('.wt-dialog-title').textContent =
@@ -1319,7 +1333,9 @@ function bootForPage() {
 
   const renderer    = new OverlayRenderer();
   const isKakao     = adapter.usesFixedOverlay === true;
-  const fixedLayer  = isKakao ? new FixedOverlayLayer({ onSelect: handleBBoxSelect }) : null;
+  const fixedLayer  = isKakao
+    ? new FixedOverlayLayer({ onSelect: handleBBoxSelect, getImages: () => images })
+    : null;
 
   const panel    = new SidePanel({
     onJump: (ann, img) => {

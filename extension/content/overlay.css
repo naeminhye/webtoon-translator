@@ -83,7 +83,7 @@
 
 .wt-input-dialog {
   position: absolute;
-  z-index: 9999;
+  z-index: 99998; /* above site UI layers (Kakao uses high z-indexes) and our overlays */
   width: 280px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
