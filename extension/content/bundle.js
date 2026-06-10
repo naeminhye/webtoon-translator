@@ -1001,10 +1001,11 @@ class BubbleEditor {
 // Contains: annotation list, import/export, live updates on add/delete.
 
 class SidePanel {
-  constructor({ onJump, onImport, onExport }) {
+  constructor({ onJump, onImport, onExport, onDelete }) {
     this._onJump   = onJump;
     this._onImport = onImport;
     this._onExport = onExport;
+    this._onDelete = onDelete;
     this._visible  = false;
     this._images   = [];
     this._el       = null;
@@ -1104,8 +1105,13 @@ class SidePanel {
         row.className = 'wt-sp-row';
         row.dataset.annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
         row.innerHTML = `
+          <button class="wt-sp-row-del" title="Delete translation">&#x2715;</button>
           <div class="wt-sp-row-text">${ann.translatedText}</div>
           ${ann.originalText ? `<div class="wt-sp-row-orig">${ann.originalText}</div>` : ''}`;
+        row.querySelector('.wt-sp-row-del').addEventListener('click', (e) => {
+          e.stopPropagation();
+          this._onDelete?.(ann);
+        });
         row.addEventListener('click', () => {
           const img    = this._images[imgIdx];
           const annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
@@ -1402,6 +1408,22 @@ function bootForPage() {
     },
     onImport: () => triggerImport(),
     onExport: () => triggerExport(meta),
+    onDelete: async (ann) => {
+      const annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
+      await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
+      if (isKakao) fixedLayer.removeBubble(annKey);
+      else {
+        const img = images[ann.imageIndex ?? 0];
+        if (img) renderer.removeBubble(img, annKey);
+        else document.querySelector(`[data-ann-key="${annKey}"]`)?.remove();
+      }
+      allAnnotations  = allAnnotations.filter(a =>
+        `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` !== annKey
+      );
+      annotationCount = allAnnotations.length;
+      panel.update(allAnnotations);
+      updateProgressBar();
+    },
   });
   const bubbleEditor = new BubbleEditor({
     onBboxChange: async (bubble, img, newBbox) => {
@@ -1414,6 +1436,13 @@ function bootForPage() {
       if (!existing) return;
       const updated = { ...existing, imageIndex: imgIndex, bbox: newBbox };
       await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [updated] } });
+      // annKey is derived from bbox x/y — moving the bubble changes the key,
+      // so drop the record stored under the old key or it duplicates on reload
+      const newKey = `${updated.imageHash}::${updated.bbox.x.toFixed(1)}::${updated.bbox.y.toFixed(1)}`;
+      if (newKey !== annKey) {
+        await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
+        bubble.dataset.annKey = newKey;
+      }
       // Update dataset so dialog re-edit picks up new bbox
       bubble.dataset.bboxX = newBbox.x;
       bubble.dataset.bboxY = newBbox.y;
@@ -1658,7 +1687,14 @@ function bootForPage() {
     };
     await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
 
-    if (result.resizedBbox) {
+    // annKey is derived from imageHash + bbox x/y — if the edit changed either,
+    // the save above created a NEW record; remove the old one or it duplicates
+    const savedKey = `${annotation.imageHash}::${annotation.bbox.x.toFixed(1)}::${annotation.bbox.y.toFixed(1)}`;
+    if (savedKey !== annKeyToDelete) {
+      await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey: annKeyToDelete } });
+      if (isKakao) fixedLayer.removeBubble(annKeyToDelete);
+      else renderer.removeBubble(img, annKeyToDelete);
+    } else if (result.resizedBbox) {
       if (isKakao) fixedLayer.removeBubble(annKeyToDelete);
       else renderer.removeBubble(img, annKeyToDelete);
     }
