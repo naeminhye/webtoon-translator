@@ -94,6 +94,11 @@ class FixedOverlayLayer {
     this._bubbles.delete(annKey);
   }
 
+  /** Image a bubble was rendered for — fixed bubbles live in body, not in a wrapper */
+  getBubbleImage(annKey) {
+    return this._bubbles.get(annKey)?.img || null;
+  }
+
   clearAll() {
     this._bubbles.forEach(({ el }) => el.remove());
     this._bubbles.clear();
@@ -1102,13 +1107,24 @@ class SidePanel {
           <div class="wt-sp-row-text">${ann.translatedText}</div>
           ${ann.originalText ? `<div class="wt-sp-row-orig">${ann.originalText}</div>` : ''}`;
         row.addEventListener('click', () => {
-          const img = this._images[imgIdx];
-          if (!img) return;
-          // Scroll to the bubble itself if it exists, else scroll to img
+          const img    = this._images[imgIdx];
           const annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
           const bubble = document.querySelector(`[data-ann-key="${annKey}"]`);
-          const target = bubble || img;
-          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          if (bubble && !bubble.classList.contains('wt-fixed-bubble')) {
+            // In-wrapper bubble (Naver) scrolls its real ancestors correctly
+            bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          } else if (img) {
+            // Fixed bubbles (Kakao) live in body — scrolling to them is a no-op
+            // when the viewer scrolls an inner container. Scroll to the bbox
+            // point on the image through its actual scroll container instead.
+            const r = img.getBoundingClientRect();
+            const targetY = r.top + ((ann.bbox.y + ann.bbox.h / 2) / 100) * r.height;
+            scrollAncestorBy(img, targetY - window.innerHeight / 2);
+          } else if (bubble) {
+            bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          } else {
+            return;
+          }
           this._onJump?.(ann, img);
         });
         section.appendChild(row);
@@ -1119,6 +1135,20 @@ class SidePanel {
 }
 
 const PANEL_W = 280;
+
+/** Scroll el's nearest scrollable ancestor (or the window) by delta px */
+function scrollAncestorBy(el, delta) {
+  let p = el.parentElement;
+  while (p && p !== document.body) {
+    const s = getComputedStyle(p);
+    if (/(auto|scroll|overlay)/.test(s.overflowY) && p.scrollHeight > p.clientHeight + 4) {
+      p.scrollBy({ top: delta, behavior: 'smooth' });
+      return;
+    }
+    p = p.parentElement;
+  }
+  window.scrollBy({ top: delta, behavior: 'smooth' });
+}
 
 // ── StorageBar ────────────────────────────────────────────────────────────────
 
@@ -1552,9 +1582,11 @@ function bootForPage() {
     e.stopPropagation();
 
     const wrapper = bubble.closest('.wt-img-wrapper');
-    const img     = wrapper?.querySelector('img');
-    if (img) bubbleEditor.attach(bubble, img);
+    let img = wrapper?.querySelector('img');
+    // Kakao fixed bubbles live in body — resolve their image via the layer's map
+    if (!img && isKakao) img = fixedLayer.getBubbleImage(bubble.dataset.annKey);
     if (!img) return;
+    if (!isKakao) bubbleEditor.attach(bubble, img); // drag/resize editor is Naver-only
     const imgIndex = images.indexOf(img);
 
     // Always read bbox from dataset — stays current after drag/resize
