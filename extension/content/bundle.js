@@ -156,7 +156,10 @@ class FixedOverlayLayer {
       const cx = (Math.min(startX, endX) + pw / 2);
       const cy = (Math.min(startY, endY) + ph / 2);
       const imgs = this._liveImages();
-      const img = this._imageAtViewportPoint(cx, cy, imgs);
+      let img = this._imageAtViewportPoint(cx, cy, imgs);
+      // Last resort: scan every <img> on the page, bypassing adapter filters —
+      // covers viewers whose DOM/src scheme the adapter doesn't recognize.
+      if (!img) img = this._anyImageAtPoint(cx, cy);
       if (!img) {
         showToast('✗ No panel image found under selection. Scroll so the panel is fully loaded, then try again.', '#ef4444');
         return;
@@ -174,14 +177,31 @@ class FixedOverlayLayer {
       bbox.w = Math.min(100 - bbox.x, bbox.w);
       bbox.h = Math.min(100 - bbox.y, bbox.h);
 
-      const imageIndex = imgs.indexOf(img);
+      let imageIndex = imgs.indexOf(img);
+      if (imageIndex === -1) {
+        // Found via fallback scan — register it so index/progress stay consistent
+        imgs.push(img);
+        imageIndex = imgs.length - 1;
+      }
       this._onSelect({ bbox, imageEl: img, imageIndex });
     });
   }
 
   _liveImages() {
-    const live = this._getImages?.();
-    return (live && live.length) ? live : this._images;
+    // Prefer the live list (source of truth in bootForPage) — fall back to the
+    // enable()-time snapshot only when no getter was provided.
+    return this._getImages ? this._getImages() : this._images;
+  }
+
+  /** Filter-free fallback: any reasonably sized <img> whose rect contains the point */
+  _anyImageAtPoint(vx, vy) {
+    for (const img of document.images) {
+      if (!img.src || img.src.startsWith('data:')) continue;
+      const r = img.getBoundingClientRect();
+      if (r.width < 150 || r.height < 100) continue;
+      if (vx >= r.left && vx <= r.right && vy >= r.top && vy <= r.bottom) return img;
+    }
+    return null;
   }
 
   _imageAtViewportPoint(vx, vy, imgs = this._images) {
@@ -1191,9 +1211,12 @@ class KakaoAdapter {
 
     const isPanelImage = (img) => {
       const src = img.src || '';
-      if (!src || src.startsWith('data:') || src.startsWith('blob:')) return false;
-      if (!src.includes('page-edge.kakao.com') && !src.includes('kakaocdn.net')) return false;
-      if (src.includes('thumbnail') || src.includes('cover') || src.includes('profile')) return false;
+      if (!src || src.startsWith('data:')) return false;
+      // Viewer may serve panels as DRM-decrypted blob: URLs instead of CDN links
+      const isBlob = src.startsWith('blob:');
+      const isCdn  = src.includes('page-edge.kakao.com') || src.includes('kakaocdn.net');
+      if (!isBlob && !isCdn) return false;
+      if (isCdn && (src.includes('thumbnail') || src.includes('cover') || src.includes('profile'))) return false;
       // Kakao uses padding-top aspect ratio — offsetHeight may be 0.
       // Use naturalWidth as the reliable size check.
       return img.naturalWidth >= 200;
@@ -1620,7 +1643,8 @@ function bootForPage() {
 
   // Reposition fixed bubbles on scroll (Kakao uses position:absolute relative to page)
   if (isKakao) {
-    window.addEventListener('scroll', () => fixedLayer?.repositionAll(), { passive: true });
+    // capture:true also catches scrolls from inner scroll containers (scroll doesn't bubble)
+    document.addEventListener('scroll', () => fixedLayer?.repositionAll(), { passive: true, capture: true });
     window.addEventListener('resize', () => fixedLayer?.repositionAll(), { passive: true });
   }
 
