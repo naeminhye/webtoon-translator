@@ -12,6 +12,7 @@ const MSG    = {
   EXPORT_CHAPTER:    'EXPORT_CHAPTER',
   IMPORT_FILE:       'IMPORT_FILE',
   CLEAR_CHAPTER:     'CLEAR_CHAPTER',
+  OCR_REGION:        'OCR_REGION',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
 };
 
@@ -623,6 +624,30 @@ class InputDialog {
   hide() {
     this._el.style.display = 'none';
     document.removeEventListener('keydown', this._escHandler);
+  }
+
+  // ── OCR prefill ──────────────────────────────────────────────────────────
+  // Background OCR fills the "Original text" field while the dialog is open.
+  // Never overwrites anything the user already typed.
+
+  setOcrPending() {
+    // Session token guards against a slow OCR result landing in a dialog
+    // that was since reopened for a different bbox
+    this._ocrSession = (this._ocrSession || 0) + 1;
+    this._el.querySelector('.wt-input-original').placeholder = 'Scanning text (OCR)…';
+    return this._ocrSession;
+  }
+
+  setOcrText(text, session) {
+    if (session !== this._ocrSession) return;
+    const inp = this._el.querySelector('.wt-input-original');
+    inp.placeholder = 'Source text...';
+    if (this._el.style.display !== 'none' && !inp.value && text) inp.value = text;
+  }
+
+  setOcrError(session) {
+    if (session !== this._ocrSession) return;
+    this._el.querySelector('.wt-input-original').placeholder = 'Source text... (OCR unavailable)';
   }
 
   _build() {
@@ -1383,6 +1408,39 @@ function sendToBackground(message, retries = 3) {
   });
 }
 
+// ── OCR ───────────────────────────────────────────────────────────────────────
+// Crops the bbox region from the panel image and sends it to the background,
+// which forwards it to the Tesseract.js offscreen document.
+// Naver: bytes are fetchable with credentials (same approach as hashImage).
+// Kakao: panels are same-origin blob: URLs — also fetchable, canvas untainted.
+
+async function ocrRegion(img, bbox) {
+  const blob   = await (await fetch(img.src, { credentials: 'include' })).blob();
+  const bitmap = await createImageBitmap(blob);
+  const sx = (bbox.x / 100) * bitmap.width;
+  const sy = (bbox.y / 100) * bitmap.height;
+  const sw = Math.max(1, (bbox.w / 100) * bitmap.width);
+  const sh = Math.max(1, (bbox.h / 100) * bitmap.height);
+
+  // Upscale small crops — Tesseract reads larger glyphs much better
+  const scale  = sw < 400 ? Math.min(3, 400 / sw) : 1;
+  const canvas = document.createElement('canvas');
+  canvas.width  = Math.round(sw * scale);
+  canvas.height = Math.round(sh * scale);
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+
+  const res = await sendToBackground({
+    type: MSG.OCR_REGION,
+    payload: { dataUrl: canvas.toDataURL('image/png') },
+  });
+  if (!res?.ok) throw new Error(res?.error || 'OCR failed');
+  return res.text;
+}
+
 // ── Translation visibility toggle ────────────────────────────────────────────
 let _translationsVisible = true;
 
@@ -1632,7 +1690,13 @@ function bootForPage() {
       x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
       y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
     };
-    const result = await dialog.show(screenPos);
+    // Open the dialog immediately; OCR fills "Original text" in the background
+    const resultPromise = dialog.show(screenPos);
+    const ocrSession    = dialog.setOcrPending();
+    ocrRegion(imageEl, bbox)
+      .then(text => dialog.setOcrText(text, ocrSession))
+      .catch(() => dialog.setOcrError(ocrSession));
+    const result = await resultPromise;
     if (!result) return;
 
     const imageHash  = await hashImage(imageEl);

@@ -4,14 +4,19 @@
   "version": "0.1.0",
   "description": "Community-driven webtoon translation overlay",
 
-  "permissions": ["storage", "scripting", "activeTab"],
+  "permissions": ["storage", "scripting", "activeTab", "offscreen"],
 
   "host_permissions": [
     "https://comic.naver.com/*",
     "https://m.comic.naver.com/*",
     "https://www.ridi.com/*",
-    "https://page.kakao.com/*"
+    "https://page.kakao.com/*",
+    "https://tessdata.projectnaptha.com/*"
   ],
+
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
 
   "background": {
     "service_worker": "background/worker.js",

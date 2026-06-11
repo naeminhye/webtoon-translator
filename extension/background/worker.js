@@ -12,6 +12,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'EXPORT_CHAPTER':      handleExport(message.payload).then(sendResponse); return true;
     case 'IMPORT_FILE':         handleImport(message.payload).then(sendResponse); return true;
     case 'CLEAR_CHAPTER':       handleClear(message.payload).then(sendResponse);  return true;
+    case 'OCR_REGION':
+      handleOcr(message.payload)
+        .then(sendResponse)
+        .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
+      return true;
   }
 });
 
@@ -101,6 +106,34 @@ async function handleImport({ jsonString }) {
     count += annotations.length;
   }
   return { ok: true, imported: count };
+}
+
+// ── OCR (offscreen document) ──────────────────────────────────────────────────
+// Tesseract.js needs DOM/WASM workers, which a service worker can't host.
+// We lazily create one offscreen document and forward crops to it.
+
+let offscreenReady = null;
+
+function ensureOffscreen() {
+  if (!offscreenReady) {
+    offscreenReady = (async () => {
+      if (await chrome.offscreen.hasDocument()) return;
+      await chrome.offscreen.createDocument({
+        url: 'offscreen/ocr.html',
+        reasons: ['WORKERS'],
+        justification: 'Run Tesseract.js OCR (WASM web workers) on user-selected panel regions',
+      });
+    })().catch(err => { offscreenReady = null; throw err; });
+  }
+  return offscreenReady;
+}
+
+async function handleOcr(payload) {
+  await ensureOffscreen();
+  // runtime.sendMessage reaches extension pages (incl. offscreen), not content scripts
+  const res = await chrome.runtime.sendMessage({ type: 'OCR_RUN', payload });
+  if (!res) throw new Error('OCR worker did not respond');
+  return res;
 }
 
 // ── extension on/off badge ────────────────────────────────────────────────────
