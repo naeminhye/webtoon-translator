@@ -1,7 +1,7 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  width: 280px;
+  width: 300px;
   font-family: system-ui, -apple-system, sans-serif;
   font-size: 13px;
   color: #1e293b;
@@ -12,7 +12,7 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
+  padding: 13px 16px;
   background: linear-gradient(135deg, #6366f1, #8b5cf6);
   color: #fff;
 }
@@ -44,7 +44,7 @@ header {
 /* ── Chapter info ──────────────────────────────────────────────────────── */
 
 #chapter-info {
-  padding: 12px 14px 10px;
+  padding: 14px 16px 12px;
   border-bottom: 1px solid #f1f5f9;
 }
 
@@ -93,11 +93,11 @@ header {
 /* ── Mode toggle ───────────────────────────────────────────────────────── */
 
 .mode-toggle {
-  display: flex; gap: 4px; margin: 12px 14px 6px;
+  display: flex; gap: 4px; margin: 12px 16px 6px;
   background: #f1f5f9; border-radius: 10px; padding: 3px;
 }
 .mode-btn {
-  flex: 1; padding: 7px 0; border: none; border-radius: 8px;
+  flex: 1; padding: 8px 0; border: none; border-radius: 8px;
   display: flex; align-items: center; justify-content: center; gap: 5px;
   background: transparent; font-size: 12px; font-weight: 500;
   color: #64748b; cursor: pointer;
@@ -105,14 +105,14 @@ header {
 }
 .mode-btn.active {
   background: #fff; color: #6366f1;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
 }
 
 /* ── Actions ───────────────────────────────────────────────────────────── */
 
 .actions {
   display: flex; flex-direction: column;
-  gap: 6px; padding: 6px 14px 12px;
+  gap: 6px; padding: 6px 16px 14px;
 }
 .action-row { display: flex; gap: 6px; }
 .action-row .action-btn { flex: 1; justify-content: center; }
@@ -128,7 +128,7 @@ header {
 /* ── OCR Settings ──────────────────────────────────────────────────────── */
 
 #ocr-settings {
-  padding: 10px 14px 12px;
+  padding: 12px 16px 14px;
   border-top: 1px solid #f1f5f9;
 }
 

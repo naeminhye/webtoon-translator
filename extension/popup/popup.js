@@ -43,12 +43,10 @@ function setActiveMode(mode) {
   const annotate = mode === 'annotate';
   $('btn-read').classList.toggle('active', !annotate);
   $('btn-annotate').classList.toggle('active', annotate);
-  // Translation list / Export are translator tools — hidden in Read mode.
-  // Import + Clear stay available so readers can load/remove their own
-  // local translation files.
   $('action-buttons').classList.remove('hidden');
   $('btn-panel').classList.toggle('hidden', !annotate);
   $('btn-export').classList.toggle('hidden', !annotate);
+  $('ocr-settings').classList.toggle('hidden', !annotate);
 }
 
 async function init() {
