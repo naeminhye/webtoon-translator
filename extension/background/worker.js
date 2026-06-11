@@ -23,7 +23,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.tabs.query({
         url: [
           'https://comic.naver.com/*', 'https://m.comic.naver.com/*',
-          'https://page.kakao.com/*', 'https://www.ridi.com/*',
+          'https://page.kakao.com/*', 'https://ridibooks.com/*',
         ],
       }, (tabs) => {
         for (const tab of tabs) {
