@@ -54,8 +54,9 @@ async function hashImage(img) {
 // All drag coords are converted back to % of the target image.
 
 class FixedOverlayLayer {
-  constructor({ onSelect }) {
+  constructor({ onSelect, getImages }) {
     this._onSelect  = onSelect;
+    this._getImages = getImages || null; // live image list — survives lazy-load/remount
     this._el        = null;
     this._images    = [];
     this._active    = false;
@@ -91,6 +92,11 @@ class FixedOverlayLayer {
   removeBubble(annKey) {
     this._bubbles.get(annKey)?.el.remove();
     this._bubbles.delete(annKey);
+  }
+
+  /** Image a bubble was rendered for — fixed bubbles live in body, not in a wrapper */
+  getBubbleImage(annKey) {
+    return this._bubbles.get(annKey)?.img || null;
   }
 
   clearAll() {
@@ -149,11 +155,20 @@ class FixedOverlayLayer {
       const pw = Math.abs(endX - startX), ph = Math.abs(endY - startY);
       if (pw < 10 || ph < 10) return;
 
-      // Find which image this drag is over (center of selection)
+      // Find which image this drag is over (center of selection).
+      // Hit-test against the live image list — this._images can be a stale
+      // snapshot on Kakao (lazy-loaded / React-remounted panels).
       const cx = (Math.min(startX, endX) + pw / 2);
       const cy = (Math.min(startY, endY) + ph / 2);
-      const img = this._imageAtViewportPoint(cx, cy);
-      if (!img) return;
+      const imgs = this._liveImages();
+      let img = this._imageAtViewportPoint(cx, cy, imgs);
+      // Last resort: scan every <img> on the page, bypassing adapter filters —
+      // covers viewers whose DOM/src scheme the adapter doesn't recognize.
+      if (!img) img = this._anyImageAtPoint(cx, cy);
+      if (!img) {
+        showToast('✗ No panel image found under selection. Scroll so the panel is fully loaded, then try again.', '#ef4444');
+        return;
+      }
 
       const rect = img.getBoundingClientRect();
       const bbox = {
@@ -167,13 +182,35 @@ class FixedOverlayLayer {
       bbox.w = Math.min(100 - bbox.x, bbox.w);
       bbox.h = Math.min(100 - bbox.y, bbox.h);
 
-      const imageIndex = this._images.indexOf(img);
+      let imageIndex = imgs.indexOf(img);
+      if (imageIndex === -1) {
+        // Found via fallback scan — register it so index/progress stay consistent
+        imgs.push(img);
+        imageIndex = imgs.length - 1;
+      }
       this._onSelect({ bbox, imageEl: img, imageIndex });
     });
   }
 
-  _imageAtViewportPoint(vx, vy) {
-    for (const img of this._images) {
+  _liveImages() {
+    // Prefer the live list (source of truth in bootForPage) — fall back to the
+    // enable()-time snapshot only when no getter was provided.
+    return this._getImages ? this._getImages() : this._images;
+  }
+
+  /** Filter-free fallback: any reasonably sized <img> whose rect contains the point */
+  _anyImageAtPoint(vx, vy) {
+    for (const img of document.images) {
+      if (!img.src || img.src.startsWith('data:')) continue;
+      const r = img.getBoundingClientRect();
+      if (r.width < 150 || r.height < 100) continue;
+      if (vx >= r.left && vx <= r.right && vy >= r.top && vy <= r.bottom) return img;
+    }
+    return null;
+  }
+
+  _imageAtViewportPoint(vx, vy, imgs = this._images) {
+    for (const img of imgs) {
       const r = img.getBoundingClientRect();
       if (vx >= r.left && vx <= r.right && vy >= r.top && vy <= r.bottom) return img;
     }
@@ -528,6 +565,8 @@ class InputDialog {
   }
 
   show(screenPos, prefill = {}) {
+    // SPA sites (Kakao/Next.js) can wipe body children on re-render — re-attach
+    if (!this._el.isConnected) document.body.appendChild(this._el);
     this._isEdit = !!prefill.translatedText;
     // Update title and show/hide delete button
     this._el.querySelector('.wt-dialog-title').textContent =
@@ -962,10 +1001,11 @@ class BubbleEditor {
 // Contains: annotation list, import/export, live updates on add/delete.
 
 class SidePanel {
-  constructor({ onJump, onImport, onExport }) {
+  constructor({ onJump, onImport, onExport, onDelete }) {
     this._onJump   = onJump;
     this._onImport = onImport;
     this._onExport = onExport;
+    this._onDelete = onDelete;
     this._visible  = false;
     this._images   = [];
     this._el       = null;
@@ -979,6 +1019,7 @@ class SidePanel {
     this._el.style.opacity   = '1';
     this._visible = true;
     document.body.style.marginRight = `${PANEL_W}px`;
+    document.body.classList.add('wt-panel-open');
   }
 
   hide() {
@@ -986,6 +1027,7 @@ class SidePanel {
     this._el.style.opacity   = '0';
     this._visible = false;
     document.body.style.marginRight = '';
+    document.body.classList.remove('wt-panel-open');
   }
 
   toggle() {
@@ -1063,16 +1105,32 @@ class SidePanel {
         row.className = 'wt-sp-row';
         row.dataset.annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
         row.innerHTML = `
+          <button class="wt-sp-row-del" title="Delete translation">&#x2715;</button>
           <div class="wt-sp-row-text">${ann.translatedText}</div>
           ${ann.originalText ? `<div class="wt-sp-row-orig">${ann.originalText}</div>` : ''}`;
+        row.querySelector('.wt-sp-row-del').addEventListener('click', (e) => {
+          e.stopPropagation();
+          this._onDelete?.(ann);
+        });
         row.addEventListener('click', () => {
-          const img = this._images[imgIdx];
-          if (!img) return;
-          // Scroll to the bubble itself if it exists, else scroll to img
+          const img    = this._images[imgIdx];
           const annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
           const bubble = document.querySelector(`[data-ann-key="${annKey}"]`);
-          const target = bubble || img;
-          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          if (bubble && !bubble.classList.contains('wt-fixed-bubble')) {
+            // In-wrapper bubble (Naver) scrolls its real ancestors correctly
+            bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          } else if (img) {
+            // Fixed bubbles (Kakao) live in body — scrolling to them is a no-op
+            // when the viewer scrolls an inner container. Scroll to the bbox
+            // point on the image through its actual scroll container instead.
+            const r = img.getBoundingClientRect();
+            const targetY = r.top + ((ann.bbox.y + ann.bbox.h / 2) / 100) * r.height;
+            scrollAncestorBy(img, targetY - window.innerHeight / 2);
+          } else if (bubble) {
+            bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          } else {
+            return;
+          }
           this._onJump?.(ann, img);
         });
         section.appendChild(row);
@@ -1083,6 +1141,20 @@ class SidePanel {
 }
 
 const PANEL_W = 280;
+
+/** Scroll el's nearest scrollable ancestor (or the window) by delta px */
+function scrollAncestorBy(el, delta) {
+  let p = el.parentElement;
+  while (p && p !== document.body) {
+    const s = getComputedStyle(p);
+    if (/(auto|scroll|overlay)/.test(s.overflowY) && p.scrollHeight > p.clientHeight + 4) {
+      p.scrollBy({ top: delta, behavior: 'smooth' });
+      return;
+    }
+    p = p.parentElement;
+  }
+  window.scrollBy({ top: delta, behavior: 'smooth' });
+}
 
 // ── StorageBar ────────────────────────────────────────────────────────────────
 
@@ -1175,9 +1247,12 @@ class KakaoAdapter {
 
     const isPanelImage = (img) => {
       const src = img.src || '';
-      if (!src || src.startsWith('data:') || src.startsWith('blob:')) return false;
-      if (!src.includes('page-edge.kakao.com') && !src.includes('kakaocdn.net')) return false;
-      if (src.includes('thumbnail') || src.includes('cover') || src.includes('profile')) return false;
+      if (!src || src.startsWith('data:')) return false;
+      // Viewer may serve panels as DRM-decrypted blob: URLs instead of CDN links
+      const isBlob = src.startsWith('blob:');
+      const isCdn  = src.includes('page-edge.kakao.com') || src.includes('kakaocdn.net');
+      if (!isBlob && !isCdn) return false;
+      if (isCdn && (src.includes('thumbnail') || src.includes('cover') || src.includes('profile'))) return false;
       // Kakao uses padding-top aspect ratio — offsetHeight may be 0.
       // Use naturalWidth as the reliable size check.
       return img.naturalWidth >= 200;
@@ -1260,21 +1335,15 @@ function sendToBackground(message, retries = 3) {
 // ── Translation visibility toggle ────────────────────────────────────────────
 let _translationsVisible = true;
 
+const EYE_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_OFF_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-7 0-11-7-11-7a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
 function buildToggleButton() {
   const btn = document.createElement('button');
   btn.id = 'wt-toggle-btn';
-  btn.title = 'Toggle translations (T)';
-  btn.innerHTML = '👁 <span>Hide translations</span>';
-  btn.style.cssText = [
-    'position:fixed', 'bottom:24px', 'left:50%', 'transform:translateX(-50%)',
-    'z-index:99997', 'background:rgba(15,23,42,0.85)', 'color:#fff',
-    'border:none', 'border-radius:20px', 'padding:8px 18px',
-    'font-family:system-ui', 'font-size:13px', 'font-weight:500',
-    'cursor:pointer', 'display:flex', 'align-items:center', 'gap:6px',
-    'backdrop-filter:blur(4px)', 'box-shadow:0 2px 12px rgba(0,0,0,0.25)',
-    'transition:opacity 0.2s',
-  ].join(';');
-
+  btn.title = 'Hide translations (T)';
+  btn.setAttribute('aria-label', 'Toggle translations');
+  btn.innerHTML = EYE_ICON;
   btn.addEventListener('click', () => toggleTranslations());
   document.body.appendChild(btn);
   return btn;
@@ -1287,15 +1356,16 @@ function toggleTranslations(force) {
   // fixedLayer bubbles are also .wt-translation-bubble so covered above
   const btn = document.getElementById('wt-toggle-btn');
   if (btn) {
-    btn.querySelector('span').textContent = _translationsVisible ? 'Hide translations' : 'Show translations';
-    btn.style.background = _translationsVisible ? 'rgba(15,23,42,0.85)' : 'rgba(99,102,241,0.9)';
+    btn.innerHTML = _translationsVisible ? EYE_ICON : EYE_OFF_ICON;
+    btn.title = _translationsVisible ? 'Hide translations (T)' : 'Show translations (T)';
+    btn.classList.toggle('wt-toggle-off', !_translationsVisible);
   }
 }
 
 function showToast(text, color = '#22c55e') {
   const t = document.createElement('div');
   t.textContent = text;
-  t.style.cssText = `position:fixed;bottom:24px;right:24px;z-index:99999;background:${color};color:#fff;padding:10px 18px;border-radius:8px;font-family:system-ui;font-size:14px;font-weight:500;pointer-events:none;`;
+  t.style.cssText = `position:fixed;bottom:84px;right:24px;z-index:99999;background:${color};color:#fff;padding:10px 18px;border-radius:8px;font-family:system-ui;font-size:14px;font-weight:500;pointer-events:none;`;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 3000);
 }
@@ -1307,10 +1377,12 @@ const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter()];
 function findAdapter() { return ADAPTERS.find(a => a.detect()); }
 
 let bootCleanup = null;
+let _wtEnabled  = true;
 
 function bootForPage() {
   bootCleanup?.();
   bootCleanup = null;
+  if (!_wtEnabled) return;
 
   const adapter = findAdapter();
   if (!adapter) { console.log('[WebtoonTranslate] No adapter:', location.href); return; }
@@ -1320,7 +1392,9 @@ function bootForPage() {
 
   const renderer    = new OverlayRenderer();
   const isKakao     = adapter.usesFixedOverlay === true;
-  const fixedLayer  = isKakao ? new FixedOverlayLayer({ onSelect: handleBBoxSelect }) : null;
+  const fixedLayer  = isKakao
+    ? new FixedOverlayLayer({ onSelect: handleBBoxSelect, getImages: () => images })
+    : null;
 
   const panel    = new SidePanel({
     onJump: (ann, img) => {
@@ -1334,6 +1408,22 @@ function bootForPage() {
     },
     onImport: () => triggerImport(),
     onExport: () => triggerExport(meta),
+    onDelete: async (ann) => {
+      const annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
+      await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
+      if (isKakao) fixedLayer.removeBubble(annKey);
+      else {
+        const img = images[ann.imageIndex ?? 0];
+        if (img) renderer.removeBubble(img, annKey);
+        else document.querySelector(`[data-ann-key="${annKey}"]`)?.remove();
+      }
+      allAnnotations  = allAnnotations.filter(a =>
+        `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` !== annKey
+      );
+      annotationCount = allAnnotations.length;
+      panel.update(allAnnotations);
+      updateProgressBar();
+    },
   });
   const bubbleEditor = new BubbleEditor({
     onBboxChange: async (bubble, img, newBbox) => {
@@ -1346,6 +1436,13 @@ function bootForPage() {
       if (!existing) return;
       const updated = { ...existing, imageIndex: imgIndex, bbox: newBbox };
       await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [updated] } });
+      // annKey is derived from bbox x/y — moving the bubble changes the key,
+      // so drop the record stored under the old key or it duplicates on reload
+      const newKey = `${updated.imageHash}::${updated.bbox.x.toFixed(1)}::${updated.bbox.y.toFixed(1)}`;
+      if (newKey !== annKey) {
+        await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
+        bubble.dataset.annKey = newKey;
+      }
       // Update dataset so dialog re-edit picks up new bbox
       bubble.dataset.bboxX = newBbox.x;
       bubble.dataset.bboxY = newBbox.y;
@@ -1365,6 +1462,7 @@ function bootForPage() {
   let currentMode     = MODES.READ;
   let images          = [];
   let annotationCount = 0;
+  let disposed        = false; // set on cleanup — stops in-flight async render chains
 
   // Build floating toggle button (Read mode only)
   const toggleBtn = buildToggleButton();
@@ -1382,7 +1480,9 @@ function bootForPage() {
   // ── load & render ──────────────────────────────────────────────────────
 
   async function loadAndRender() {
+    if (disposed) return;
     const { annotations } = await sendToBackground({ type: MSG.LOAD_TRANSLATIONS, payload: meta });
+    if (disposed) return;
     const raw = annotations || [];
 
     // Dedupe by annKey (imageHash::bboxX::bboxY) — keep most recent
@@ -1440,6 +1540,7 @@ function bootForPage() {
 
   let attempts = 0;
   const tryGetImages = () => {
+    if (disposed) return;
     images = adapter.getImages();
     if (images.length === 0 && attempts++ < 20) {
       // For Kakao: images are lazy-loaded. After a few failed attempts,
@@ -1510,9 +1611,11 @@ function bootForPage() {
     e.stopPropagation();
 
     const wrapper = bubble.closest('.wt-img-wrapper');
-    const img     = wrapper?.querySelector('img');
-    if (img) bubbleEditor.attach(bubble, img);
+    let img = wrapper?.querySelector('img');
+    // Kakao fixed bubbles live in body — resolve their image via the layer's map
+    if (!img && isKakao) img = fixedLayer.getBubbleImage(bubble.dataset.annKey);
     if (!img) return;
+    if (!isKakao) bubbleEditor.attach(bubble, img); // drag/resize editor is Naver-only
     const imgIndex = images.indexOf(img);
 
     // Always read bbox from dataset — stays current after drag/resize
@@ -1584,7 +1687,14 @@ function bootForPage() {
     };
     await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
 
-    if (result.resizedBbox) {
+    // annKey is derived from imageHash + bbox x/y — if the edit changed either,
+    // the save above created a NEW record; remove the old one or it duplicates
+    const savedKey = `${annotation.imageHash}::${annotation.bbox.x.toFixed(1)}::${annotation.bbox.y.toFixed(1)}`;
+    if (savedKey !== annKeyToDelete) {
+      await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey: annKeyToDelete } });
+      if (isKakao) fixedLayer.removeBubble(annKeyToDelete);
+      else renderer.removeBubble(img, annKeyToDelete);
+    } else if (result.resizedBbox) {
       if (isKakao) fixedLayer.removeBubble(annKeyToDelete);
       else renderer.removeBubble(img, annKeyToDelete);
     }
@@ -1601,7 +1711,8 @@ function bootForPage() {
 
   // Reposition fixed bubbles on scroll (Kakao uses position:absolute relative to page)
   if (isKakao) {
-    window.addEventListener('scroll', () => fixedLayer?.repositionAll(), { passive: true });
+    // capture:true also catches scrolls from inner scroll containers (scroll doesn't bubble)
+    document.addEventListener('scroll', () => fixedLayer?.repositionAll(), { passive: true, capture: true });
     window.addEventListener('resize', () => fixedLayer?.repositionAll(), { passive: true });
   }
 
@@ -1638,7 +1749,7 @@ function bootForPage() {
 
   // ── message listener ───────────────────────────────────────────────────
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  const onRuntimeMessage = (message, _sender, sendResponse) => {
     if (message.type === 'GET_META') {
       // Get human-readable title from meta tags
       const ogTitle = document.querySelector('meta[property="og:title"]')?.content
@@ -1672,7 +1783,8 @@ function bootForPage() {
     }
     if (message.type === 'TRIGGER_EXPORT') triggerExport(meta);
     if (message.type === 'TRIGGER_IMPORT') triggerImport();
-  });
+  };
+  chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
   // ── export / import ────────────────────────────────────────────────────
 
@@ -1713,19 +1825,46 @@ function bootForPage() {
   }
 
   bootCleanup = () => {
+    disposed = true;
     stopWatching();
     urlObserver.disconnect();
+    chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     if (isKakao) { fixedLayer.disable(); fixedLayer.clearAll(); }
     else selector.disable();
+    renderer.clearAll();
     bubbleEditor.detach();
     toggleBtn.remove();
     panel.hide();
+    document.getElementById('wt-progress-bar')?.remove();
+    document.body.classList.remove('wt-annotate-mode');
     document.body.style.marginRight = '';
     document.removeEventListener('keydown', keyHandler);
     _translationsVisible = true;
   };
 }
 
-bootForPage();
+// ── Global on/off switch ──────────────────────────────────────────────────────
+// `wt:enabled` is a global flag in chrome.storage.local. When off, the content
+// script tears down all injected UI and stays dormant until re-enabled.
+
+function teardown() {
+  bootCleanup?.();
+  bootCleanup = null;
+}
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type !== 'SET_ENABLED') return;
+  _wtEnabled = !!message.enabled;
+  if (_wtEnabled) {
+    if (!bootCleanup) bootForPage();
+  } else {
+    teardown();
+  }
+});
+
+chrome.storage.local.get({ 'wt:enabled': true }, (result) => {
+  _wtEnabled = !!result['wt:enabled'];
+  if (_wtEnabled) bootForPage();
+});
 
 })();

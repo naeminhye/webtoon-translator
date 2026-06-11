@@ -1,10 +1,17 @@
 const $ = id => document.getElementById(id);
+const ENABLED_KEY = 'wt:enabled';
 
-async function init() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return;
+let activeTabId = null;
 
-  chrome.tabs.sendMessage(tab.id, { type: 'GET_META' }, (meta) => {
+function applyEnabledUI(enabled) {
+  $('enabled-toggle').checked = enabled;
+  $('main-ui').classList.toggle('hidden', !enabled);
+  $('disabled-notice').classList.toggle('hidden', enabled);
+}
+
+function refreshMeta() {
+  if (!activeTabId) return;
+  chrome.tabs.sendMessage(activeTabId, { type: 'GET_META' }, (meta) => {
     if (chrome.runtime.lastError || !meta) return;
 
     $('no-chapter').classList.add('hidden');
@@ -12,10 +19,9 @@ async function init() {
     $('mode-toggle').classList.remove('hidden');
     $('action-buttons').classList.remove('hidden');
 
-    // Show human-readable title, truncated if long
     const title = meta.title || meta.titleId;
-    $('title-id').textContent   = title.length > 28 ? title.slice(0, 26) + '…' : title;
-    $('title-id').title         = title; // full title on hover
+    $('title-id').textContent = title;
+    $('title-id').title       = title; // full title on hover
     $('chapter-id').textContent = meta.chapterId;
 
     const translated = meta.translatedPanels ?? 0;
@@ -28,28 +34,49 @@ async function init() {
     badge.textContent = meta.site;
     badge.className   = `badge badge-${meta.site}`;
 
-    if (meta.currentMode === 'annotate') {
-      $('btn-annotate').classList.add('active');
-      $('btn-read').classList.remove('active');
-    } else {
-      $('btn-read').classList.add('active');
-      $('btn-annotate').classList.remove('active');
+    setActiveMode(meta.currentMode === 'annotate' ? 'annotate' : 'read');
+  });
+}
+
+function setActiveMode(mode) {
+  $('btn-read').classList.toggle('active', mode === 'read');
+  $('btn-annotate').classList.toggle('active', mode === 'annotate');
+}
+
+async function init() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  activeTabId = tab?.id ?? null;
+
+  const stored  = await chrome.storage.local.get({ [ENABLED_KEY]: true });
+  const enabled = stored[ENABLED_KEY];
+  applyEnabledUI(enabled);
+  if (enabled) refreshMeta();
+
+  $('enabled-toggle').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    await chrome.storage.local.set({ [ENABLED_KEY]: on });
+    applyEnabledUI(on);
+    if (activeTabId) {
+      chrome.tabs.sendMessage(activeTabId, { type: 'SET_ENABLED', enabled: on }, () => {
+        // Content script may not be injected on this tab — ignore
+        void chrome.runtime.lastError;
+        // Content script needs a moment to boot before it can answer GET_META
+        if (on) setTimeout(refreshMeta, 400);
+      });
     }
   });
 
   $('btn-read').addEventListener('click', () => {
-    chrome.tabs.sendMessage(tab.id, { type: 'SET_MODE', mode: 'read' });
-    $('btn-read').classList.add('active');
-    $('btn-annotate').classList.remove('active');
+    chrome.tabs.sendMessage(activeTabId, { type: 'SET_MODE', mode: 'read' });
+    setActiveMode('read');
   });
   $('btn-annotate').addEventListener('click', () => {
-    chrome.tabs.sendMessage(tab.id, { type: 'SET_MODE', mode: 'annotate' });
-    $('btn-annotate').classList.add('active');
-    $('btn-read').classList.remove('active');
+    chrome.tabs.sendMessage(activeTabId, { type: 'SET_MODE', mode: 'annotate' });
+    setActiveMode('annotate');
   });
-  $('btn-panel').addEventListener('click',  () => { chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_PANEL' }); window.close(); });
-  $('btn-export').addEventListener('click', () => { chrome.tabs.sendMessage(tab.id, { type: 'TRIGGER_EXPORT' }); window.close(); });
-  $('btn-import').addEventListener('click', () => { chrome.tabs.sendMessage(tab.id, { type: 'TRIGGER_IMPORT' }); window.close(); });
+  $('btn-panel').addEventListener('click',  () => { chrome.tabs.sendMessage(activeTabId, { type: 'TOGGLE_PANEL' }); window.close(); });
+  $('btn-export').addEventListener('click', () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_EXPORT' }); window.close(); });
+  $('btn-import').addEventListener('click', () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_IMPORT' }); window.close(); });
 }
 
 init();

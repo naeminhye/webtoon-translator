@@ -83,7 +83,7 @@
 
 .wt-input-dialog {
   position: absolute;
-  z-index: 9999;
+  z-index: 99998; /* above site UI layers (Kakao uses high z-indexes) and our overlays */
   width: 280px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
@@ -478,10 +478,43 @@
   cursor: pointer;
 }
 
-/* ── Toggle button hover ─────────────────────────────────────────────── */
+/* ── Translation visibility toggle (corner icon button) ──────────────── */
+
+#wt-toggle-btn {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 99997;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.85);
+  color: #fff;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease, background 0.2s ease, opacity 0.2s ease;
+}
 
 #wt-toggle-btn:hover {
-  opacity: 0.9;
+  transform: scale(1.08);
+}
+
+#wt-toggle-btn:active {
+  transform: scale(0.96);
+}
+
+#wt-toggle-btn.wt-toggle-off {
+  background: rgba(99, 102, 241, 0.9);
+}
+
+/* Shift out of the way while the side panel (280px) is open */
+body.wt-panel-open #wt-toggle-btn {
+  right: 304px;
 }
 
 /* ── Side Panel ───────────────────────────────────────────────────────── */
@@ -601,6 +634,7 @@
 }
 
 .wt-sp-row {
+  position: relative;
   padding: 8px 16px;
   cursor: pointer;
   transition: background 0.1s;
@@ -608,6 +642,23 @@
 }
 .wt-sp-row:hover { background: #f8fafc; }
 .wt-sp-row:active { background: #f1f5f9; }
+
+.wt-sp-row-del {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: none;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.wt-sp-row:hover .wt-sp-row-del { display: block; }
+.wt-sp-row-del:hover { color: #ef4444; background: #fef2f2; }
 
 .wt-sp-row-text {
   font-size: 13px;

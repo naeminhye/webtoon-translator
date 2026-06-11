@@ -7,35 +7,64 @@
 </head>
 <body>
   <header>
-    <span class="logo">📖 Webtoon Translate</span>
-    <span id="site-badge" class="badge"></span>
+    <span class="logo"><span class="logo-icon">📖</span> Webtoon Translate</span>
+    <label class="switch" title="Enable / disable extension">
+      <input type="checkbox" id="enabled-toggle" checked />
+      <span class="slider"></span>
+    </label>
   </header>
 
-  <section id="chapter-info" class="hidden">
-    <p class="info-line"><span class="label">Title</span><span id="title-id">—</span></p>
-    <p class="info-line"><span class="label">Chapter</span><span id="chapter-id">—</span></p>
-    <p class="info-line">
-      <span class="label">Progress</span>
-      <span id="progress-text">—</span>
-    </p>
-    <div class="progress-bar-wrap">
-      <div id="progress-bar-fill" class="progress-bar-fill"></div>
+  <section id="disabled-notice" class="notice hidden">
+    Extension is turned off. Flip the switch to re-enable translation overlays.
+  </section>
+
+  <div id="main-ui">
+    <section id="chapter-info" class="hidden">
+      <div class="info-head">
+        <span id="title-id" class="chapter-title">—</span>
+        <span id="site-badge" class="badge"></span>
+      </div>
+      <p class="info-line"><span class="label">Chapter</span><span id="chapter-id">—</span></p>
+      <p class="info-line">
+        <span class="label">Progress</span>
+        <span id="progress-text">—</span>
+      </p>
+      <div class="progress-bar-wrap">
+        <div id="progress-bar-fill" class="progress-bar-fill"></div>
+      </div>
+    </section>
+
+    <section id="no-chapter" class="notice">
+      Open a supported webtoon chapter to get started.
+    </section>
+
+    <div class="mode-toggle hidden" id="mode-toggle">
+      <button id="btn-read" class="mode-btn active">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        Read
+      </button>
+      <button id="btn-annotate" class="mode-btn">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        Translate
+      </button>
     </div>
-  </section>
 
-  <section id="no-chapter" class="notice">
-    Open a supported webtoon chapter to get started.
-  </section>
-
-  <div class="mode-toggle hidden" id="mode-toggle">
-    <button id="btn-read" class="mode-btn active">Read</button>
-    <button id="btn-annotate" class="mode-btn">Translate</button>
-  </div>
-
-  <div class="actions hidden" id="action-buttons">
-    <button id="btn-panel"  class="action-btn">📋 Translation list</button>
-    <button id="btn-export" class="action-btn">Export JSON</button>
-    <button id="btn-import" class="action-btn">Import JSON</button>
+    <div class="actions hidden" id="action-buttons">
+      <button id="btn-panel" class="action-btn">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+        Translation list
+      </button>
+      <div class="action-row">
+        <button id="btn-export" class="action-btn">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export
+        </button>
+        <button id="btn-import" class="action-btn">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Import
+        </button>
+      </div>
+    </div>
   </div>
 
   <footer>v0.1.0 · Phase 1 (local only)</footer>
