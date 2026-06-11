@@ -123,6 +123,7 @@ header {
   cursor: pointer; transition: background 0.15s, border-color 0.15s;
 }
 .action-btn:hover { background: #eef2ff; border-color: #c7d2fe; color: #4338ca; }
+.action-btn-danger:hover { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
 
 footer { padding: 6px 14px 10px; font-size: 10px; color: #cbd5e1; text-align: center; }
 .hidden { display: none !important; }

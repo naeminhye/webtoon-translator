@@ -11,6 +11,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'DELETE_ANNOTATION':   handleDelete(message.payload).then(sendResponse); return true;
     case 'EXPORT_CHAPTER':      handleExport(message.payload).then(sendResponse); return true;
     case 'IMPORT_FILE':         handleImport(message.payload).then(sendResponse); return true;
+    case 'CLEAR_CHAPTER':       handleClear(message.payload).then(sendResponse);  return true;
   }
 });
 
@@ -78,6 +79,11 @@ async function handleExport({ site, titleId }) {
       exportedAt: new Date().toISOString(), chapters,
     },
   };
+}
+
+async function handleClear({ site, titleId, chapterId }) {
+  await chrome.storage.local.remove(storageKey(site, titleId, chapterId));
+  return { ok: true };
 }
 
 async function handleImport({ jsonString }) {

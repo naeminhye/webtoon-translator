@@ -11,6 +11,7 @@ const MSG    = {
   DELETE_ANNOTATION: 'DELETE_ANNOTATION',
   EXPORT_CHAPTER:    'EXPORT_CHAPTER',
   IMPORT_FILE:       'IMPORT_FILE',
+  CLEAR_CHAPTER:     'CLEAR_CHAPTER',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
 };
 
@@ -1001,11 +1002,13 @@ class BubbleEditor {
 // Contains: annotation list, import/export, live updates on add/delete.
 
 class SidePanel {
-  constructor({ onJump, onImport, onExport, onDelete }) {
-    this._onJump   = onJump;
-    this._onImport = onImport;
-    this._onExport = onExport;
-    this._onDelete = onDelete;
+  constructor({ onJump, onImport, onExport, onDelete, onImportCsv, onExportCsv }) {
+    this._onJump      = onJump;
+    this._onImport    = onImport;
+    this._onExport    = onExport;
+    this._onDelete    = onDelete;
+    this._onImportCsv = onImportCsv;
+    this._onExportCsv = onExportCsv;
     this._visible  = false;
     this._images   = [];
     this._el       = null;
@@ -1065,11 +1068,18 @@ class SidePanel {
         <button class="wt-sp-btn wt-sp-import">⬆ Import JSON</button>
         <button class="wt-sp-btn wt-sp-export">⬇ Export JSON</button>
       </div>
+      <div class="wt-sp-actions-label">Transcript — edit translations in Excel / Google Sheets</div>
+      <div class="wt-sp-actions">
+        <button class="wt-sp-btn wt-sp-import-csv">⬆ Import CSV</button>
+        <button class="wt-sp-btn wt-sp-export-csv">⬇ Export CSV</button>
+      </div>
       <div class="wt-sp-list"></div>`;
 
     this._el.querySelector('.wt-sp-close').addEventListener('click', () => this.hide());
     this._el.querySelector('.wt-sp-import').addEventListener('click', () => this._onImport?.());
     this._el.querySelector('.wt-sp-export').addEventListener('click', () => this._onExport?.());
+    this._el.querySelector('.wt-sp-import-csv').addEventListener('click', () => this._onImportCsv?.());
+    this._el.querySelector('.wt-sp-export-csv').addEventListener('click', () => this._onExportCsv?.());
 
     // Start hidden (off-screen right)
     this._el.style.transform = `translateX(${PANEL_W}px)`;
@@ -1141,6 +1151,47 @@ class SidePanel {
 }
 
 const PANEL_W = 280;
+
+// ── CSV transcript helpers ────────────────────────────────────────────────────
+
+function csvEscape(value) {
+  const v = String(value ?? '');
+  return /[",;\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+
+/** Minimal RFC-4180 parser. Handles quoted fields with embedded delimiters,
+ *  quotes and newlines. Delimiter auto-detected (Excel saves ';' in some locales). */
+function parseCsv(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // strip BOM
+  const nl = text.indexOf('\n');
+  const firstLine = nl === -1 ? text : text.slice(0, nl);
+  const delim = firstLine.split(';').length > firstLine.split(',').length ? ';' : ',';
+
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === delim) {
+      row.push(field); field = '';
+    } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      if (row.length > 1 || row[0] !== '') rows.push(row);
+      row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
 
 /** Scroll el's nearest scrollable ancestor (or the window) by delta px */
 function scrollAncestorBy(el, delta) {
@@ -1408,6 +1459,8 @@ function bootForPage() {
     },
     onImport: () => triggerImport(),
     onExport: () => triggerExport(meta),
+    onImportCsv: () => triggerImportCsv(),
+    onExportCsv: () => triggerExportCsv(),
     onDelete: async (ann) => {
       const annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
       await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
@@ -1774,15 +1827,19 @@ function bootForPage() {
         bubbleEditor.detach();
         document.body.classList.remove('wt-annotate-mode');
         toggleBtn.style.display = '';
+        panel.hide(); // translation list is a translator tool — not for Read mode
       }
     }
-    if (message.type === 'TOGGLE_PANEL') {
+    // Translation list + Export are translator tools — ignored in Read mode.
+    // Import/Clear work in any mode so readers can use their own local files.
+    if (message.type === 'TOGGLE_PANEL' && currentMode === MODES.ANNOTATE) {
       panel.setImages(images);
       panel.update(allAnnotations);
       panel.toggle();
     }
-    if (message.type === 'TRIGGER_EXPORT') triggerExport(meta);
+    if (message.type === 'TRIGGER_EXPORT' && currentMode === MODES.ANNOTATE) triggerExport(meta);
     if (message.type === 'TRIGGER_IMPORT') triggerImport();
+    if (message.type === 'TRIGGER_CLEAR')  triggerClear();
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
@@ -1803,6 +1860,106 @@ function bootForPage() {
       showToast('✓ Exported successfully.');
     } catch (err) {
       showToast(`✗ Export error: ${err.message}`, '#ef4444');
+    }
+  }
+
+  // ── CSV transcript export / import ─────────────────────────────────────
+  // Two-column workflow: export original/translated, mass-edit the
+  // "translated" column in Excel / Google Sheets, import back. Rows are
+  // matched by the stable "id" (annKey) — bbox/style are never touched.
+
+  function triggerExportCsv() {
+    if (!allAnnotations.length) {
+      showToast('✗ No translations to export yet.', '#ef4444');
+      return;
+    }
+    const sorted = [...allAnnotations].sort((a, b) =>
+      ((a.imageIndex ?? 0) - (b.imageIndex ?? 0)) || (a.bbox.y - b.bbox.y)
+    );
+    const rows = [['id', 'panel', 'original', 'translated']];
+    for (const ann of sorted) {
+      rows.push([
+        `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`,
+        (ann.imageIndex ?? 0) + 1,
+        ann.originalText || '',
+        ann.translatedText || '',
+      ]);
+    }
+    // BOM so Excel opens UTF-8 (Korean/Vietnamese) correctly
+    const csv  = '\uFEFF' + rows.map(r => r.map(csvEscape).join(',')).join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `webtoon-transcript_${meta.site}_${meta.titleId}_${meta.chapterId}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+    showToast(`✓ Exported ${sorted.length} row${sorted.length !== 1 ? 's' : ''} to CSV.`);
+  }
+
+  function triggerImportCsv() {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.csv,.txt';
+    input.addEventListener('change', async () => {
+      const file = input.files[0];
+      if (!file) return;
+      try {
+        const rows = parseCsv(await file.text());
+        if (rows.length < 2) { showToast('✗ CSV has no data rows.', '#ef4444'); return; }
+
+        const header   = rows[0].map(h => h.trim().toLowerCase());
+        const idIdx    = header.indexOf('id');
+        const origIdx  = header.indexOf('original');
+        const transIdx = header.indexOf('translated');
+        if (idIdx === -1 || transIdx === -1) {
+          showToast('✗ CSV must have "id" and "translated" columns (use Export CSV as template).', '#ef4444');
+          return;
+        }
+
+        const byKey = new Map(allAnnotations.map(a =>
+          [`${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}`, a]
+        ));
+        const updated = [];
+        let skipped = 0;
+        for (const row of rows.slice(1)) {
+          const key = (row[idIdx] || '').trim();
+          if (!key) continue;
+          const ann = byKey.get(key);
+          if (!ann) { skipped++; continue; }
+          const next = { ...ann };
+          if (origIdx !== -1 && row[origIdx] !== undefined) next.originalText = row[origIdx];
+          if (row[transIdx] !== undefined) next.translatedText = row[transIdx];
+          updated.push(next);
+        }
+        if (!updated.length) {
+          showToast(`✗ No rows matched this chapter's translations (${skipped} unknown id${skipped !== 1 ? 's' : ''}).`, '#ef4444');
+          return;
+        }
+        await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: updated } });
+        await loadAndRender();
+        updateProgressBar();
+        showToast(`✓ Updated ${updated.length} translation${updated.length !== 1 ? 's' : ''}` +
+          (skipped ? ` (${skipped} row${skipped !== 1 ? 's' : ''} skipped)` : '') + '.');
+      } catch (err) {
+        showToast(`✗ CSV import error: ${err.message}`, '#ef4444');
+      }
+    });
+    input.click();
+  }
+
+  async function triggerClear() {
+    const count = allAnnotations.length;
+    if (!count) { showToast('Nothing to clear for this chapter.', '#f59e0b'); return; }
+    if (!window.confirm(`Delete all ${count} translation${count !== 1 ? 's' : ''} stored for this chapter on this device? This cannot be undone.`)) return;
+    try {
+      await sendToBackground({ type: MSG.CLEAR_CHAPTER, payload: meta });
+      if (isKakao) fixedLayer.clearAll();
+      else renderer.clearAll();
+      allAnnotations  = [];
+      annotationCount = 0;
+      panel.update(allAnnotations);
+      updateProgressBar();
+      showToast('✓ Cleared all translations for this chapter.');
+    } catch (err) {
+      showToast(`✗ Clear failed: ${err.message}`, '#ef4444');
     }
   }
 

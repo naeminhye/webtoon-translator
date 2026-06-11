@@ -633,6 +633,15 @@ body.wt-panel-open #wt-toggle-btn {
   padding: 8px 16px 3px;
 }
 
+.wt-sp-actions-label {
+  padding: 8px 16px 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .wt-sp-row {
   position: relative;
   padding: 8px 16px;
