@@ -17,7 +17,6 @@ function refreshMeta() {
     $('no-chapter').classList.add('hidden');
     $('chapter-info').classList.remove('hidden');
     $('mode-toggle').classList.remove('hidden');
-    $('action-buttons').classList.remove('hidden');
 
     const title = meta.title || meta.titleId;
     $('title-id').textContent = title;
@@ -41,6 +40,8 @@ function refreshMeta() {
 function setActiveMode(mode) {
   $('btn-read').classList.toggle('active', mode === 'read');
   $('btn-annotate').classList.toggle('active', mode === 'annotate');
+  // Translation list / import / export are translator tools — hide in Read mode
+  $('action-buttons').classList.toggle('hidden', mode !== 'annotate');
 }
 
 async function init() {

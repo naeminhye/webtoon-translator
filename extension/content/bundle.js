@@ -1826,15 +1826,18 @@ function bootForPage() {
         bubbleEditor.detach();
         document.body.classList.remove('wt-annotate-mode');
         toggleBtn.style.display = '';
+        panel.hide(); // translation list is a translator tool — not for Read mode
       }
     }
-    if (message.type === 'TOGGLE_PANEL') {
+    // Translator-only features: ignore in Read mode (popup hides these buttons,
+    // but guard here too so stale/forged messages can't open them)
+    if (message.type === 'TOGGLE_PANEL' && currentMode === MODES.ANNOTATE) {
       panel.setImages(images);
       panel.update(allAnnotations);
       panel.toggle();
     }
-    if (message.type === 'TRIGGER_EXPORT') triggerExport(meta);
-    if (message.type === 'TRIGGER_IMPORT') triggerImport();
+    if (message.type === 'TRIGGER_EXPORT' && currentMode === MODES.ANNOTATE) triggerExport(meta);
+    if (message.type === 'TRIGGER_IMPORT' && currentMode === MODES.ANNOTATE) triggerImport();
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
