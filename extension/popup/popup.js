@@ -38,10 +38,15 @@ function refreshMeta() {
 }
 
 function setActiveMode(mode) {
-  $('btn-read').classList.toggle('active', mode === 'read');
-  $('btn-annotate').classList.toggle('active', mode === 'annotate');
-  // Translation list / import / export are translator tools — hide in Read mode
-  $('action-buttons').classList.toggle('hidden', mode !== 'annotate');
+  const annotate = mode === 'annotate';
+  $('btn-read').classList.toggle('active', !annotate);
+  $('btn-annotate').classList.toggle('active', annotate);
+  // Translation list / Export are translator tools — hidden in Read mode.
+  // Import + Clear stay available so readers can load/remove their own
+  // local translation files.
+  $('action-buttons').classList.remove('hidden');
+  $('btn-panel').classList.toggle('hidden', !annotate);
+  $('btn-export').classList.toggle('hidden', !annotate);
 }
 
 async function init() {
@@ -78,6 +83,7 @@ async function init() {
   $('btn-panel').addEventListener('click',  () => { chrome.tabs.sendMessage(activeTabId, { type: 'TOGGLE_PANEL' }); window.close(); });
   $('btn-export').addEventListener('click', () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_EXPORT' }); window.close(); });
   $('btn-import').addEventListener('click', () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_IMPORT' }); window.close(); });
+  $('btn-clear').addEventListener('click',  () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_CLEAR' }); window.close(); });
 }
 
 init();

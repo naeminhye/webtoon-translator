@@ -11,6 +11,7 @@ const MSG    = {
   DELETE_ANNOTATION: 'DELETE_ANNOTATION',
   EXPORT_CHAPTER:    'EXPORT_CHAPTER',
   IMPORT_FILE:       'IMPORT_FILE',
+  CLEAR_CHAPTER:     'CLEAR_CHAPTER',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
 };
 
@@ -1829,15 +1830,16 @@ function bootForPage() {
         panel.hide(); // translation list is a translator tool — not for Read mode
       }
     }
-    // Translator-only features: ignore in Read mode (popup hides these buttons,
-    // but guard here too so stale/forged messages can't open them)
+    // Translation list + Export are translator tools — ignored in Read mode.
+    // Import/Clear work in any mode so readers can use their own local files.
     if (message.type === 'TOGGLE_PANEL' && currentMode === MODES.ANNOTATE) {
       panel.setImages(images);
       panel.update(allAnnotations);
       panel.toggle();
     }
     if (message.type === 'TRIGGER_EXPORT' && currentMode === MODES.ANNOTATE) triggerExport(meta);
-    if (message.type === 'TRIGGER_IMPORT' && currentMode === MODES.ANNOTATE) triggerImport();
+    if (message.type === 'TRIGGER_IMPORT') triggerImport();
+    if (message.type === 'TRIGGER_CLEAR')  triggerClear();
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
@@ -1941,6 +1943,24 @@ function bootForPage() {
       }
     });
     input.click();
+  }
+
+  async function triggerClear() {
+    const count = allAnnotations.length;
+    if (!count) { showToast('Nothing to clear for this chapter.', '#f59e0b'); return; }
+    if (!window.confirm(`Delete all ${count} translation${count !== 1 ? 's' : ''} stored for this chapter on this device? This cannot be undone.`)) return;
+    try {
+      await sendToBackground({ type: MSG.CLEAR_CHAPTER, payload: meta });
+      if (isKakao) fixedLayer.clearAll();
+      else renderer.clearAll();
+      allAnnotations  = [];
+      annotationCount = 0;
+      panel.update(allAnnotations);
+      updateProgressBar();
+      showToast('✓ Cleared all translations for this chapter.');
+    } catch (err) {
+      showToast(`✗ Clear failed: ${err.message}`, '#ef4444');
+    }
   }
 
   function triggerImport() {
