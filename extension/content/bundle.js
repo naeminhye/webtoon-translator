@@ -391,14 +391,18 @@ class BBoxSelector {
       img.dataset.wtKakao = '1';
       return parent; // return parent as-is, don't wrap
     }
+    // Capture rendered dimensions BEFORE moving the image — after reparenting
+    // the CSS-constrained size is lost and only naturalWidth remains.
+    const displayW = img.offsetWidth;
+    const displayH = img.offsetHeight;
     const wrapper = document.createElement('div');
     wrapper.className = 'wt-img-wrapper';
     img.parentElement.insertBefore(wrapper, img);
     wrapper.appendChild(img);
     img.style.display = 'block';
     const setW = () => {
-      const w = img.naturalWidth || img.offsetWidth;
-      const h = img.naturalHeight || img.offsetHeight;
+      const w = displayW || img.naturalWidth || img.offsetWidth;
+      const h = displayH || img.naturalHeight || img.offsetHeight;
       if (w > 0) {
         wrapper.style.cssText = `position:relative;display:block;width:${w}px;${
           h > 0 ? `height:${h}px;` : ''
@@ -472,14 +476,16 @@ class OverlayRenderer {
     if (this.imageState.has(img)) return this.imageState.get(img).wrapper;
     let wrapper = img.parentElement;
     if (!wrapper?.classList.contains('wt-img-wrapper')) {
+      const displayW = img.offsetWidth;
+      const displayH = img.offsetHeight;
       wrapper = document.createElement('div');
       wrapper.className = 'wt-img-wrapper';
       img.parentElement.insertBefore(wrapper, img);
       wrapper.appendChild(img);
       img.style.display = 'block';
       const setW = () => {
-        const w = img.naturalWidth || img.offsetWidth;
-        const h = img.naturalHeight || img.offsetHeight;
+        const w = displayW || img.naturalWidth || img.offsetWidth;
+        const h = displayH || img.naturalHeight || img.offsetHeight;
         if (w > 0) {
           wrapper.style.cssText = `position:relative;display:block;width:${w}px;${
             h > 0 ? `height:${h}px;` : ''
@@ -776,6 +782,10 @@ class InputDialog {
       </div>`;
 
     this._makeDraggable(this._el.querySelector('.wt-dialog-header'));
+
+    // Stop keyboard events from bubbling to the site — prevents Ridi/Kakao viewer
+    // shortcuts (arrow-key navigation, etc.) from firing while user is typing.
+    this._el.addEventListener('keydown', e => e.stopPropagation());
 
     this._el.querySelector('.wt-btn-close').addEventListener('click',  () => this._cancel());
     this._el.querySelector('.wt-btn-cancel').addEventListener('click', () => this._cancel());
@@ -1218,6 +1228,7 @@ class SidePanel {
         });
 
         textarea.addEventListener('keydown', (e) => {
+          e.stopPropagation(); // prevent site-level key handlers from firing
           if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
             e.preventDefault();
             row.querySelector('.wt-sp-row-save').click();
