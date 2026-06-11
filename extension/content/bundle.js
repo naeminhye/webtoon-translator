@@ -634,6 +634,8 @@ class InputDialog {
 
   hide() {
     this._el.style.display = 'none';
+    this._el.querySelector('.wt-ocr-status').style.display = 'none';
+    clearTimeout(this._ocrStatusTimer);
     document.removeEventListener('keydown', this._escHandler);
   }
 
@@ -645,20 +647,47 @@ class InputDialog {
     // Session token guards against a slow OCR result landing in a dialog
     // that was since reopened for a different bbox
     this._ocrSession = (this._ocrSession || 0) + 1;
-    this._el.querySelector('.wt-input-original').placeholder = 'Scanning text (OCR)…';
+    this._showOcrStatus('⏳ Starting OCR…', '#6366f1');
     return this._ocrSession;
   }
 
   setOcrText(text, session) {
     if (session !== this._ocrSession) return;
     const inp = this._el.querySelector('.wt-input-original');
-    inp.placeholder = 'Source text...';
     if (this._el.style.display !== 'none' && !inp.value && text) inp.value = text;
+    if (text) this._showOcrStatus('✓ OCR done — edit if needed', '#16a34a', 4000);
+    else      this._showOcrStatus('OCR found no text in this region', '#94a3b8', 4000);
   }
 
-  setOcrError(session) {
-    if (session !== this._ocrSession) return;
-    this._el.querySelector('.wt-input-original').placeholder = 'Source text... (OCR unavailable)';
+  setOcrError(message, session) {
+    if (session !== undefined && session !== this._ocrSession) return;
+    this._showOcrStatus(`✗ OCR failed: ${message || 'unknown error'}`, '#ef4444');
+  }
+
+  /** Engine-level progress (model download, recognition) — not session-bound */
+  setOcrStatus({ status, progress }) {
+    const pct = progress !== undefined ? ` ${Math.round(progress * 100)}%` : '';
+    if (status === 'downloading-model') {
+      this._showOcrStatus(`⬇ Downloading Korean OCR model…${pct} (first time only)`, '#6366f1');
+    } else if (status === 'initializing') {
+      this._showOcrStatus('⏳ Preparing OCR engine…', '#6366f1');
+    } else if (status === 'recognizing') {
+      this._showOcrStatus(`🔍 Scanning text…${pct}`, '#6366f1');
+    } else if (status === 'error') {
+      this._showOcrStatus('✗ OCR engine failed to start (offline?)', '#ef4444');
+    }
+    // 'ready' is not shown by itself — setOcrText handles the success message
+  }
+
+  _showOcrStatus(text, color, autoHideMs) {
+    const el = this._el.querySelector('.wt-ocr-status');
+    el.textContent    = text;
+    el.style.color    = color;
+    el.style.display  = 'block';
+    clearTimeout(this._ocrStatusTimer);
+    if (autoHideMs) {
+      this._ocrStatusTimer = setTimeout(() => { el.style.display = 'none'; }, autoHideMs);
+    }
   }
 
   _build() {
@@ -671,6 +700,7 @@ class InputDialog {
       </div>
       <label class="wt-dialog-label">Original text (optional)</label>
       <input class="wt-input-original" type="text" placeholder="Source text..." />
+      <div class="wt-ocr-status" style="display:none"></div>
       <label class="wt-dialog-label">Translation</label>
       <textarea class="wt-input-translated" rows="3" placeholder="Enter translation..."></textarea>
       <div class="wt-style-bar">
@@ -1708,7 +1738,7 @@ function bootForPage() {
     const ocrSession    = dialog.setOcrPending();
     ocrRegion(imageEl, bbox)
       .then(text => dialog.setOcrText(text, ocrSession))
-      .catch(() => dialog.setOcrError(ocrSession));
+      .catch(err => dialog.setOcrError(err.message, ocrSession));
     const result = await resultPromise;
     if (!result) return;
 
@@ -1917,6 +1947,7 @@ function bootForPage() {
     if (message.type === 'TRIGGER_EXPORT' && currentMode === MODES.ANNOTATE) triggerExport(meta);
     if (message.type === 'TRIGGER_IMPORT') triggerImport();
     if (message.type === 'TRIGGER_CLEAR')  triggerClear();
+    if (message.type === 'OCR_STATUS')     dialog.setOcrStatus(message.payload);
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 

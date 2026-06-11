@@ -17,6 +17,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(sendResponse)
         .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
       return true;
+    case 'OCR_STATUS':
+      // Relay engine progress from the offscreen document to content scripts
+      // (runtime.sendMessage never reaches content scripts directly)
+      chrome.tabs.query({
+        url: [
+          'https://comic.naver.com/*', 'https://m.comic.naver.com/*',
+          'https://page.kakao.com/*', 'https://www.ridi.com/*',
+        ],
+      }, (tabs) => {
+        for (const tab of tabs) {
+          if (tab.id != null) {
+            chrome.tabs.sendMessage(tab.id, message, () => void chrome.runtime.lastError);
+          }
+        }
+      });
+      return false;
   }
 });
 
@@ -129,11 +145,25 @@ function ensureOffscreen() {
 }
 
 async function handleOcr(payload) {
+  if (!chrome.offscreen?.createDocument) {
+    throw new Error('Offscreen API unavailable — fully reload the extension (Chrome 109+ required)');
+  }
   await ensureOffscreen();
-  // runtime.sendMessage reaches extension pages (incl. offscreen), not content scripts
-  const res = await chrome.runtime.sendMessage({ type: 'OCR_RUN', payload });
-  if (!res) throw new Error('OCR worker did not respond');
-  return res;
+  // runtime.sendMessage reaches extension pages (incl. offscreen), not content
+  // scripts. Retry briefly: the offscreen document may still be executing its
+  // scripts right after createDocument() resolves.
+  let lastErr = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'OCR_RUN', payload });
+      if (res) return res;
+      lastErr = new Error('OCR worker did not respond');
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
+  }
+  throw lastErr || new Error('OCR worker did not respond');
 }
 
 // ── extension on/off badge ────────────────────────────────────────────────────

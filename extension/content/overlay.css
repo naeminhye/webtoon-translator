@@ -81,6 +81,13 @@
 
 /* ── Input dialog ─────────────────────────────────────────────────────── */
 
+.wt-ocr-status {
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 4px 0 2px;
+  word-break: break-word;
+}
+
 .wt-input-dialog {
   position: absolute;
   z-index: 99998; /* above site UI layers (Kakao uses high z-indexes) and our overlays */
