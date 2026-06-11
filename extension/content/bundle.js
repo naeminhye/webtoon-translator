@@ -34,6 +34,17 @@ async function hashImage(img) {
     return img.__wtHash;
   }
 
+  // Naver CDN (pstatic.net) blocks credentialed CORS fetches (ACAO: *), so a
+  // byte-level hash was never reachable — every image fell into the url:
+  // fallback anyway. Go straight there: same key format (compatible with
+  // existing saved annotations), no console CORS spam, no wasted fetches.
+  // Naver image URLs are stable per chapter so this stays a reliable identity.
+  if (img.src.includes('pstatic.net')) {
+    const urlHash = img.src.split('?')[0].split('/').slice(-2).join('/');
+    img.__wtHash  = `url:${urlHash}`;
+    return img.__wtHash;
+  }
+
   try {
     const response  = await fetch(img.src, { credentials: 'include' });
     const buffer    = await response.arrayBuffer();
@@ -1415,7 +1426,9 @@ function sendToBackground(message, retries = 3) {
 // Kakao: panels are same-origin blob: URLs — also fetchable, canvas untainted.
 
 async function ocrRegion(img, bbox) {
-  const blob   = await (await fetch(img.src, { credentials: 'include' })).blob();
+  // No credentials: Naver's CDN serves ACAO:* which forbids credentialed CORS;
+  // the images are public so cookies aren't needed. blob: URLs ignore this.
+  const blob   = await (await fetch(img.src, { credentials: 'omit' })).blob();
   const bitmap = await createImageBitmap(blob);
   const sx = (bbox.x / 100) * bitmap.width;
   const sy = (bbox.y / 100) * bitmap.height;
