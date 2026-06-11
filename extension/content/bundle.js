@@ -394,7 +394,6 @@ class BBoxSelector {
     // Capture rendered dimensions BEFORE moving the image — after reparenting
     // the CSS-constrained size is lost and only naturalWidth remains.
     const displayW = img.offsetWidth;
-    const displayH = img.offsetHeight;
     const wrapper = document.createElement('div');
     wrapper.className = 'wt-img-wrapper';
     img.parentElement.insertBefore(wrapper, img);
@@ -402,11 +401,10 @@ class BBoxSelector {
     img.style.display = 'block';
     const setW = () => {
       const w = displayW || img.naturalWidth || img.offsetWidth;
-      const h = displayH || img.naturalHeight || img.offsetHeight;
+      // Don't set explicit height — let the image determine it.
+      // Setting height:naturalHeight causes gaps when the viewer scales images down.
       if (w > 0) {
-        wrapper.style.cssText = `position:relative;display:block;width:${w}px;${
-          h > 0 ? `height:${h}px;` : ''
-        }line-height:0;margin:0 auto;padding:0;`;
+        wrapper.style.cssText = `position:relative;display:block;width:${w}px;line-height:0;margin:0 auto;padding:0;`;
       }
     };
     if (img.complete && img.naturalWidth > 0) setW();
@@ -477,7 +475,6 @@ class OverlayRenderer {
     let wrapper = img.parentElement;
     if (!wrapper?.classList.contains('wt-img-wrapper')) {
       const displayW = img.offsetWidth;
-      const displayH = img.offsetHeight;
       wrapper = document.createElement('div');
       wrapper.className = 'wt-img-wrapper';
       img.parentElement.insertBefore(wrapper, img);
@@ -485,11 +482,8 @@ class OverlayRenderer {
       img.style.display = 'block';
       const setW = () => {
         const w = displayW || img.naturalWidth || img.offsetWidth;
-        const h = displayH || img.naturalHeight || img.offsetHeight;
         if (w > 0) {
-          wrapper.style.cssText = `position:relative;display:block;width:${w}px;${
-            h > 0 ? `height:${h}px;` : ''
-          }line-height:0;margin:0 auto;padding:0;`;
+          wrapper.style.cssText = `position:relative;display:block;width:${w}px;line-height:0;margin:0 auto;padding:0;`;
         }
       };
       if (img.complete && img.naturalWidth > 0) setW();
@@ -1701,6 +1695,7 @@ function bootForPage() {
 
   async function loadAndRender() {
     if (disposed) return;
+    if (!chrome.runtime?.id) return; // extension reloaded — silently stop
     const { annotations } = await sendToBackground({ type: MSG.LOAD_TRANSLATIONS, payload: meta });
     if (disposed) return;
     const raw = annotations || [];
@@ -1785,7 +1780,12 @@ function bootForPage() {
       if (isKakao) fixedLayer.enable(images);
       else added.forEach(img => selector.attachImage(img, images.indexOf(img)));
     }
-    await loadAndRender();
+    try {
+      await loadAndRender();
+    } catch (e) {
+      if (!chrome.runtime?.id) { stopWatching(); return; }
+      throw e;
+    }
     updateProgressBar();
   });
 
