@@ -158,6 +158,21 @@ class FixedOverlayLayer {
     this._el.style.display = 'none';
     document.body.appendChild(this._el);
 
+    // Forward wheel events to the element underneath so the page can still scroll.
+    // pointer-events:auto on the overlay swallows them otherwise.
+    this._el.addEventListener('wheel', (e) => {
+      this._el.style.pointerEvents = 'none';
+      const target = document.elementFromPoint(e.clientX, e.clientY);
+      this._el.style.pointerEvents = 'auto';
+      if (target) {
+        target.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true, cancelable: true,
+          deltaX: e.deltaX, deltaY: e.deltaY, deltaZ: e.deltaZ, deltaMode: e.deltaMode,
+          clientX: e.clientX, clientY: e.clientY,
+        }));
+      }
+    }, { passive: true });
+
     let startX, startY;
 
     this._el.addEventListener('mousedown', (e) => {
