@@ -125,5 +125,53 @@ header {
 .action-btn:hover { background: #eef2ff; border-color: #c7d2fe; color: #4338ca; }
 .action-btn-danger:hover { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
 
+/* ── OCR Settings ──────────────────────────────────────────────────────── */
+
+#ocr-settings {
+  padding: 10px 14px 12px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.settings-head {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: #94a3b8; margin-bottom: 8px;
+}
+
+.provider-row {
+  display: flex; gap: 6px; margin-bottom: 8px;
+}
+
+.provider-opt {
+  flex: 1;
+  display: flex; align-items: center; gap: 5px;
+  padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 8px;
+  cursor: pointer; font-size: 11px; font-weight: 500; color: #475569;
+  transition: border-color 0.15s, background 0.15s;
+}
+.provider-opt:has(input:checked) {
+  border-color: #6366f1; background: #eef2ff; color: #4338ca;
+}
+.provider-hint {
+  margin-left: auto; font-size: 10px; font-weight: 400; color: #94a3b8;
+}
+.provider-opt:has(input:checked) .provider-hint { color: #818cf8; }
+.provider-opt input { accent-color: #6366f1; width: 13px; height: 13px; }
+
+#ocrspace-key-row {
+  display: flex; gap: 6px; align-items: center;
+}
+#ocrspace-key {
+  flex: 1; padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 7px;
+  font-size: 11px; color: #1e293b; outline: none;
+}
+#ocrspace-key:focus { border-color: #6366f1; }
+.key-save-btn {
+  padding: 6px 10px; border: none; border-radius: 7px;
+  background: #6366f1; color: #fff; font-size: 11px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.key-save-btn:hover { background: #4f46e5; }
+.key-saved { font-size: 11px; color: #16a34a; margin-top: 4px; }
+
 footer { padding: 6px 14px 10px; font-size: 10px; color: #cbd5e1; text-align: center; }
 .hidden { display: none !important; }

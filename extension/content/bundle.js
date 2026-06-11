@@ -665,16 +665,16 @@ class InputDialog {
   }
 
   /** Engine-level progress (model download, recognition) — not session-bound */
-  setOcrStatus({ status, progress }) {
+  setOcrStatus({ status, progress, message }) {
     const pct = progress !== undefined ? ` ${Math.round(progress * 100)}%` : '';
     if (status === 'downloading-model') {
-      this._showOcrStatus(`⬇ Downloading Korean OCR model…${pct} (first time only)`, '#6366f1');
+      this._showOcrStatus(`⏳ Loading Korean OCR model…${pct}`, '#6366f1');
     } else if (status === 'initializing') {
       this._showOcrStatus('⏳ Preparing OCR engine…', '#6366f1');
     } else if (status === 'recognizing') {
       this._showOcrStatus(`🔍 Scanning text…${pct}`, '#6366f1');
     } else if (status === 'error') {
-      this._showOcrStatus('✗ OCR engine failed to start (offline?)', '#ef4444');
+      this._showOcrStatus(`✗ OCR engine failed to start: ${message || 'unknown error'}`, '#ef4444');
     }
     // 'ready' is not shown by itself — setOcrText handles the success message
   }
@@ -1450,38 +1450,42 @@ function sendToBackground(message, retries = 3) {
 }
 
 // ── OCR ───────────────────────────────────────────────────────────────────────
-// Crops the bbox region from the panel image and sends it to the background,
-// which forwards it to the Tesseract.js offscreen document.
-// Naver: bytes are fetchable with credentials (same approach as hashImage).
-// Kakao: panels are same-origin blob: URLs — also fetchable, canvas untainted.
 
 async function ocrRegion(img, bbox) {
-  // No credentials: Naver's CDN serves ACAO:* which forbids credentialed CORS;
-  // the images are public so cookies aren't needed. blob: URLs ignore this.
-  const blob   = await (await fetch(img.src, { credentials: 'omit' })).blob();
-  const bitmap = await createImageBitmap(blob);
-  const sx = (bbox.x / 100) * bitmap.width;
-  const sy = (bbox.y / 100) * bitmap.height;
-  const sw = Math.max(1, (bbox.w / 100) * bitmap.width);
-  const sh = Math.max(1, (bbox.h / 100) * bitmap.height);
+  // Fast path: draw the already-loaded DOM image directly.
+  // blob: URLs (Kakao) are same-origin → never tainted.
+  // CDN images without crossOrigin attr may taint the canvas → SecurityError.
+  // In that case pass imageUrl to the background service worker, which can
+  // fetch cross-origin freely and do the crop there.
+  let dataUrl = null;
+  try {
+    dataUrl = _cropCanvas(img, bbox);
+  } catch (e) {
+    if (!(e instanceof DOMException) || e.name !== 'SecurityError') throw e;
+  }
 
-  // Upscale small crops — Tesseract reads larger glyphs much better
-  const scale  = sw < 400 ? Math.min(3, 400 / sw) : 1;
+  const res = await sendToBackground({
+    type: MSG.OCR_REGION,
+    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox },
+  });
+  if (!res?.ok) throw new Error(res?.error || 'OCR failed');
+  return res.text;
+}
+
+function _cropCanvas(img, bbox) {
+  const sx = (bbox.x / 100) * img.naturalWidth;
+  const sy = (bbox.y / 100) * img.naturalHeight;
+  const sw = Math.max(1, (bbox.w / 100) * img.naturalWidth);
+  const sh = Math.max(1, (bbox.h / 100) * img.naturalHeight);
+  const scale = sw < 400 ? Math.min(3, 400 / sw) : 1;
   const canvas = document.createElement('canvas');
   canvas.width  = Math.round(sw * scale);
   canvas.height = Math.round(sh * scale);
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
-
-  const res = await sendToBackground({
-    type: MSG.OCR_REGION,
-    payload: { dataUrl: canvas.toDataURL('image/png') },
-  });
-  if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-  return res.text;
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/png'); // throws SecurityError if canvas is tainted
 }
 
 // ── Translation visibility toggle ────────────────────────────────────────────

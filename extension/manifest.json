@@ -11,7 +11,8 @@
     "https://m.comic.naver.com/*",
     "https://www.ridi.com/*",
     "https://page.kakao.com/*",
-    "https://tessdata.projectnaptha.com/*"
+    "https://*.pstatic.net/*",
+    "https://api.ocr.space/*"
   ],
 
   "content_security_policy": {

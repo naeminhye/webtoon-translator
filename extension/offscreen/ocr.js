@@ -1,24 +1,22 @@
 /**
  * offscreen/ocr.js — Tesseract.js OCR runner.
  *
- * Engine JS/WASM is bundled in vendor/tesseract (MV3 forbids remote code).
- * The Korean language model (~few MB) is data, not code: it is lazy-downloaded
- * from tessdata.projectnaptha.com on first use and cached in IndexedDB by
- * tesseract.js, so users who never enter Translate mode never download it.
+ * Engine JS/WASM and the Korean model (best_int, 1.5MB) are all bundled in
+ * vendor/tesseract — fully offline, no CDN dependency, no remote code (MV3).
  *
- * Progress (model download / recognition) is broadcast as OCR_STATUS messages;
+ * Progress (model load / recognition) is broadcast as OCR_STATUS messages;
  * the background forwards them to content scripts so the dialog can show
- * "downloading model 43%" etc.
+ * live status.
  */
 
 const VENDOR = chrome.runtime.getURL('vendor/tesseract/');
 
 let workerPromise = null;
 
-function broadcast(status, progress) {
+function broadcast(status, progress, message) {
   try {
     chrome.runtime.sendMessage(
-      { type: 'OCR_STATUS', payload: { status, progress } },
+      { type: 'OCR_STATUS', payload: { status, progress, message } },
       () => void chrome.runtime.lastError // no listener — fine
     );
   } catch (_) { /* extension reloading */ }
@@ -30,7 +28,12 @@ function getWorker() {
     workerPromise = Tesseract.createWorker('kor', Tesseract.OEM.LSTM_ONLY, {
       workerPath: VENDOR + 'worker.min.js',
       corePath:   VENDOR + 'tesseract-core-simd-lstm.wasm.js',
-      langPath:   'https://tessdata.projectnaptha.com/4.0.0_fast',
+      // Bundled model (best_int, 1.5MB) — fully offline, no CDN dependency
+      langPath:   VENDOR + 'lang',
+      cacheMethod: 'none', // local file — IndexedDB cache is pointless
+      // MV3 CSP only allows 'self' scripts — tesseract's default blob: URL
+      // worker is blocked, so spawn the worker from workerPath directly
+      workerBlobURL: false,
       logger: (m) => {
         if (m.status === 'loading language traineddata') broadcast('downloading-model', m.progress);
         else if (m.status === 'recognizing text')        broadcast('recognizing', m.progress);
@@ -40,7 +43,7 @@ function getWorker() {
       return worker;
     }).catch(err => {
       workerPromise = null; // allow retry after a failed init (e.g. offline)
-      broadcast('error');
+      broadcast('error', undefined, err.message || String(err));
       throw err;
     });
   }
