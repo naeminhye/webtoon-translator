@@ -45,6 +45,29 @@ async function hashImage(img) {
     return img.__wtHash;
   }
 
+  // Ridi (and any other viewer) uses blob: URLs that are revoked after the
+  // image loads — fetch() fails with ERR_FILE_NOT_FOUND. The decoded bitmap
+  // is still in the <img> element, so draw a tiny sample to a canvas instead.
+  if (img.src.startsWith('blob:')) {
+    try {
+      const SAMPLE = 16;
+      const canvas = document.createElement('canvas');
+      canvas.width = SAMPLE; canvas.height = SAMPLE;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, SAMPLE, SAMPLE);
+      const data    = ctx.getImageData(0, 0, SAMPLE, SAMPLE).data;
+      const hashBuf = await crypto.subtle.digest('SHA-256', data);
+      const hex     = Array.from(new Uint8Array(hashBuf))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+      img.__wtHash = `sha256:${hex}`;
+    } catch {
+      // Canvas tainted or image not decoded — use data-index (stable per chapter)
+      const idx = img.dataset.index ?? img.src.split('/').pop();
+      img.__wtHash = `blob-idx:${idx}`;
+    }
+    return img.__wtHash;
+  }
+
   try {
     const response  = await fetch(img.src, { credentials: 'include' });
     const buffer    = await response.arrayBuffer();
