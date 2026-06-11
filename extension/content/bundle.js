@@ -414,6 +414,9 @@ class BBoxSelector {
       img.dataset.wtKakao = '1';
       return parent; // return parent as-is, don't wrap
     }
+    // blob: images (Ridi etc.) — reparenting a React-managed node triggers a re-render
+    // that tries to reload the already-revoked blob URL, breaking the image.
+    if (img.src?.startsWith('blob:')) return parent;
     // Capture rendered dimensions BEFORE moving the image — after reparenting
     // the CSS-constrained size is lost and only naturalWidth remains.
     const displayW = img.offsetWidth;
@@ -1359,6 +1362,8 @@ class NaverAdapter {
 }
 
 class RidiAdapter {
+  get usesFixedOverlay() { return true; }
+
   detect() {
     return location.hostname === 'ridibooks.com' &&
            /\/books\/\w+\/view/.test(location.pathname);
