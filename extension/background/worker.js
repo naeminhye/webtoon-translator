@@ -23,7 +23,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.tabs.query({
         url: [
           'https://comic.naver.com/*', 'https://m.comic.naver.com/*',
-          'https://page.kakao.com/*', 'https://www.ridi.com/*',
+          'https://page.kakao.com/*', 'https://ridibooks.com/*',
         ],
       }, (tabs) => {
         for (const tab of tabs) {
@@ -132,12 +132,21 @@ async function handleImport({ jsonString }) {
 const OCR_PROVIDER_KEY  = 'wt:ocr-provider';
 const OCR_SPACE_KEY_STR = 'wt:ocrspace-key';
 
+// Developer-supplied OCR.space key — bundled so end users never need to paste one.
+// Leave blank ('') to require users to enter their own key in the popup.
+const DEV_OCR_SPACE_KEY = '';
+
+// Tesseract results below this confidence threshold trigger an OCR.space fallback
+// when a key is available (complex backgrounds, small/stylised text).
+const TESSERACT_CONFIDENCE_THRESHOLD = 50;
+
 async function handleOcr({ dataUrl, imageUrl, bbox }) {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
     [OCR_SPACE_KEY_STR]: '',
   });
   const provider = stored[OCR_PROVIDER_KEY];
+  const ocrKey   = stored[OCR_SPACE_KEY_STR] || DEV_OCR_SPACE_KEY;
 
   // Resolve dataUrl — crop here if content script was blocked by canvas taint
   let finalDataUrl = dataUrl;
@@ -146,14 +155,28 @@ async function handleOcr({ dataUrl, imageUrl, bbox }) {
   }
 
   if (provider === 'ocrspace') {
-    const apiKey = stored[OCR_SPACE_KEY_STR];
-    if (!apiKey) {
+    if (!ocrKey) {
       return { ok: false, error: 'OCR.space API key not set — open the extension popup to add it.' };
     }
-    return ocrSpaceRun(finalDataUrl, apiKey);
+    return ocrSpaceRun(finalDataUrl, ocrKey);
   }
 
-  return tesseractRun(finalDataUrl);
+  // Tesseract — attempt first, then auto-fallback to OCR.space when the
+  // result is empty or low-confidence (complex bg, small/stylised text).
+  const tessResult = await tesseractRun(finalDataUrl);
+  if (tessResult.ok && tessResult.text && (tessResult.confidence ?? 100) >= TESSERACT_CONFIDENCE_THRESHOLD) {
+    return tessResult;
+  }
+
+  if (ocrKey) {
+    // Silent fallback — add a marker so the UI can hint which engine was used
+    const spaceResult = await ocrSpaceRun(finalDataUrl, ocrKey);
+    if (spaceResult.ok && spaceResult.text) return { ...spaceResult, fallback: true };
+  }
+
+  // Return the original Tesseract result (even if empty/low-confidence) when
+  // no OCR.space key is available or OCR.space also failed.
+  return tessResult;
 }
 
 // ── OCR.space ─────────────────────────────────────────────────────────────────

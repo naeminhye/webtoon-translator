@@ -43,12 +43,10 @@ function setActiveMode(mode) {
   const annotate = mode === 'annotate';
   $('btn-read').classList.toggle('active', !annotate);
   $('btn-annotate').classList.toggle('active', annotate);
-  // Translation list / Export are translator tools — hidden in Read mode.
-  // Import + Clear stay available so readers can load/remove their own
-  // local translation files.
   $('action-buttons').classList.remove('hidden');
   $('btn-panel').classList.toggle('hidden', !annotate);
   $('btn-export').classList.toggle('hidden', !annotate);
+  $('ocr-settings').classList.toggle('hidden', !annotate);
 }
 
 async function init() {
@@ -88,6 +86,9 @@ async function init() {
   $('btn-clear').addEventListener('click',  () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_CLEAR' }); window.close(); });
 }
 
+// Mirrors the constant in background/worker.js — keep in sync.
+const DEV_OCR_SPACE_KEY = '';
+
 async function initOcrSettings() {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
@@ -95,9 +96,15 @@ async function initOcrSettings() {
   });
 
   const radios = document.querySelectorAll('input[name="ocr-provider"]');
+
+  // When a developer key is bundled, hide the key input row entirely so
+  // end users never have to deal with API keys.
+  const devKeyBundled = Boolean(DEV_OCR_SPACE_KEY);
+
   function applyProvider(provider) {
     radios.forEach(r => { r.checked = r.value === provider; });
-    $('ocrspace-key-row').classList.toggle('hidden', provider !== 'ocrspace');
+    const needsKey = provider === 'ocrspace' && !devKeyBundled;
+    $('ocrspace-key-row').classList.toggle('hidden', !needsKey);
     $('ocrspace-key-saved').classList.add('hidden');
   }
 

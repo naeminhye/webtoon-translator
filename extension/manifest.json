@@ -9,7 +9,7 @@
   "host_permissions": [
     "https://comic.naver.com/*",
     "https://m.comic.naver.com/*",
-    "https://www.ridi.com/*",
+    "https://ridibooks.com/*",
     "https://page.kakao.com/*",
     "https://*.pstatic.net/*",
     "https://api.ocr.space/*"
@@ -29,7 +29,7 @@
       "matches": [
         "https://comic.naver.com/webtoon/detail*",
         "https://m.comic.naver.com/webtoon/detail*",
-        "https://www.ridi.com/viewer/*",
+        "https://ridibooks.com/books/*/view",
         "https://page.kakao.com/content/*"
       ],
       "js": ["content/bundle.js"],

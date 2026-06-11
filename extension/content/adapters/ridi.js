@@ -1,16 +1,13 @@
 /**
  * content/adapters/ridi.js
- * Adapter for Ridi: https://www.ridi.com/viewer/{bookId}
+ * Adapter for Ridi Webtoon viewer: https://ridibooks.com/books/{b_id}/view
  *
- * Status: stub — implement in Phase 2.
+ * The viewer is a Vite/React SPA. All episode images render as
+ * <img data-index="N" class="wv-1ago99h"> inside a single scrolling
+ * container. Initially unloaded images carry a tiny SVG placeholder src;
+ * the viewer swaps in blob: URLs as the user scrolls down.
  *
- * Implementation notes for Phase 2:
- *   - Ridi uses a custom JS viewer; images are loaded into a shadow DOM or
- *     canvas. Inspect Network tab for actual image requests.
- *   - titleId: parse from URL path segment or API response in page state
- *   - chapterId: look for episode metadata in __NEXT_DATA__ or window.__RIDI_*
- *   - Images may be rendered in an <iframe> — content script needs
- *     "all_frames": true in manifest if so.
+ * Chapter meta is embedded in <script id="app_init" type="application/json">.
  */
 
 import { SiteAdapter } from './base.js';
@@ -18,25 +15,63 @@ import { SITES } from '../types.js';
 
 export class RidiAdapter extends SiteAdapter {
   detect() {
-    return location.hostname === 'www.ridi.com' &&
-           location.pathname.startsWith('/viewer/');
+    return location.hostname === 'ridibooks.com' &&
+           /\/books\/\w+\/view/.test(location.pathname);
   }
 
   getChapterMeta() {
-    const parts = location.pathname.split('/');
-    const bookId = parts[2] || 'unknown';
-    // Ridi book IDs double as titleId; no separate chapterId in URL
-    return { site: SITES.RIDI, titleId: bookId, chapterId: bookId };
+    // URL: /books/{b_id}/view
+    const bId = location.pathname.match(/\/books\/(\w+)\/view/)?.[1] || 'unknown';
+
+    // Prefer series_id + volume from the embedded JSON so that all episodes
+    // of the same series share a titleId and chapters are numbered cleanly.
+    try {
+      const raw = document.getElementById('app_init')?.textContent;
+      if (raw) {
+        const json = JSON.parse(raw);
+        const book = json?.detail?.book;
+        if (book) {
+          const titleId   = String(book.series_id  || bId);
+          const chapterId = String(book.b_id       || bId);
+          return { site: SITES.RIDI, titleId, chapterId };
+        }
+      }
+    } catch (_) { /* fall through to URL-only fallback */ }
+
+    return { site: SITES.RIDI, titleId: bId, chapterId: bId };
   }
 
   getImages() {
-    // TODO Phase 2: identify correct image container
-    console.warn('[WebtoonTranslate] Ridi adapter not yet implemented');
-    return [];
+    // All panel images carry data-index. Skip unloaded SVG placeholders —
+    // only blob: URLs represent real, rendered images we can hash.
+    return [...document.querySelectorAll('img[data-index]')].filter(
+      img => img.src && img.src.startsWith('blob:')
+    );
   }
 
   watchNewImages(callback) {
-    console.warn('[WebtoonTranslate] Ridi adapter not yet implemented');
-    return () => {};
+    // The viewer loads images into existing <img> nodes by swapping their src
+    // from the SVG placeholder to a blob: URL. We watch for attribute mutations
+    // rather than childList additions.
+    const root = document.querySelector('.simplebar-content-wrapper') ||
+                 document.querySelector('.simplebar-content') ||
+                 document.body;
+
+    let debounce = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        const imgs = this.getImages();
+        if (imgs.length) callback(imgs);
+      }, 150);
+    });
+
+    observer.observe(root, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['src'],
+    });
+
+    return () => observer.disconnect();
   }
 }

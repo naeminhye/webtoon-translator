@@ -640,14 +640,6 @@ body.wt-panel-open #wt-toggle-btn {
   padding: 8px 16px 3px;
 }
 
-.wt-sp-actions-label {
-  padding: 8px 16px 0;
-  font-size: 10px;
-  font-weight: 600;
-  color: #94a3b8;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
 
 .wt-sp-row {
   position: relative;
@@ -659,11 +651,18 @@ body.wt-panel-open #wt-toggle-btn {
 .wt-sp-row:hover { background: #f8fafc; }
 .wt-sp-row:active { background: #f1f5f9; }
 
-.wt-sp-row-del {
+.wt-sp-row-actions {
   position: absolute;
   top: 6px;
   right: 8px;
   display: none;
+  gap: 2px;
+  align-items: center;
+}
+.wt-sp-row:hover .wt-sp-row-actions { display: flex; }
+
+.wt-sp-row-edit,
+.wt-sp-row-del {
   border: none;
   background: transparent;
   color: #94a3b8;
@@ -673,8 +672,44 @@ body.wt-panel-open #wt-toggle-btn {
   border-radius: 4px;
   cursor: pointer;
 }
-.wt-sp-row:hover .wt-sp-row-del { display: block; }
-.wt-sp-row-del:hover { color: #ef4444; background: #fef2f2; }
+.wt-sp-row-edit:hover { color: #6366f1; background: #eef2ff; }
+.wt-sp-row-del:hover  { color: #ef4444; background: #fef2f2; }
+
+.wt-sp-row-edit-wrap {
+  margin-top: 6px;
+}
+.wt-sp-row-textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: system-ui, sans-serif;
+  color: #1e293b;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+.wt-sp-row-textarea:focus { border-color: #6366f1; }
+.wt-sp-row-edit-btns {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  justify-content: flex-end;
+}
+.wt-sp-row-save,
+.wt-sp-row-cancel {
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+}
+.wt-sp-row-save   { background: #6366f1; color: #fff; }
+.wt-sp-row-save:hover { background: #4f46e5; }
+.wt-sp-row-cancel { background: #f1f5f9; color: #64748b; }
+.wt-sp-row-cancel:hover { background: #e2e8f0; }
 
 .wt-sp-row-text {
   font-size: 13px;

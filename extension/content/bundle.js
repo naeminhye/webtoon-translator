@@ -45,6 +45,29 @@ async function hashImage(img) {
     return img.__wtHash;
   }
 
+  // Ridi (and any other viewer) uses blob: URLs that are revoked after the
+  // image loads — fetch() fails with ERR_FILE_NOT_FOUND. The decoded bitmap
+  // is still in the <img> element, so draw a tiny sample to a canvas instead.
+  if (img.src.startsWith('blob:')) {
+    try {
+      const SAMPLE = 16;
+      const canvas = document.createElement('canvas');
+      canvas.width = SAMPLE; canvas.height = SAMPLE;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, SAMPLE, SAMPLE);
+      const data    = ctx.getImageData(0, 0, SAMPLE, SAMPLE).data;
+      const hashBuf = await crypto.subtle.digest('SHA-256', data);
+      const hex     = Array.from(new Uint8Array(hashBuf))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+      img.__wtHash = `sha256:${hex}`;
+    } catch {
+      // Canvas tainted or image not decoded — use data-index (stable per chapter)
+      const idx = img.dataset.index ?? img.src.split('/').pop();
+      img.__wtHash = `blob-idx:${idx}`;
+    }
+    return img.__wtHash;
+  }
+
   try {
     const response  = await fetch(img.src, { credentials: 'include' });
     const buffer    = await response.arrayBuffer();
@@ -134,6 +157,21 @@ class FixedOverlayLayer {
     this._el.className = 'wt-fixed-overlay';
     this._el.style.display = 'none';
     document.body.appendChild(this._el);
+
+    // Forward wheel events to the element underneath so the page can still scroll.
+    // pointer-events:auto on the overlay swallows them otherwise.
+    this._el.addEventListener('wheel', (e) => {
+      this._el.style.pointerEvents = 'none';
+      const target = document.elementFromPoint(e.clientX, e.clientY);
+      this._el.style.pointerEvents = 'auto';
+      if (target) {
+        target.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true, cancelable: true,
+          deltaX: e.deltaX, deltaY: e.deltaY, deltaZ: e.deltaZ, deltaMode: e.deltaMode,
+          clientX: e.clientX, clientY: e.clientY,
+        }));
+      }
+    }, { passive: true });
 
     let startX, startY;
 
@@ -391,18 +429,23 @@ class BBoxSelector {
       img.dataset.wtKakao = '1';
       return parent; // return parent as-is, don't wrap
     }
+    // blob: images (Ridi etc.) — reparenting a React-managed node triggers a re-render
+    // that tries to reload the already-revoked blob URL, breaking the image.
+    if (img.src?.startsWith('blob:')) return parent;
+    // Capture rendered dimensions BEFORE moving the image — after reparenting
+    // the CSS-constrained size is lost and only naturalWidth remains.
+    const displayW = img.offsetWidth;
     const wrapper = document.createElement('div');
     wrapper.className = 'wt-img-wrapper';
     img.parentElement.insertBefore(wrapper, img);
     wrapper.appendChild(img);
     img.style.display = 'block';
     const setW = () => {
-      const w = img.naturalWidth || img.offsetWidth;
-      const h = img.naturalHeight || img.offsetHeight;
+      const w = displayW || img.naturalWidth || img.offsetWidth;
+      // Don't set explicit height — let the image determine it.
+      // Setting height:naturalHeight causes gaps when the viewer scales images down.
       if (w > 0) {
-        wrapper.style.cssText = `position:relative;display:block;width:${w}px;${
-          h > 0 ? `height:${h}px;` : ''
-        }line-height:0;margin:0 auto;padding:0;`;
+        wrapper.style.cssText = `position:relative;display:block;width:${w}px;line-height:0;margin:0 auto;padding:0;`;
       }
     };
     if (img.complete && img.naturalWidth > 0) setW();
@@ -472,18 +515,16 @@ class OverlayRenderer {
     if (this.imageState.has(img)) return this.imageState.get(img).wrapper;
     let wrapper = img.parentElement;
     if (!wrapper?.classList.contains('wt-img-wrapper')) {
+      const displayW = img.offsetWidth;
       wrapper = document.createElement('div');
       wrapper.className = 'wt-img-wrapper';
       img.parentElement.insertBefore(wrapper, img);
       wrapper.appendChild(img);
       img.style.display = 'block';
       const setW = () => {
-        const w = img.naturalWidth || img.offsetWidth;
-        const h = img.naturalHeight || img.offsetHeight;
+        const w = displayW || img.naturalWidth || img.offsetWidth;
         if (w > 0) {
-          wrapper.style.cssText = `position:relative;display:block;width:${w}px;${
-            h > 0 ? `height:${h}px;` : ''
-          }line-height:0;margin:0 auto;padding:0;`;
+          wrapper.style.cssText = `position:relative;display:block;width:${w}px;line-height:0;margin:0 auto;padding:0;`;
         }
       };
       if (img.complete && img.naturalWidth > 0) setW();
@@ -777,6 +818,10 @@ class InputDialog {
 
     this._makeDraggable(this._el.querySelector('.wt-dialog-header'));
 
+    // Stop keyboard events from bubbling to the site — prevents Ridi/Kakao viewer
+    // shortcuts (arrow-key navigation, etc.) from firing while user is typing.
+    this._el.addEventListener('keydown', e => e.stopPropagation());
+
     this._el.querySelector('.wt-btn-close').addEventListener('click',  () => this._cancel());
     this._el.querySelector('.wt-btn-cancel').addEventListener('click', () => this._cancel());
     this._el.querySelector('.wt-btn-save').addEventListener('click',   () => this._save());
@@ -1068,13 +1113,12 @@ class BubbleEditor {
 // Contains: annotation list, import/export, live updates on add/delete.
 
 class SidePanel {
-  constructor({ onJump, onImport, onExport, onDelete, onImportCsv, onExportCsv }) {
-    this._onJump      = onJump;
-    this._onImport    = onImport;
-    this._onExport    = onExport;
-    this._onDelete    = onDelete;
-    this._onImportCsv = onImportCsv;
-    this._onExportCsv = onExportCsv;
+  constructor({ onJump, onImport, onExport, onDelete, onEdit }) {
+    this._onJump   = onJump;
+    this._onImport = onImport;
+    this._onExport = onExport;
+    this._onDelete = onDelete;
+    this._onEdit   = onEdit;
     this._visible  = false;
     this._images   = [];
     this._el       = null;
@@ -1134,18 +1178,11 @@ class SidePanel {
         <button class="wt-sp-btn wt-sp-import">⬆ Import JSON</button>
         <button class="wt-sp-btn wt-sp-export">⬇ Export JSON</button>
       </div>
-      <div class="wt-sp-actions-label">Transcript — edit translations in Excel / Google Sheets</div>
-      <div class="wt-sp-actions">
-        <button class="wt-sp-btn wt-sp-import-csv">⬆ Import CSV</button>
-        <button class="wt-sp-btn wt-sp-export-csv">⬇ Export CSV</button>
-      </div>
       <div class="wt-sp-list"></div>`;
 
     this._el.querySelector('.wt-sp-close').addEventListener('click', () => this.hide());
     this._el.querySelector('.wt-sp-import').addEventListener('click', () => this._onImport?.());
     this._el.querySelector('.wt-sp-export').addEventListener('click', () => this._onExport?.());
-    this._el.querySelector('.wt-sp-import-csv').addEventListener('click', () => this._onImportCsv?.());
-    this._el.querySelector('.wt-sp-export-csv').addEventListener('click', () => this._onExportCsv?.());
 
     // Start hidden (off-screen right)
     this._el.style.transform = `translateX(${PANEL_W}px)`;
@@ -1179,26 +1216,74 @@ class SidePanel {
       for (const ann of anns) {
         const row = document.createElement('div');
         row.className = 'wt-sp-row';
-        row.dataset.annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
+        const key = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
+        row.dataset.annKey = key;
+
         row.innerHTML = `
-          <button class="wt-sp-row-del" title="Delete translation">&#x2715;</button>
+          <div class="wt-sp-row-actions">
+            <button class="wt-sp-row-edit" title="Edit translation">✏</button>
+            <button class="wt-sp-row-del"  title="Delete translation">&#x2715;</button>
+          </div>
           <div class="wt-sp-row-text">${ann.translatedText}</div>
-          ${ann.originalText ? `<div class="wt-sp-row-orig">${ann.originalText}</div>` : ''}`;
+          ${ann.originalText ? `<div class="wt-sp-row-orig">${ann.originalText}</div>` : ''}
+          <div class="wt-sp-row-edit-wrap hidden">
+            <textarea class="wt-sp-row-textarea" rows="3">${ann.translatedText}</textarea>
+            <div class="wt-sp-row-edit-btns">
+              <button class="wt-sp-row-save">Save</button>
+              <button class="wt-sp-row-cancel">Cancel</button>
+            </div>
+          </div>`;
+
+        const textEl   = row.querySelector('.wt-sp-row-text');
+        const editWrap = row.querySelector('.wt-sp-row-edit-wrap');
+        const textarea = row.querySelector('.wt-sp-row-textarea');
+
+        row.querySelector('.wt-sp-row-edit').addEventListener('click', (e) => {
+          e.stopPropagation();
+          textEl.classList.add('hidden');
+          editWrap.classList.remove('hidden');
+          textarea.focus();
+          textarea.select();
+        });
+
+        row.querySelector('.wt-sp-row-cancel').addEventListener('click', (e) => {
+          e.stopPropagation();
+          textarea.value = ann.translatedText;
+          editWrap.classList.add('hidden');
+          textEl.classList.remove('hidden');
+        });
+
+        row.querySelector('.wt-sp-row-save').addEventListener('click', (e) => {
+          e.stopPropagation();
+          const next = { ...ann, translatedText: textarea.value };
+          textEl.textContent = textarea.value;
+          editWrap.classList.add('hidden');
+          textEl.classList.remove('hidden');
+          this._onEdit?.(next);
+        });
+
+        textarea.addEventListener('keydown', (e) => {
+          e.stopPropagation(); // prevent site-level key handlers from firing
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            row.querySelector('.wt-sp-row-save').click();
+          } else if (e.key === 'Escape') {
+            row.querySelector('.wt-sp-row-cancel').click();
+          }
+        });
+
         row.querySelector('.wt-sp-row-del').addEventListener('click', (e) => {
           e.stopPropagation();
           this._onDelete?.(ann);
         });
-        row.addEventListener('click', () => {
+
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.wt-sp-row-actions, .wt-sp-row-edit-wrap')) return;
           const img    = this._images[imgIdx];
-          const annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
-          const bubble = document.querySelector(`[data-ann-key="${annKey}"]`);
+          const bubble = document.querySelector(`[data-ann-key="${key}"]`);
           if (bubble && !bubble.classList.contains('wt-fixed-bubble')) {
-            // In-wrapper bubble (Naver) scrolls its real ancestors correctly
             bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
           } else if (img) {
-            // Fixed bubbles (Kakao) live in body — scrolling to them is a no-op
-            // when the viewer scrolls an inner container. Scroll to the bbox
-            // point on the image through its actual scroll container instead.
             const r = img.getBoundingClientRect();
             const targetY = r.top + ((ann.bbox.y + ann.bbox.h / 2) / 100) * r.height;
             scrollAncestorBy(img, targetY - window.innerHeight / 2);
@@ -1218,46 +1303,6 @@ class SidePanel {
 
 const PANEL_W = 280;
 
-// ── CSV transcript helpers ────────────────────────────────────────────────────
-
-function csvEscape(value) {
-  const v = String(value ?? '');
-  return /[",;\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-}
-
-/** Minimal RFC-4180 parser. Handles quoted fields with embedded delimiters,
- *  quotes and newlines. Delimiter auto-detected (Excel saves ';' in some locales). */
-function parseCsv(text) {
-  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // strip BOM
-  const nl = text.indexOf('\n');
-  const firstLine = nl === -1 ? text : text.slice(0, nl);
-  const delim = firstLine.split(';').length > firstLine.split(',').length ? ';' : ',';
-
-  const rows = [];
-  let row = [], field = '', inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inQuotes) {
-      if (c === '"') {
-        if (text[i + 1] === '"') { field += '"'; i++; }
-        else inQuotes = false;
-      } else field += c;
-    } else if (c === '"') {
-      inQuotes = true;
-    } else if (c === delim) {
-      row.push(field); field = '';
-    } else if (c === '\n' || c === '\r') {
-      if (c === '\r' && text[i + 1] === '\n') i++;
-      row.push(field); field = '';
-      if (row.length > 1 || row[0] !== '') rows.push(row);
-      row = [];
-    } else {
-      field += c;
-    }
-  }
-  if (field !== '' || row.length) { row.push(field); rows.push(row); }
-  return rows;
-}
 
 /** Scroll el's nearest scrollable ancestor (or the window) by delta px */
 function scrollAncestorBy(el, delta) {
@@ -1332,10 +1377,51 @@ class NaverAdapter {
 }
 
 class RidiAdapter {
-  detect() { return location.hostname === 'www.ridi.com' && location.pathname.startsWith('/viewer/'); }
-  getChapterMeta() { const p = location.pathname.split('/'); return { site: SITES.RIDI, titleId: p[2]||'unknown', chapterId: p[2]||'unknown' }; }
-  getImages() { return []; }
-  watchNewImages() { return () => {}; }
+  get usesFixedOverlay() { return true; }
+
+  detect() {
+    return location.hostname === 'ridibooks.com' &&
+           /\/books\/\w+\/view/.test(location.pathname);
+  }
+
+  getChapterMeta() {
+    const bId = location.pathname.match(/\/books\/(\w+)\/view/)?.[1] || 'unknown';
+    try {
+      const raw = document.getElementById('app_init')?.textContent;
+      if (raw) {
+        const json = JSON.parse(raw);
+        const book = json?.detail?.book;
+        if (book) {
+          return { site: SITES.RIDI,
+                   titleId:   String(book.series_id || bId),
+                   chapterId: String(book.b_id       || bId) };
+        }
+      }
+    } catch (_) { /* fall through */ }
+    return { site: SITES.RIDI, titleId: bId, chapterId: bId };
+  }
+
+  getImages() {
+    return [...document.querySelectorAll('img[data-index]')].filter(
+      img => img.src && img.src.startsWith('blob:')
+    );
+  }
+
+  watchNewImages(callback) {
+    const root = document.querySelector('.simplebar-content-wrapper') ||
+                 document.querySelector('.simplebar-content') ||
+                 document.body;
+    let debounce = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        const imgs = this.getImages();
+        if (imgs.length) callback(imgs);
+      }, 150);
+    });
+    observer.observe(root, { subtree: true, attributes: true, attributeFilter: ['src'] });
+    return () => observer.disconnect();
+  }
 }
 
 class KakaoAdapter {
@@ -1564,8 +1650,21 @@ function bootForPage() {
     },
     onImport: () => triggerImport(),
     onExport: () => triggerExport(meta),
-    onImportCsv: () => triggerImportCsv(),
-    onExportCsv: () => triggerExportCsv(),
+    onEdit: async (ann) => {
+      await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [ann] } });
+      // Update in-memory list so a re-render reflects the change
+      const idx = allAnnotations.findIndex(a =>
+        `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` ===
+        `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`
+      );
+      if (idx >= 0) allAnnotations[idx] = ann;
+      // Refresh the bubble on the page
+      const img = images[ann.imageIndex ?? 0];
+      if (img) {
+        if (isKakao) { fixedLayer.removeBubble(`${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`); fixedLayer.addBubble(ann, img); }
+        else { renderer.removeBubble(img, `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`); renderer.addBubble(ann, img); }
+      }
+    },
     onDelete: async (ann) => {
       const annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
       await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
@@ -1639,6 +1738,7 @@ function bootForPage() {
 
   async function loadAndRender() {
     if (disposed) return;
+    if (!chrome.runtime?.id) return; // extension reloaded — silently stop
     const { annotations } = await sendToBackground({ type: MSG.LOAD_TRANSLATIONS, payload: meta });
     if (disposed) return;
     const raw = annotations || [];
@@ -1723,7 +1823,12 @@ function bootForPage() {
       if (isKakao) fixedLayer.enable(images);
       else added.forEach(img => selector.attachImage(img, images.indexOf(img)));
     }
-    await loadAndRender();
+    try {
+      await loadAndRender();
+    } catch (e) {
+      if (!chrome.runtime?.id) { stopWatching(); return; }
+      throw e;
+    }
     updateProgressBar();
   });
 
@@ -1973,88 +2078,6 @@ function bootForPage() {
     } catch (err) {
       showToast(`✗ Export error: ${err.message}`, '#ef4444');
     }
-  }
-
-  // ── CSV transcript export / import ─────────────────────────────────────
-  // Two-column workflow: export original/translated, mass-edit the
-  // "translated" column in Excel / Google Sheets, import back. Rows are
-  // matched by the stable "id" (annKey) — bbox/style are never touched.
-
-  function triggerExportCsv() {
-    if (!allAnnotations.length) {
-      showToast('✗ No translations to export yet.', '#ef4444');
-      return;
-    }
-    const sorted = [...allAnnotations].sort((a, b) =>
-      ((a.imageIndex ?? 0) - (b.imageIndex ?? 0)) || (a.bbox.y - b.bbox.y)
-    );
-    const rows = [['id', 'panel', 'original', 'translated']];
-    for (const ann of sorted) {
-      rows.push([
-        `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`,
-        (ann.imageIndex ?? 0) + 1,
-        ann.originalText || '',
-        ann.translatedText || '',
-      ]);
-    }
-    // BOM so Excel opens UTF-8 (Korean/Vietnamese) correctly
-    const csv  = '\uFEFF' + rows.map(r => r.map(csvEscape).join(',')).join('\r\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href = url; a.download = `webtoon-transcript_${meta.site}_${meta.titleId}_${meta.chapterId}.csv`;
-    a.click(); URL.revokeObjectURL(url);
-    showToast(`✓ Exported ${sorted.length} row${sorted.length !== 1 ? 's' : ''} to CSV.`);
-  }
-
-  function triggerImportCsv() {
-    const input = document.createElement('input');
-    input.type = 'file'; input.accept = '.csv,.txt';
-    input.addEventListener('change', async () => {
-      const file = input.files[0];
-      if (!file) return;
-      try {
-        const rows = parseCsv(await file.text());
-        if (rows.length < 2) { showToast('✗ CSV has no data rows.', '#ef4444'); return; }
-
-        const header   = rows[0].map(h => h.trim().toLowerCase());
-        const idIdx    = header.indexOf('id');
-        const origIdx  = header.indexOf('original');
-        const transIdx = header.indexOf('translated');
-        if (idIdx === -1 || transIdx === -1) {
-          showToast('✗ CSV must have "id" and "translated" columns (use Export CSV as template).', '#ef4444');
-          return;
-        }
-
-        const byKey = new Map(allAnnotations.map(a =>
-          [`${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}`, a]
-        ));
-        const updated = [];
-        let skipped = 0;
-        for (const row of rows.slice(1)) {
-          const key = (row[idIdx] || '').trim();
-          if (!key) continue;
-          const ann = byKey.get(key);
-          if (!ann) { skipped++; continue; }
-          const next = { ...ann };
-          if (origIdx !== -1 && row[origIdx] !== undefined) next.originalText = row[origIdx];
-          if (row[transIdx] !== undefined) next.translatedText = row[transIdx];
-          updated.push(next);
-        }
-        if (!updated.length) {
-          showToast(`✗ No rows matched this chapter's translations (${skipped} unknown id${skipped !== 1 ? 's' : ''}).`, '#ef4444');
-          return;
-        }
-        await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: updated } });
-        await loadAndRender();
-        updateProgressBar();
-        showToast(`✓ Updated ${updated.length} translation${updated.length !== 1 ? 's' : ''}` +
-          (skipped ? ` (${skipped} row${skipped !== 1 ? 's' : ''} skipped)` : '') + '.');
-      } catch (err) {
-        showToast(`✗ CSV import error: ${err.message}`, '#ef4444');
-      }
-    });
-    input.click();
   }
 
   async function triggerClear() {
