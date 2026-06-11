@@ -1331,10 +1331,49 @@ class NaverAdapter {
 }
 
 class RidiAdapter {
-  detect() { return location.hostname === 'www.ridi.com' && location.pathname.startsWith('/viewer/'); }
-  getChapterMeta() { const p = location.pathname.split('/'); return { site: SITES.RIDI, titleId: p[2]||'unknown', chapterId: p[2]||'unknown' }; }
-  getImages() { return []; }
-  watchNewImages() { return () => {}; }
+  detect() {
+    return location.hostname === 'ridibooks.com' &&
+           /\/books\/\w+\/view/.test(location.pathname);
+  }
+
+  getChapterMeta() {
+    const bId = location.pathname.match(/\/books\/(\w+)\/view/)?.[1] || 'unknown';
+    try {
+      const raw = document.getElementById('app_init')?.textContent;
+      if (raw) {
+        const json = JSON.parse(raw);
+        const book = json?.detail?.book;
+        if (book) {
+          return { site: SITES.RIDI,
+                   titleId:   String(book.series_id || bId),
+                   chapterId: String(book.b_id       || bId) };
+        }
+      }
+    } catch (_) { /* fall through */ }
+    return { site: SITES.RIDI, titleId: bId, chapterId: bId };
+  }
+
+  getImages() {
+    return [...document.querySelectorAll('img[data-index]')].filter(
+      img => img.src && img.src.startsWith('blob:')
+    );
+  }
+
+  watchNewImages(callback) {
+    const root = document.querySelector('.simplebar-content-wrapper') ||
+                 document.querySelector('.simplebar-content') ||
+                 document.body;
+    let debounce = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        const imgs = this.getImages();
+        if (imgs.length) callback(imgs);
+      }, 150);
+    });
+    observer.observe(root, { subtree: true, attributes: true, attributeFilter: ['src'] });
+    return () => observer.disconnect();
+  }
 }
 
 class KakaoAdapter {
