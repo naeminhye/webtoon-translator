@@ -1068,13 +1068,12 @@ class BubbleEditor {
 // Contains: annotation list, import/export, live updates on add/delete.
 
 class SidePanel {
-  constructor({ onJump, onImport, onExport, onDelete, onImportCsv, onExportCsv }) {
-    this._onJump      = onJump;
-    this._onImport    = onImport;
-    this._onExport    = onExport;
-    this._onDelete    = onDelete;
-    this._onImportCsv = onImportCsv;
-    this._onExportCsv = onExportCsv;
+  constructor({ onJump, onImport, onExport, onDelete, onEdit }) {
+    this._onJump   = onJump;
+    this._onImport = onImport;
+    this._onExport = onExport;
+    this._onDelete = onDelete;
+    this._onEdit   = onEdit;
     this._visible  = false;
     this._images   = [];
     this._el       = null;
@@ -1134,18 +1133,11 @@ class SidePanel {
         <button class="wt-sp-btn wt-sp-import">⬆ Import JSON</button>
         <button class="wt-sp-btn wt-sp-export">⬇ Export JSON</button>
       </div>
-      <div class="wt-sp-actions-label">Transcript — edit translations in Excel / Google Sheets</div>
-      <div class="wt-sp-actions">
-        <button class="wt-sp-btn wt-sp-import-csv">⬆ Import CSV</button>
-        <button class="wt-sp-btn wt-sp-export-csv">⬇ Export CSV</button>
-      </div>
       <div class="wt-sp-list"></div>`;
 
     this._el.querySelector('.wt-sp-close').addEventListener('click', () => this.hide());
     this._el.querySelector('.wt-sp-import').addEventListener('click', () => this._onImport?.());
     this._el.querySelector('.wt-sp-export').addEventListener('click', () => this._onExport?.());
-    this._el.querySelector('.wt-sp-import-csv').addEventListener('click', () => this._onImportCsv?.());
-    this._el.querySelector('.wt-sp-export-csv').addEventListener('click', () => this._onExportCsv?.());
 
     // Start hidden (off-screen right)
     this._el.style.transform = `translateX(${PANEL_W}px)`;
@@ -1179,26 +1171,73 @@ class SidePanel {
       for (const ann of anns) {
         const row = document.createElement('div');
         row.className = 'wt-sp-row';
-        row.dataset.annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
+        const key = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
+        row.dataset.annKey = key;
+
         row.innerHTML = `
-          <button class="wt-sp-row-del" title="Delete translation">&#x2715;</button>
+          <div class="wt-sp-row-actions">
+            <button class="wt-sp-row-edit" title="Edit translation">✏</button>
+            <button class="wt-sp-row-del"  title="Delete translation">&#x2715;</button>
+          </div>
           <div class="wt-sp-row-text">${ann.translatedText}</div>
-          ${ann.originalText ? `<div class="wt-sp-row-orig">${ann.originalText}</div>` : ''}`;
+          ${ann.originalText ? `<div class="wt-sp-row-orig">${ann.originalText}</div>` : ''}
+          <div class="wt-sp-row-edit-wrap hidden">
+            <textarea class="wt-sp-row-textarea" rows="3">${ann.translatedText}</textarea>
+            <div class="wt-sp-row-edit-btns">
+              <button class="wt-sp-row-save">Save</button>
+              <button class="wt-sp-row-cancel">Cancel</button>
+            </div>
+          </div>`;
+
+        const textEl   = row.querySelector('.wt-sp-row-text');
+        const editWrap = row.querySelector('.wt-sp-row-edit-wrap');
+        const textarea = row.querySelector('.wt-sp-row-textarea');
+
+        row.querySelector('.wt-sp-row-edit').addEventListener('click', (e) => {
+          e.stopPropagation();
+          textEl.classList.add('hidden');
+          editWrap.classList.remove('hidden');
+          textarea.focus();
+          textarea.select();
+        });
+
+        row.querySelector('.wt-sp-row-cancel').addEventListener('click', (e) => {
+          e.stopPropagation();
+          textarea.value = ann.translatedText;
+          editWrap.classList.add('hidden');
+          textEl.classList.remove('hidden');
+        });
+
+        row.querySelector('.wt-sp-row-save').addEventListener('click', (e) => {
+          e.stopPropagation();
+          const next = { ...ann, translatedText: textarea.value };
+          textEl.textContent = textarea.value;
+          editWrap.classList.add('hidden');
+          textEl.classList.remove('hidden');
+          this._onEdit?.(next);
+        });
+
+        textarea.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            row.querySelector('.wt-sp-row-save').click();
+          } else if (e.key === 'Escape') {
+            row.querySelector('.wt-sp-row-cancel').click();
+          }
+        });
+
         row.querySelector('.wt-sp-row-del').addEventListener('click', (e) => {
           e.stopPropagation();
           this._onDelete?.(ann);
         });
-        row.addEventListener('click', () => {
+
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.wt-sp-row-actions, .wt-sp-row-edit-wrap')) return;
           const img    = this._images[imgIdx];
-          const annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
-          const bubble = document.querySelector(`[data-ann-key="${annKey}"]`);
+          const bubble = document.querySelector(`[data-ann-key="${key}"]`);
           if (bubble && !bubble.classList.contains('wt-fixed-bubble')) {
-            // In-wrapper bubble (Naver) scrolls its real ancestors correctly
             bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
           } else if (img) {
-            // Fixed bubbles (Kakao) live in body — scrolling to them is a no-op
-            // when the viewer scrolls an inner container. Scroll to the bbox
-            // point on the image through its actual scroll container instead.
             const r = img.getBoundingClientRect();
             const targetY = r.top + ((ann.bbox.y + ann.bbox.h / 2) / 100) * r.height;
             scrollAncestorBy(img, targetY - window.innerHeight / 2);
@@ -1218,46 +1257,6 @@ class SidePanel {
 
 const PANEL_W = 280;
 
-// ── CSV transcript helpers ────────────────────────────────────────────────────
-
-function csvEscape(value) {
-  const v = String(value ?? '');
-  return /[",;\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-}
-
-/** Minimal RFC-4180 parser. Handles quoted fields with embedded delimiters,
- *  quotes and newlines. Delimiter auto-detected (Excel saves ';' in some locales). */
-function parseCsv(text) {
-  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // strip BOM
-  const nl = text.indexOf('\n');
-  const firstLine = nl === -1 ? text : text.slice(0, nl);
-  const delim = firstLine.split(';').length > firstLine.split(',').length ? ';' : ',';
-
-  const rows = [];
-  let row = [], field = '', inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inQuotes) {
-      if (c === '"') {
-        if (text[i + 1] === '"') { field += '"'; i++; }
-        else inQuotes = false;
-      } else field += c;
-    } else if (c === '"') {
-      inQuotes = true;
-    } else if (c === delim) {
-      row.push(field); field = '';
-    } else if (c === '\n' || c === '\r') {
-      if (c === '\r' && text[i + 1] === '\n') i++;
-      row.push(field); field = '';
-      if (row.length > 1 || row[0] !== '') rows.push(row);
-      row = [];
-    } else {
-      field += c;
-    }
-  }
-  if (field !== '' || row.length) { row.push(field); rows.push(row); }
-  return rows;
-}
 
 /** Scroll el's nearest scrollable ancestor (or the window) by delta px */
 function scrollAncestorBy(el, delta) {
@@ -1564,8 +1563,21 @@ function bootForPage() {
     },
     onImport: () => triggerImport(),
     onExport: () => triggerExport(meta),
-    onImportCsv: () => triggerImportCsv(),
-    onExportCsv: () => triggerExportCsv(),
+    onEdit: async (ann) => {
+      await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [ann] } });
+      // Update in-memory list so a re-render reflects the change
+      const idx = allAnnotations.findIndex(a =>
+        `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` ===
+        `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`
+      );
+      if (idx >= 0) allAnnotations[idx] = ann;
+      // Refresh the bubble on the page
+      const img = images[ann.imageIndex ?? 0];
+      if (img) {
+        if (isKakao) { fixedLayer.removeBubble(`${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`); fixedLayer.addBubble(ann, img); }
+        else { renderer.removeBubble(img, `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`); renderer.addBubble(ann, img); }
+      }
+    },
     onDelete: async (ann) => {
       const annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
       await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
@@ -1973,88 +1985,6 @@ function bootForPage() {
     } catch (err) {
       showToast(`✗ Export error: ${err.message}`, '#ef4444');
     }
-  }
-
-  // ── CSV transcript export / import ─────────────────────────────────────
-  // Two-column workflow: export original/translated, mass-edit the
-  // "translated" column in Excel / Google Sheets, import back. Rows are
-  // matched by the stable "id" (annKey) — bbox/style are never touched.
-
-  function triggerExportCsv() {
-    if (!allAnnotations.length) {
-      showToast('✗ No translations to export yet.', '#ef4444');
-      return;
-    }
-    const sorted = [...allAnnotations].sort((a, b) =>
-      ((a.imageIndex ?? 0) - (b.imageIndex ?? 0)) || (a.bbox.y - b.bbox.y)
-    );
-    const rows = [['id', 'panel', 'original', 'translated']];
-    for (const ann of sorted) {
-      rows.push([
-        `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`,
-        (ann.imageIndex ?? 0) + 1,
-        ann.originalText || '',
-        ann.translatedText || '',
-      ]);
-    }
-    // BOM so Excel opens UTF-8 (Korean/Vietnamese) correctly
-    const csv  = '\uFEFF' + rows.map(r => r.map(csvEscape).join(',')).join('\r\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href = url; a.download = `webtoon-transcript_${meta.site}_${meta.titleId}_${meta.chapterId}.csv`;
-    a.click(); URL.revokeObjectURL(url);
-    showToast(`✓ Exported ${sorted.length} row${sorted.length !== 1 ? 's' : ''} to CSV.`);
-  }
-
-  function triggerImportCsv() {
-    const input = document.createElement('input');
-    input.type = 'file'; input.accept = '.csv,.txt';
-    input.addEventListener('change', async () => {
-      const file = input.files[0];
-      if (!file) return;
-      try {
-        const rows = parseCsv(await file.text());
-        if (rows.length < 2) { showToast('✗ CSV has no data rows.', '#ef4444'); return; }
-
-        const header   = rows[0].map(h => h.trim().toLowerCase());
-        const idIdx    = header.indexOf('id');
-        const origIdx  = header.indexOf('original');
-        const transIdx = header.indexOf('translated');
-        if (idIdx === -1 || transIdx === -1) {
-          showToast('✗ CSV must have "id" and "translated" columns (use Export CSV as template).', '#ef4444');
-          return;
-        }
-
-        const byKey = new Map(allAnnotations.map(a =>
-          [`${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}`, a]
-        ));
-        const updated = [];
-        let skipped = 0;
-        for (const row of rows.slice(1)) {
-          const key = (row[idIdx] || '').trim();
-          if (!key) continue;
-          const ann = byKey.get(key);
-          if (!ann) { skipped++; continue; }
-          const next = { ...ann };
-          if (origIdx !== -1 && row[origIdx] !== undefined) next.originalText = row[origIdx];
-          if (row[transIdx] !== undefined) next.translatedText = row[transIdx];
-          updated.push(next);
-        }
-        if (!updated.length) {
-          showToast(`✗ No rows matched this chapter's translations (${skipped} unknown id${skipped !== 1 ? 's' : ''}).`, '#ef4444');
-          return;
-        }
-        await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: updated } });
-        await loadAndRender();
-        updateProgressBar();
-        showToast(`✓ Updated ${updated.length} translation${updated.length !== 1 ? 's' : ''}` +
-          (skipped ? ` (${skipped} row${skipped !== 1 ? 's' : ''} skipped)` : '') + '.');
-      } catch (err) {
-        showToast(`✗ CSV import error: ${err.message}`, '#ef4444');
-      }
-    });
-    input.click();
   }
 
   async function triggerClear() {

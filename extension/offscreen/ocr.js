@@ -59,7 +59,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       broadcast('ready');
       // Webtoon bubbles wrap lines arbitrarily — collapse to one line
       const text = (data.text || '').replace(/\s+/g, ' ').trim();
-      sendResponse({ ok: true, text });
+      // confidence: 0-100 average across all recognised words
+      const confidence = typeof data.confidence === 'number' ? data.confidence : 0;
+      sendResponse({ ok: true, text, confidence });
     } catch (err) {
       sendResponse({ ok: false, error: err.message || String(err) });
     }
