@@ -12,6 +12,7 @@ const MSG    = {
   EXPORT_CHAPTER:    'EXPORT_CHAPTER',
   IMPORT_FILE:       'IMPORT_FILE',
   CLEAR_CHAPTER:     'CLEAR_CHAPTER',
+  OCR_REGION:        'OCR_REGION',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
 };
 
@@ -30,6 +31,17 @@ async function hashImage(img) {
     const u = new URL(img.src);
     const stable = u.searchParams.get('filename') || u.searchParams.get('kid') || img.src.split('/').pop();
     img.__wtHash = `kakao:${stable}`;
+    return img.__wtHash;
+  }
+
+  // Naver CDN (pstatic.net) blocks credentialed CORS fetches (ACAO: *), so a
+  // byte-level hash was never reachable — every image fell into the url:
+  // fallback anyway. Go straight there: same key format (compatible with
+  // existing saved annotations), no console CORS spam, no wasted fetches.
+  // Naver image URLs are stable per chapter so this stays a reliable identity.
+  if (img.src.includes('pstatic.net')) {
+    const urlHash = img.src.split('?')[0].split('/').slice(-2).join('/');
+    img.__wtHash  = `url:${urlHash}`;
     return img.__wtHash;
   }
 
@@ -622,7 +634,60 @@ class InputDialog {
 
   hide() {
     this._el.style.display = 'none';
+    this._el.querySelector('.wt-ocr-status').style.display = 'none';
+    clearTimeout(this._ocrStatusTimer);
     document.removeEventListener('keydown', this._escHandler);
+  }
+
+  // ── OCR prefill ──────────────────────────────────────────────────────────
+  // Background OCR fills the "Original text" field while the dialog is open.
+  // Never overwrites anything the user already typed.
+
+  setOcrPending() {
+    // Session token guards against a slow OCR result landing in a dialog
+    // that was since reopened for a different bbox
+    this._ocrSession = (this._ocrSession || 0) + 1;
+    this._showOcrStatus('⏳ Starting OCR…', '#6366f1');
+    return this._ocrSession;
+  }
+
+  setOcrText(text, session) {
+    if (session !== this._ocrSession) return;
+    const inp = this._el.querySelector('.wt-input-original');
+    if (this._el.style.display !== 'none' && !inp.value && text) inp.value = text;
+    if (text) this._showOcrStatus('✓ OCR done — edit if needed', '#16a34a', 4000);
+    else      this._showOcrStatus('OCR found no text in this region', '#94a3b8', 4000);
+  }
+
+  setOcrError(message, session) {
+    if (session !== undefined && session !== this._ocrSession) return;
+    this._showOcrStatus(`✗ OCR failed: ${message || 'unknown error'}`, '#ef4444');
+  }
+
+  /** Engine-level progress (model download, recognition) — not session-bound */
+  setOcrStatus({ status, progress, message }) {
+    const pct = progress !== undefined ? ` ${Math.round(progress * 100)}%` : '';
+    if (status === 'downloading-model') {
+      this._showOcrStatus(`⏳ Loading Korean OCR model…${pct}`, '#6366f1');
+    } else if (status === 'initializing') {
+      this._showOcrStatus('⏳ Preparing OCR engine…', '#6366f1');
+    } else if (status === 'recognizing') {
+      this._showOcrStatus(`🔍 Scanning text…${pct}`, '#6366f1');
+    } else if (status === 'error') {
+      this._showOcrStatus(`✗ OCR engine failed to start: ${message || 'unknown error'}`, '#ef4444');
+    }
+    // 'ready' is not shown by itself — setOcrText handles the success message
+  }
+
+  _showOcrStatus(text, color, autoHideMs) {
+    const el = this._el.querySelector('.wt-ocr-status');
+    el.textContent    = text;
+    el.style.color    = color;
+    el.style.display  = 'block';
+    clearTimeout(this._ocrStatusTimer);
+    if (autoHideMs) {
+      this._ocrStatusTimer = setTimeout(() => { el.style.display = 'none'; }, autoHideMs);
+    }
   }
 
   _build() {
@@ -635,6 +700,7 @@ class InputDialog {
       </div>
       <label class="wt-dialog-label">Original text (optional)</label>
       <input class="wt-input-original" type="text" placeholder="Source text..." />
+      <div class="wt-ocr-status" style="display:none"></div>
       <label class="wt-dialog-label">Translation</label>
       <textarea class="wt-input-translated" rows="3" placeholder="Enter translation..."></textarea>
       <div class="wt-style-bar">
@@ -1383,6 +1449,45 @@ function sendToBackground(message, retries = 3) {
   });
 }
 
+// ── OCR ───────────────────────────────────────────────────────────────────────
+
+async function ocrRegion(img, bbox) {
+  // Fast path: draw the already-loaded DOM image directly.
+  // blob: URLs (Kakao) are same-origin → never tainted.
+  // CDN images without crossOrigin attr may taint the canvas → SecurityError.
+  // In that case pass imageUrl to the background service worker, which can
+  // fetch cross-origin freely and do the crop there.
+  let dataUrl = null;
+  try {
+    dataUrl = _cropCanvas(img, bbox);
+  } catch (e) {
+    if (!(e instanceof DOMException) || e.name !== 'SecurityError') throw e;
+  }
+
+  const res = await sendToBackground({
+    type: MSG.OCR_REGION,
+    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox },
+  });
+  if (!res?.ok) throw new Error(res?.error || 'OCR failed');
+  return res.text;
+}
+
+function _cropCanvas(img, bbox) {
+  const sx = (bbox.x / 100) * img.naturalWidth;
+  const sy = (bbox.y / 100) * img.naturalHeight;
+  const sw = Math.max(1, (bbox.w / 100) * img.naturalWidth);
+  const sh = Math.max(1, (bbox.h / 100) * img.naturalHeight);
+  const scale = sw < 400 ? Math.min(3, 400 / sw) : 1;
+  const canvas = document.createElement('canvas');
+  canvas.width  = Math.round(sw * scale);
+  canvas.height = Math.round(sh * scale);
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/png'); // throws SecurityError if canvas is tainted
+}
+
 // ── Translation visibility toggle ────────────────────────────────────────────
 let _translationsVisible = true;
 
@@ -1632,7 +1737,13 @@ function bootForPage() {
       x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
       y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
     };
-    const result = await dialog.show(screenPos);
+    // Open the dialog immediately; OCR fills "Original text" in the background
+    const resultPromise = dialog.show(screenPos);
+    const ocrSession    = dialog.setOcrPending();
+    ocrRegion(imageEl, bbox)
+      .then(text => dialog.setOcrText(text, ocrSession))
+      .catch(err => dialog.setOcrError(err.message, ocrSession));
+    const result = await resultPromise;
     if (!result) return;
 
     const imageHash  = await hashImage(imageEl);
@@ -1840,6 +1951,7 @@ function bootForPage() {
     if (message.type === 'TRIGGER_EXPORT' && currentMode === MODES.ANNOTATE) triggerExport(meta);
     if (message.type === 'TRIGGER_IMPORT') triggerImport();
     if (message.type === 'TRIGGER_CLEAR')  triggerClear();
+    if (message.type === 'OCR_STATUS')     dialog.setOcrStatus(message.payload);
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 

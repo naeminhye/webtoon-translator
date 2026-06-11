@@ -12,6 +12,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'EXPORT_CHAPTER':      handleExport(message.payload).then(sendResponse); return true;
     case 'IMPORT_FILE':         handleImport(message.payload).then(sendResponse); return true;
     case 'CLEAR_CHAPTER':       handleClear(message.payload).then(sendResponse);  return true;
+    case 'OCR_REGION':
+      handleOcr(message.payload)
+        .then(sendResponse)
+        .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
+      return true;
+    case 'OCR_STATUS':
+      // Relay engine progress from the offscreen document to content scripts
+      // (runtime.sendMessage never reaches content scripts directly)
+      chrome.tabs.query({
+        url: [
+          'https://comic.naver.com/*', 'https://m.comic.naver.com/*',
+          'https://page.kakao.com/*', 'https://www.ridi.com/*',
+        ],
+      }, (tabs) => {
+        for (const tab of tabs) {
+          if (tab.id != null) {
+            chrome.tabs.sendMessage(tab.id, message, () => void chrome.runtime.lastError);
+          }
+        }
+      });
+      return false;
   }
 });
 
@@ -101,6 +122,134 @@ async function handleImport({ jsonString }) {
     count += annotations.length;
   }
   return { ok: true, imported: count };
+}
+
+// ── OCR ───────────────────────────────────────────────────────────────────────
+// Two providers: 'tesseract' (offline, offscreen doc) and 'ocrspace' (online API).
+// If the content script couldn't crop (tainted canvas), imageUrl + bbox are sent
+// instead of dataUrl; the service worker fetches + crops here using OffscreenCanvas.
+
+const OCR_PROVIDER_KEY  = 'wt:ocr-provider';
+const OCR_SPACE_KEY_STR = 'wt:ocrspace-key';
+
+async function handleOcr({ dataUrl, imageUrl, bbox }) {
+  const stored = await chrome.storage.local.get({
+    [OCR_PROVIDER_KEY]:  'tesseract',
+    [OCR_SPACE_KEY_STR]: '',
+  });
+  const provider = stored[OCR_PROVIDER_KEY];
+
+  // Resolve dataUrl — crop here if content script was blocked by canvas taint
+  let finalDataUrl = dataUrl;
+  if (!finalDataUrl && imageUrl) {
+    finalDataUrl = await fetchAndCrop(imageUrl, bbox);
+  }
+
+  if (provider === 'ocrspace') {
+    const apiKey = stored[OCR_SPACE_KEY_STR];
+    if (!apiKey) {
+      return { ok: false, error: 'OCR.space API key not set — open the extension popup to add it.' };
+    }
+    return ocrSpaceRun(finalDataUrl, apiKey);
+  }
+
+  return tesseractRun(finalDataUrl);
+}
+
+// ── OCR.space ─────────────────────────────────────────────────────────────────
+
+async function ocrSpaceRun(dataUrl, apiKey) {
+  const body = new URLSearchParams({
+    apikey: apiKey,
+    base64Image: dataUrl,
+    language: 'kor',
+    OCREngine: '2',
+    isTable: 'false',
+    detectOrientation: 'false',
+    scale: 'true',
+  });
+  const res = await fetch('https://api.ocr.space/parse/image', { method: 'POST', body });
+  if (!res.ok) return { ok: false, error: `OCR.space HTTP ${res.status}` };
+  const json = await res.json();
+  if (json.IsErroredOnProcessing) {
+    const msg = Array.isArray(json.ErrorMessage)
+      ? json.ErrorMessage.join(' ')
+      : (json.ErrorMessage || 'unknown error');
+    return { ok: false, error: `OCR.space: ${msg}` };
+  }
+  const text = (json.ParsedResults || [])
+    .map(r => (r.ParsedText || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { ok: true, text };
+}
+
+// ── Tesseract (offscreen document) ────────────────────────────────────────────
+
+let offscreenReady = null;
+
+function ensureOffscreen() {
+  if (!offscreenReady) {
+    offscreenReady = (async () => {
+      if (await chrome.offscreen.hasDocument()) return;
+      await chrome.offscreen.createDocument({
+        url: 'offscreen/ocr.html',
+        reasons: ['WORKERS'],
+        justification: 'Run Tesseract.js OCR (WASM web workers) on user-selected panel regions',
+      });
+    })().catch(err => { offscreenReady = null; throw err; });
+  }
+  return offscreenReady;
+}
+
+async function tesseractRun(dataUrl) {
+  if (!chrome.offscreen?.createDocument) {
+    return { ok: false, error: 'Offscreen API unavailable — reload extension (Chrome 109+)' };
+  }
+  await ensureOffscreen();
+  let lastErr = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'OCR_RUN', payload: { dataUrl } });
+      if (res) return res;
+      lastErr = new Error('OCR worker did not respond');
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
+  }
+  throw lastErr || new Error('OCR worker did not respond');
+}
+
+// ── Image fetch + crop (service-worker side, full cross-origin access) ────────
+
+async function fetchAndCrop(imageUrl, bbox) {
+  const res    = await fetch(imageUrl, { credentials: 'omit' });
+  const blob   = await res.blob();
+  const bitmap = await createImageBitmap(blob);
+
+  const sx = (bbox.x / 100) * bitmap.width;
+  const sy = (bbox.y / 100) * bitmap.height;
+  const sw = Math.max(1, (bbox.w / 100) * bitmap.width);
+  const sh = Math.max(1, (bbox.h / 100) * bitmap.height);
+  const scale = sw < 400 ? Math.min(3, 400 / sw) : 1;
+
+  const canvas = new OffscreenCanvas(Math.round(sw * scale), Math.round(sh * scale));
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+
+  const cropBlob = await canvas.convertToBlob({ type: 'image/png' });
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to encode cropped image'));
+    reader.readAsDataURL(cropBlob);
+  });
 }
 
 // ── extension on/off badge ────────────────────────────────────────────────────

@@ -71,6 +71,27 @@
     </div>
   </div>
 
+  <section id="ocr-settings">
+    <div class="settings-head">OCR Engine</div>
+    <div class="provider-row">
+      <label class="provider-opt">
+        <input type="radio" name="ocr-provider" value="tesseract" />
+        <span>Tesseract.js</span>
+        <span class="provider-hint">offline</span>
+      </label>
+      <label class="provider-opt">
+        <input type="radio" name="ocr-provider" value="ocrspace" />
+        <span>OCR.space</span>
+        <span class="provider-hint">online · faster</span>
+      </label>
+    </div>
+    <div id="ocrspace-key-row" class="hidden">
+      <input type="password" id="ocrspace-key" placeholder="Paste your OCR.space API key" autocomplete="off" />
+      <button id="save-ocrspace-key" class="key-save-btn">Save</button>
+    </div>
+    <p id="ocrspace-key-saved" class="key-saved hidden">API key saved ✓</p>
+  </section>
+
   <footer>v0.1.0 · Phase 1 (local only)</footer>
   <script src="popup.js"></script>
 </body>

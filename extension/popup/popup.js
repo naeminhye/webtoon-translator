@@ -1,5 +1,7 @@
 const $ = id => document.getElementById(id);
-const ENABLED_KEY = 'wt:enabled';
+const ENABLED_KEY       = 'wt:enabled';
+const OCR_PROVIDER_KEY  = 'wt:ocr-provider';
+const OCR_SPACE_KEY_STR = 'wt:ocrspace-key';
 
 let activeTabId = null;
 
@@ -86,4 +88,35 @@ async function init() {
   $('btn-clear').addEventListener('click',  () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_CLEAR' }); window.close(); });
 }
 
+async function initOcrSettings() {
+  const stored = await chrome.storage.local.get({
+    [OCR_PROVIDER_KEY]:  'tesseract',
+    [OCR_SPACE_KEY_STR]: '',
+  });
+
+  const radios = document.querySelectorAll('input[name="ocr-provider"]');
+  function applyProvider(provider) {
+    radios.forEach(r => { r.checked = r.value === provider; });
+    $('ocrspace-key-row').classList.toggle('hidden', provider !== 'ocrspace');
+    $('ocrspace-key-saved').classList.add('hidden');
+  }
+
+  applyProvider(stored[OCR_PROVIDER_KEY]);
+  if (stored[OCR_SPACE_KEY_STR]) $('ocrspace-key').value = stored[OCR_SPACE_KEY_STR];
+
+  radios.forEach(r => r.addEventListener('change', async () => {
+    const provider = r.value;
+    await chrome.storage.local.set({ [OCR_PROVIDER_KEY]: provider });
+    applyProvider(provider);
+  }));
+
+  $('save-ocrspace-key').addEventListener('click', async () => {
+    const key = $('ocrspace-key').value.trim();
+    await chrome.storage.local.set({ [OCR_SPACE_KEY_STR]: key });
+    $('ocrspace-key-saved').classList.remove('hidden');
+    setTimeout(() => $('ocrspace-key-saved').classList.add('hidden'), 2500);
+  });
+}
+
 init();
+initOcrSettings();
