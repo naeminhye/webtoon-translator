@@ -57,15 +57,22 @@ async function initSyncSettings() {
     }
   }
 
-  function showConfigured(user) {
+  function applySyncEnabled(enabled) {
+    $('sync-enabled-toggle').checked = enabled;
+    $('sync-active-note').classList.toggle('hidden', !enabled);
+    $('sync-paused-note').classList.toggle('hidden', enabled);
+    setSyncDot(enabled ? 'synced' : 'on');
+    $('footer-sync-label').textContent = enabled ? 'Supabase sync ✓' : 'Supabase (sync paused)';
+  }
+
+  function showConfigured(user, syncEnabled = false) {
     $('sb-config-wrap').classList.add('hidden');
     $('sb-auth-wrap').classList.remove('hidden');
     if (user) {
       $('sb-login-form').classList.add('hidden');
       $('sb-user-row').classList.remove('hidden');
       $('sb-user-email').textContent = user.email;
-      setSyncDot('synced');
-      $('footer-sync-label').textContent = 'Supabase sync ✓';
+      applySyncEnabled(syncEnabled);
     } else {
       $('sb-login-form').classList.remove('hidden');
       $('sb-user-row').classList.add('hidden');
@@ -81,8 +88,14 @@ async function initSyncSettings() {
     $('footer-sync-label').textContent = 'local only';
   }
 
-  if (status.configured) showConfigured(status.user);
+  if (status.configured) showConfigured(status.user, status.syncEnabled);
   else showNotConfigured();
+
+  $('sync-enabled-toggle').addEventListener('change', async (e) => {
+    const enabled = e.target.checked;
+    await chrome.runtime.sendMessage({ type: 'SB_SET_SYNC_ENABLED', enabled });
+    applySyncEnabled(enabled);
+  });
 
   $('sb-save-config').addEventListener('click', async () => {
     const url     = $('sb-url').value.trim().replace(/\/$/, '');
@@ -100,7 +113,7 @@ async function initSyncSettings() {
     $('sb-auth-error').classList.add('hidden');
     const res = await chrome.runtime.sendMessage({ type: 'SB_SIGN_IN', payload: { email, password } });
     $('sb-signin-btn').disabled = false;
-    if (res.ok) { showConfigured(res.user); }
+    if (res.ok) { showConfigured(res.user, false); }
     else { $('sb-auth-error').textContent = res.error; $('sb-auth-error').classList.remove('hidden'); }
   }
 

@@ -293,9 +293,28 @@
                 </div>
                 <button id="sb-signout-btn" class="btn-ghost">Sign out</button>
               </div>
-              <div class="sync-success-note">
+
+              <!-- Sync toggle -->
+              <div class="sync-toggle-row">
+                <div class="sync-toggle-info">
+                  <div class="sync-toggle-label">Enable Cloud Sync</div>
+                  <div class="sync-toggle-desc">Automatically push and pull translations to your Supabase project</div>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="sync-enabled-toggle" />
+                  <span class="toggle-track">
+                    <span class="toggle-thumb"></span>
+                  </span>
+                </label>
+              </div>
+
+              <div id="sync-active-note" class="sync-success-note hidden">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                 Cloud sync is active — translations sync automatically.
+              </div>
+              <div id="sync-paused-note" class="sync-paused-note hidden">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                Cloud sync is paused. Toggle on to start syncing.
               </div>
             </div>
           </div>
