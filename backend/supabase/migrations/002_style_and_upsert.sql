@@ -16,18 +16,20 @@ create trigger translations_updated_at
   before update on translations
   for each row execute function set_updated_at();
 
--- Simplify write policies: any signed-in user can write (client enforces translate mode)
+-- Simplify write policies: any signed-in user can write/edit/delete
+-- (small trusted team — client enforces translate mode)
 drop policy if exists "translators can insert" on translations;
 drop policy if exists "contributors can update own" on translations;
+drop policy if exists "contributors can delete own" on translations;
 
 create policy "authenticated users can insert"
   on translations for insert
   with check (auth.uid() is not null);
 
-create policy "contributors can update own"
+create policy "authenticated users can update"
   on translations for update
-  using (contributor_id = auth.uid());
+  using (auth.uid() is not null);
 
-create policy "contributors can delete own"
+create policy "authenticated users can delete"
   on translations for delete
-  using (contributor_id = auth.uid());
+  using (auth.uid() is not null);
