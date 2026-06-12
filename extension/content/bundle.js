@@ -955,6 +955,14 @@ class BubbleEditor {
   constructor({ onBboxChange }) {
     this._onBboxChange = onBboxChange;
     this._active = null; // { bubble, img, handles }
+    this._justDragged = false;
+  }
+
+  /** Returns true (and clears) if a drag/resize just ended — used to suppress the post-drag click. */
+  consumeDrag() {
+    const v = this._justDragged;
+    this._justDragged = false;
+    return v;
   }
 
   attach(bubble, img) {
@@ -1034,6 +1042,7 @@ class BubbleEditor {
 
     const onMove = (e) => {
       if (!dragging) return;
+      this._justDragged = true;
       const iw = img.offsetWidth || img.naturalWidth || 375;
       const ih = img.offsetHeight || img.naturalHeight || 500;
       const newLeft = Math.max(0, Math.min(iw - parseFloat(bubble.style.width), origLeft + (e.clientX - startX)));
@@ -1077,6 +1086,7 @@ class BubbleEditor {
 
     const onMove = (e) => {
       if (!dragging) return;
+      this._justDragged = true;
       const dx = e.clientX - startX, dy = e.clientY - startY;
       const iw = img.offsetWidth || img.naturalWidth || 375;
       const ih = img.offsetHeight || img.naturalHeight || 500;
@@ -1209,6 +1219,8 @@ class SidePanel {
     }
 
     for (const [imgIdx, anns] of [...grouped.entries()].sort((a,b) => a[0]-b[0])) {
+      // Sort within each panel: top-to-bottom (bbox.y), then left-to-right (bbox.x)
+      anns.sort((a, b) => a.bbox.y !== b.bbox.y ? a.bbox.y - b.bbox.y : a.bbox.x - b.bbox.x);
       const section = document.createElement('div');
       section.className = 'wt-sp-section';
       section.innerHTML = `<div class="wt-sp-section-label">Panel ${imgIdx + 1}</div>`;
@@ -1222,7 +1234,7 @@ class SidePanel {
         row.innerHTML = `
           <div class="wt-sp-row-actions">
             <button class="wt-sp-row-edit" title="Edit translation">✏</button>
-            <button class="wt-sp-row-del"  title="Delete translation">&#x2715;</button>
+            <button class="wt-sp-row-del"  title="Delete translation">Delete</button>
           </div>
           <div class="wt-sp-row-text">${ann.translatedText}</div>
           ${ann.originalText ? `<div class="wt-sp-row-orig">${ann.originalText}</div>` : ''}
@@ -1238,12 +1250,16 @@ class SidePanel {
         const editWrap = row.querySelector('.wt-sp-row-edit-wrap');
         const textarea = row.querySelector('.wt-sp-row-textarea');
 
-        row.querySelector('.wt-sp-row-edit').addEventListener('click', (e) => {
-          e.stopPropagation();
+        const openEditMode = () => {
           textEl.classList.add('hidden');
           editWrap.classList.remove('hidden');
           textarea.focus();
           textarea.select();
+        };
+
+        row.querySelector('.wt-sp-row-edit').addEventListener('click', (e) => {
+          e.stopPropagation();
+          openEditMode();
         });
 
         row.querySelector('.wt-sp-row-cancel').addEventListener('click', (e) => {
@@ -1290,9 +1306,11 @@ class SidePanel {
           } else if (bubble) {
             bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
           } else {
+            openEditMode();
             return;
           }
           this._onJump?.(ann, img);
+          openEditMode();
         });
         section.appendChild(row);
       }
@@ -1661,8 +1679,8 @@ function bootForPage() {
       // Refresh the bubble on the page
       const img = images[ann.imageIndex ?? 0];
       if (img) {
-        if (isKakao) { fixedLayer.removeBubble(`${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`); fixedLayer.addBubble(ann, img); }
-        else { renderer.removeBubble(img, `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`); renderer.addBubble(ann, img); }
+        if (isKakao) { fixedLayer.removeBubble(`${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`); fixedLayer.upsertBubble(img, ann); }
+        else { renderer.upsertBubble(img, ann); }
       }
     },
     onDelete: async (ann) => {
@@ -1699,6 +1717,12 @@ function bootForPage() {
       if (newKey !== annKey) {
         await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
         bubble.dataset.annKey = newKey;
+        // Keep renderer state map in sync so removeBubble/upsertBubble work on the new key
+        const rendState = renderer.imageState.get(img);
+        if (rendState) {
+          rendState.bubbles.delete(annKey);
+          rendState.bubbles.set(newKey, bubble);
+        }
       }
       // Update dataset so dialog re-edit picks up new bbox
       bubble.dataset.bboxX = newBbox.x;
@@ -1760,13 +1784,18 @@ function bootForPage() {
       if (!byHash.has(ann.imageHash)) byHash.set(ann.imageHash, []);
       byHash.get(ann.imageHash).push(ann);
     }
-    for (const img of images) {
-      const hash = await hashImage(img);
-      const anns = byHash.get(hash) || [];
+    // Re-derive imageIndex from the sorted images array so panel numbers in the
+    // sidebar always reflect true visual scroll order, even for old annotations.
+    const hashToIndex = new Map();
+    for (let i = 0; i < images.length; i++) {
+      const h = await hashImage(images[i]);
+      hashToIndex.set(h, i);
+      const anns = byHash.get(h) || [];
+      for (const ann of anns) ann.imageIndex = i; // patch in-memory; storage updated lazily
       if (isKakao) {
-        for (const ann of anns) fixedLayer.upsertBubble(img, ann);
+        for (const ann of anns) fixedLayer.upsertBubble(images[i], ann);
       } else {
-        renderer.renderForImage(img, anns);
+        renderer.renderForImage(images[i], anns);
       }
     }
     // Keep side panel in sync
@@ -1818,7 +1847,11 @@ function bootForPage() {
   const stopWatching = adapter.watchNewImages(async (newImages) => {
     const added = newImages.filter(img => !images.includes(img));
     if (!added.length) return;
-    images = [...images, ...added];
+    // Merge then sort by DOM position so imageIndex matches visual scroll order
+    // even when lazy-loaded images arrive out of sequence.
+    images = [...images, ...added].sort((a, b) =>
+      a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+    );
     if (currentMode === MODES.ANNOTATE) {
       if (isKakao) fixedLayer.enable(images);
       else added.forEach(img => selector.attachImage(img, images.indexOf(img)));
@@ -1877,6 +1910,8 @@ function bootForPage() {
     if (currentMode !== MODES.ANNOTATE) return;
     const bubble = e.target.closest('.wt-translation-bubble');
     if (!bubble) return;
+    // If the user just finished a drag/resize, suppress the click-to-edit dialog
+    if (bubbleEditor.consumeDrag()) return;
     e.stopPropagation();
 
     const wrapper = bubble.closest('.wt-img-wrapper');
