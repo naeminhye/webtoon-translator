@@ -17,7 +17,22 @@ header {
   color: #fff;
 }
 
-.logo { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.logo { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+
+.header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+.settings-btn {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  padding: 3px 5px;
+  display: flex;
+  align-items: center;
+  transition: background 0.15s;
+}
+.settings-btn:hover { background: rgba(255, 255, 255, 0.35); }
 .logo-icon { font-size: 15px; }
 
 /* ── On/off switch ─────────────────────────────────────────────────────── */

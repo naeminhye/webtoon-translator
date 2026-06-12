@@ -160,7 +160,10 @@ class FixedOverlayLayer {
 
     // Forward wheel events to the element underneath so the page can still scroll.
     // pointer-events:auto on the overlay swallows them otherwise.
+    // Guard against re-dispatched (non-trusted) events to prevent infinite recursion
+    // when a bubble child is inside the overlay and the bubbling event re-triggers this listener.
     this._el.addEventListener('wheel', (e) => {
+      if (!e.isTrusted) return;
       this._el.style.pointerEvents = 'none';
       const target = document.elementFromPoint(e.clientX, e.clientY);
       this._el.style.pointerEvents = 'auto';
@@ -739,7 +742,10 @@ class InputDialog {
         <span class="wt-dialog-title">Add translation</span>
         <button class="wt-btn-close" aria-label="Cancel">&#x2715;</button>
       </div>
-      <label class="wt-dialog-label">Original text (optional)</label>
+      <div class="wt-original-label-row">
+        <label class="wt-dialog-label">Original text (optional)</label>
+        <button class="wt-btn-gtranslate" type="button" title="Translate with Google Translate">Translate ↗</button>
+      </div>
       <input class="wt-input-original" type="text" placeholder="Source text..." />
       <div class="wt-ocr-status" style="display:none"></div>
       <label class="wt-dialog-label">Translation</label>
@@ -868,6 +874,30 @@ class InputDialog {
     this._el.querySelector('.wt-style-font').addEventListener('change', (e) => {
       this._style.fontFamily = e.target.value;
       if (e.target.value) loadGoogleFont(e.target.value);
+    });
+
+    this._el.querySelector('.wt-btn-gtranslate').addEventListener('click', async () => {
+      const btn = this._el.querySelector('.wt-btn-gtranslate');
+      const originalInput = this._el.querySelector('.wt-input-original');
+      const translatedInput = this._el.querySelector('.wt-input-translated');
+      const text = originalInput.value.trim();
+      if (!text) { originalInput.focus(); return; }
+      btn.disabled = true;
+      btn.textContent = '…';
+      try {
+        const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=vi&dt=t&q=${encodeURIComponent(text)}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const translated = data[0].map(s => s[0]).join('');
+        translatedInput.value = translated;
+        translatedInput.focus();
+      } catch (err) {
+        this._showOcrStatus(`✗ Translation failed: ${err.message}`, '#ef4444', 4000);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Translate ↗';
+      }
     });
 
     document.body.appendChild(this._el);
