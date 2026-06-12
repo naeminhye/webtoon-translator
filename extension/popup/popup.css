@@ -17,7 +17,22 @@ header {
   color: #fff;
 }
 
-.logo { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.logo { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+
+.header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+.settings-btn {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  padding: 3px 5px;
+  display: flex;
+  align-items: center;
+  transition: background 0.15s;
+}
+.settings-btn:hover { background: rgba(255, 255, 255, 0.35); }
 .logo-icon { font-size: 15px; }
 
 /* ── On/off switch ─────────────────────────────────────────────────────── */
@@ -172,6 +187,25 @@ header {
 }
 .key-save-btn:hover { background: #4f46e5; }
 .key-saved { font-size: 11px; color: #16a34a; margin-top: 4px; }
+
+.login-hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: #94a3b8;
+  padding: 0 16px 12px;
+  line-height: 1.4;
+}
+
+.login-hint a {
+  color: #6366f1;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.login-hint a:hover { text-decoration: underline; }
 
 footer { padding: 6px 14px 10px; font-size: 10px; color: #cbd5e1; text-align: center; }
 .hidden { display: none !important; }

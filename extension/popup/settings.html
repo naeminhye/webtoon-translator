@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Webtoon Translate — Settings</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+
+  <!-- Top navbar -->
+  <nav class="navbar">
+    <div class="navbar-inner">
+      <div class="navbar-brand">
+        <span class="brand-icon">📖</span>
+        <span class="brand-name">Webtoon Translate</span>
+        <span class="brand-divider">/</span>
+        <span class="brand-page">Settings</span>
+      </div>
+      <div class="navbar-version">v0.2.0</div>
+    </div>
+  </nav>
+
+  <!-- Page body -->
+  <main class="page">
+
+    <!-- Hero banner -->
+    <div class="hero">
+      <div class="hero-icon">⚙️</div>
+      <div>
+        <h1 class="hero-title">Extension Settings</h1>
+        <p class="hero-sub">Configure translation, OCR engine and cloud sync preferences</p>
+      </div>
+    </div>
+
+    <!-- Cards grid -->
+    <div class="cards">
+
+      <!-- Translation card -->
+      <div class="card" id="card-translation">
+        <div class="card-header">
+          <div class="card-icon card-icon-translate">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/>
+            </svg>
+          </div>
+          <div>
+            <div class="card-title">Translation</div>
+            <div class="card-desc">Auto-translate OCR text into your target language</div>
+          </div>
+        </div>
+
+        <div class="card-body">
+
+          <!-- Provider -->
+          <div class="field-group" style="margin-bottom:20px">
+            <label class="field-label">Translation API</label>
+            <div class="engine-grid">
+              <label class="engine-card">
+                <input type="radio" name="translate-provider" value="google" class="engine-radio" />
+                <div class="engine-card-inner">
+                  <div class="engine-name">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                    Google Translate
+                  </div>
+                  <div class="engine-badge engine-badge-online">Free · No key needed</div>
+                  <p class="engine-detail">Uses Google's unofficial API. Fast and supports 130+ languages. No sign-up required.</p>
+                </div>
+              </label>
+              <label class="engine-card">
+                <input type="radio" name="translate-provider" value="deepl" class="engine-radio" />
+                <div class="engine-card-inner">
+                  <div class="engine-name">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                    DeepL
+                  </div>
+                  <div class="engine-badge engine-badge-offline">Higher Quality</div>
+                  <p class="engine-detail">Superior accuracy for Asian languages. Free tier: 500,000 chars/month. API key required.</p>
+                </div>
+              </label>
+              <label class="engine-card engine-card-full">
+                <input type="radio" name="translate-provider" value="none" class="engine-radio" />
+                <div class="engine-card-inner">
+                  <div class="engine-name">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+                    Disabled
+                  </div>
+                  <p class="engine-detail">Hide the "Translate ↗" button. You type translations manually.</p>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- DeepL API key (shown when DeepL selected) -->
+          <div id="deepl-key-row" class="field-group hidden" style="margin-bottom:20px">
+            <label class="field-label">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+              DeepL API Key
+            </label>
+            <div class="field-row">
+              <input type="password" id="deepl-key" class="text-input" placeholder="Paste your DeepL API key…" autocomplete="off" />
+              <button id="save-deepl-key" class="btn-primary">Save</button>
+            </div>
+            <p id="deepl-key-saved" class="field-success hidden">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              API key saved successfully
+            </p>
+            <p class="field-hint">Get a free key at <span class="link-text">deepl.com/pro</span> — free tier gives 500k characters/month.</p>
+          </div>
+
+          <!-- Target language -->
+          <div class="field-group">
+            <label class="field-label">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+              Target Language
+            </label>
+            <div class="lang-select-wrap">
+              <select id="target-lang" class="lang-select">
+                <optgroup label="Southeast Asia">
+                  <option value="vi">🇻🇳 Vietnamese</option>
+                  <option value="th">🇹🇭 Thai</option>
+                  <option value="id">🇮🇩 Indonesian</option>
+                  <option value="ms">🇲🇾 Malay</option>
+                  <option value="tl">🇵🇭 Filipino</option>
+                </optgroup>
+                <optgroup label="East Asia">
+                  <option value="zh-CN">🇨🇳 Chinese (Simplified)</option>
+                  <option value="zh-TW">🇹🇼 Chinese (Traditional)</option>
+                  <option value="ja">🇯🇵 Japanese</option>
+                  <option value="ko">🇰🇷 Korean</option>
+                </optgroup>
+                <optgroup label="Europe">
+                  <option value="en">🇬🇧 English</option>
+                  <option value="fr">🇫🇷 French</option>
+                  <option value="de">🇩🇪 German</option>
+                  <option value="es">🇪🇸 Spanish</option>
+                  <option value="pt">🇵🇹 Portuguese</option>
+                  <option value="it">🇮🇹 Italian</option>
+                  <option value="ru">🇷🇺 Russian</option>
+                  <option value="pl">🇵🇱 Polish</option>
+                  <option value="nl">🇳🇱 Dutch</option>
+                </optgroup>
+                <optgroup label="Other">
+                  <option value="ar">🇸🇦 Arabic</option>
+                  <option value="hi">🇮🇳 Hindi</option>
+                  <option value="tr">🇹🇷 Turkish</option>
+                  <option value="uk">🇺🇦 Ukrainian</option>
+                </optgroup>
+              </select>
+              <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+            <p class="field-hint">The "Translate ↗" button in the editor will translate into this language.</p>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- OCR Engine card -->
+      <div class="card" id="card-ocr">
+        <div class="card-header">
+          <div class="card-icon card-icon-ocr">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <path d="M9 9h1v6H9M13 9h2a2 2 0 0 1 0 4h-2v-4m0 4h2.5"/>
+            </svg>
+          </div>
+          <div>
+            <div class="card-title">OCR Engine</div>
+            <div class="card-desc">Choose how text is extracted from webtoon panels</div>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div class="engine-grid">
+            <label class="engine-card">
+              <input type="radio" name="ocr-provider" value="tesseract" class="engine-radio" />
+              <div class="engine-card-inner">
+                <div class="engine-name">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
+                  Tesseract.js
+                </div>
+                <div class="engine-badge engine-badge-offline">Offline</div>
+                <p class="engine-detail">Runs locally in your browser. No data sent externally. Slower on first use while model loads.</p>
+              </div>
+            </label>
+            <label class="engine-card">
+              <input type="radio" name="ocr-provider" value="ocrspace" class="engine-radio" />
+              <div class="engine-card-inner">
+                <div class="engine-name">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                  OCR.space
+                </div>
+                <div class="engine-badge engine-badge-online">Online · Faster</div>
+                <p class="engine-detail">Cloud API with higher accuracy. Requires an API key. Free tier available at ocr.space.</p>
+              </div>
+            </label>
+          </div>
+
+          <div id="ocrspace-key-row" class="field-group hidden">
+            <label class="field-label">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+              OCR.space API Key
+            </label>
+            <div class="field-row">
+              <input type="password" id="ocrspace-key" class="text-input" placeholder="Paste your API key here…" autocomplete="off" />
+              <button id="save-ocrspace-key" class="btn-primary">Save</button>
+            </div>
+            <p id="ocrspace-key-saved" class="field-success hidden">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              API key saved successfully
+            </p>
+            <p class="field-hint">
+              Get a free key at <span class="link-text">ocr.space</span> — free tier supports up to 25,000 requests/month.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cloud Sync card -->
+      <div class="card" id="card-sync">
+        <div class="card-header">
+          <div class="card-icon card-icon-sync">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"/>
+              <polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+          </div>
+          <div>
+            <div class="card-title">
+              Cloud Sync
+              <span id="sync-status-pill" class="status-pill status-off">Not configured</span>
+            </div>
+            <div class="card-desc">Sync translations across devices via Supabase</div>
+          </div>
+        </div>
+
+        <div class="card-body">
+
+          <!-- Step 1: Supabase project config -->
+          <div id="sb-config-wrap">
+            <div class="steps-label">Step 1 — Connect your Supabase project</div>
+            <div class="field-stack">
+              <div class="field-group">
+                <label class="field-label">Project URL</label>
+                <input type="text" id="sb-url" class="text-input" placeholder="https://xxxx.supabase.co" autocomplete="off" />
+              </div>
+              <div class="field-group">
+                <label class="field-label">Anon / Public Key</label>
+                <input type="text" id="sb-anon-key" class="text-input" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…" autocomplete="off" />
+              </div>
+              <button id="sb-save-config" class="btn-primary btn-full">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                Connect to Supabase
+              </button>
+            </div>
+            <p class="field-hint">
+              Create a free project at <span class="link-text">supabase.com</span>. Your translations stay in your own database.
+            </p>
+          </div>
+
+          <!-- Step 2: Auth (shown once configured) -->
+          <div id="sb-auth-wrap" class="hidden">
+            <!-- Logged out -->
+            <div id="sb-login-form">
+              <div class="steps-label">Step 2 — Sign in to your account</div>
+              <div class="field-stack">
+                <div class="field-group">
+                  <label class="field-label">Email</label>
+                  <input type="email" id="sb-email" class="text-input" placeholder="you@example.com" autocomplete="email" />
+                </div>
+                <div class="field-group">
+                  <label class="field-label">Password</label>
+                  <input type="password" id="sb-password" class="text-input" placeholder="••••••••" autocomplete="current-password" />
+                </div>
+                <p id="sb-auth-error" class="field-error hidden"></p>
+                <button id="sb-signin-btn" class="btn-primary btn-full">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                  Sign in
+                </button>
+              </div>
+            </div>
+
+            <!-- Logged in -->
+            <div id="sb-user-row" class="hidden">
+              <div class="user-card">
+                <div class="user-avatar">
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                </div>
+                <div class="user-info">
+                  <div class="user-label">Signed in as</div>
+                  <div id="sb-user-email" class="user-email"></div>
+                </div>
+                <button id="sb-signout-btn" class="btn-ghost">Sign out</button>
+              </div>
+
+              <!-- Sync toggle -->
+              <div class="sync-toggle-row">
+                <div class="sync-toggle-info">
+                  <div class="sync-toggle-label">Enable Cloud Sync</div>
+                  <div class="sync-toggle-desc">Automatically push and pull translations to your Supabase project</div>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="sync-enabled-toggle" />
+                  <span class="toggle-track">
+                    <span class="toggle-thumb"></span>
+                  </span>
+                </label>
+              </div>
+
+              <div id="sync-active-note" class="sync-success-note hidden">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                Cloud sync is active — translations sync automatically.
+              </div>
+              <div id="sync-paused-note" class="sync-paused-note hidden">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                Cloud sync is paused. Toggle on to start syncing.
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div><!-- /cards -->
+
+    <footer class="page-footer">
+      <span>Webtoon Translate v0.2.0</span>
+      <span class="footer-dot">·</span>
+      <span id="footer-sync-label">local only</span>
+    </footer>
+
+  </main>
+
+  <script src="settings.js"></script>
+</body>
+</html>

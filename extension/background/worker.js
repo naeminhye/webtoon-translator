@@ -38,8 +38,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'SB_SAVE_CONFIG': sb.saveConfig(message.payload).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e.message })); return true;
     case 'SB_SIGN_IN':     sbSignIn(message.payload).then(sendResponse);        return true;
     case 'SB_SIGN_OUT':    sb.signOut().then(() => sendResponse({ ok: true })); return true;
+    case 'SB_SET_SYNC_ENABLED':
+      chrome.storage.local.set({ [SYNC_ENABLED_KEY]: Boolean(message.enabled) })
+        .then(() => sendResponse({ ok: true }));
+      return true;
   }
 });
+
+const SYNC_ENABLED_KEY = 'wt:sync-enabled';
+
+async function isSyncActive() {
+  if (!(await sb.isConfigured()) || !(await sb.getSession())) return false;
+  const s = await chrome.storage.local.get({ [SYNC_ENABLED_KEY]: false });
+  return Boolean(s[SYNC_ENABLED_KEY]);
+}
 
 async function handleSave({ site, titleId, chapterId, annotations }, tabId) {
   const key      = storageKey(site, titleId, chapterId);
@@ -59,7 +71,7 @@ async function handleSave({ site, titleId, chapterId, annotations }, tabId) {
 }
 
 async function _syncSave(annotations, meta, tabId) {
-  if (!(await sb.isConfigured()) || !(await sb.getSession())) return;
+  if (!(await isSyncActive())) return;
   const result = await sb.saveAnnotations(annotations, meta).catch(e => ({ ok: false, error: e.message }));
   _sendSyncStatus(tabId, result?.ok ? 'saved' : 'error', result?.error);
 }
@@ -78,7 +90,9 @@ async function handleLoad({ site, titleId, chapterId }) {
   }
 
   // Merge with Supabase — server wins for same key (other translators' edits)
-  const serverAnns = await sb.loadChapter({ site, titleId, chapterId }).catch(() => null);
+  // Always pull from server when logged in, regardless of write-sync toggle
+  const canRead = (await sb.isConfigured()) && Boolean(await sb.getSession());
+  const serverAnns = canRead ? await sb.loadChapter({ site, titleId, chapterId }).catch(() => null) : null;
   if (serverAnns) {
     for (const ann of serverAnns) seen.set(annKey(ann), ann); // server overwrites local for same key
     // Persist merged result so offline reads reflect latest server state
@@ -103,7 +117,7 @@ async function handleDelete({ site, titleId, chapterId, annKey: keyToDelete }, t
 }
 
 async function _syncDelete(payload, tabId) {
-  if (!(await sb.isConfigured()) || !(await sb.getSession())) return;
+  if (!(await isSyncActive())) return;
   const ok = await sb.deleteAnnotation(payload).catch(() => false);
   _sendSyncStatus(tabId, ok ? 'deleted' : 'error');
 }
@@ -329,9 +343,10 @@ updateBadge();
 
 async function sbGetStatus() {
   const configured = await sb.isConfigured();
-  if (!configured) return { configured: false, user: null };
+  if (!configured) return { configured: false, user: null, syncEnabled: false };
   const session = await sb.getSession();
-  return { configured: true, user: session?.user ?? null };
+  const stored  = await chrome.storage.local.get({ [SYNC_ENABLED_KEY]: false });
+  return { configured: true, user: session?.user ?? null, syncEnabled: Boolean(stored[SYNC_ENABLED_KEY]) };
 }
 
 async function sbSignIn({ email, password }) {

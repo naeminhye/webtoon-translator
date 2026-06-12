@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Community-driven webtoon translation overlay",
 
-  "permissions": ["storage", "scripting", "activeTab", "offscreen"],
+  "permissions": ["storage", "scripting", "activeTab", "offscreen", "tabs"],
 
   "host_permissions": [
     "https://comic.naver.com/*",
@@ -13,7 +13,10 @@
     "https://page.kakao.com/*",
     "https://*.pstatic.net/*",
     "https://api.ocr.space/*",
-    "https://*.supabase.co/*"
+    "https://*.supabase.co/*",
+    "https://translate.googleapis.com/*",
+    "https://api-free.deepl.com/*",
+    "https://api.deepl.com/*"
   ],
 
   "content_security_policy": {

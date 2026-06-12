@@ -160,7 +160,10 @@ class FixedOverlayLayer {
 
     // Forward wheel events to the element underneath so the page can still scroll.
     // pointer-events:auto on the overlay swallows them otherwise.
+    // Guard against re-dispatched (non-trusted) events to prevent infinite recursion
+    // when a bubble child is inside the overlay and the bubbling event re-triggers this listener.
     this._el.addEventListener('wheel', (e) => {
+      if (!e.isTrusted) return;
       this._el.style.pointerEvents = 'none';
       const target = document.elementFromPoint(e.clientX, e.clientY);
       this._el.style.pointerEvents = 'auto';
@@ -290,14 +293,15 @@ class FixedOverlayLayer {
     b.style.boxShadow = 'none';
     if (ann.style) {
       const s = ann.style;
-      b.style.fontSize   = `${s.fontSize || 13}px`;
+      b.style.fontSize   = `${s.fontSize || 20}px`;
       b.style.fontWeight = s.bold   ? 'bold'   : 'normal';
       b.style.fontStyle  = s.italic ? 'italic' : 'normal';
       b.style.color      = s.color  || '#1a1a2e';
       b.style.background = s.noBg   ? 'transparent' : (s.bg || 'rgba(255,255,255,0.95)');
       if (s.stroke && s.strokeColor) {
-        const sc = s.strokeColor, sw = s.strokeWidth || 1;
-        b.style.textShadow = `${sw}px 0 ${sc},-${sw}px 0 ${sc},0 ${sw}px ${sc},0 -${sw}px ${sc}`;
+        b.style.textShadow = strokeTextShadow(s.strokeColor, s.strokeWidth || 1);
+      } else {
+        b.style.textShadow = 'none';
       }
       if (s.fontFamily) b.style.fontFamily = `'${s.fontFamily}', system-ui, sans-serif`;
     }
@@ -546,14 +550,13 @@ class OverlayRenderer {
     b.style.boxShadow = 'none';
     if (ann.style) {
       const s = ann.style;
-      b.style.fontSize   = `${s.fontSize || 13}px`;
+      b.style.fontSize   = `${s.fontSize || 20}px`;
       b.style.fontWeight = s.bold   ? 'bold'   : 'normal';
       b.style.fontStyle  = s.italic ? 'italic' : 'normal';
       b.style.color      = s.color  || '#1a1a2e';
       b.style.background = s.noBg   ? 'transparent' : (s.bg || 'rgba(255,255,255,0.95)');
       if (s.stroke && s.strokeColor) {
-        const sc = s.strokeColor, sw = s.strokeWidth || 1;
-        b.style.textShadow = `${sw}px 0 ${sc},-${sw}px 0 ${sc},0 ${sw}px ${sc},0 -${sw}px ${sc}`;
+        b.style.textShadow = strokeTextShadow(s.strokeColor, s.strokeWidth || 1);
       } else {
         b.style.textShadow = 'none';
       }
@@ -610,7 +613,7 @@ class InputDialog {
     this._onDelete = onDelete;
     this._isEdit   = false;
     this._style    = {
-      fontSize: 13, bold: false, italic: false,
+      fontSize: 20, bold: false, italic: false,
       color: '#1a1a2e', bg: '#ffffff', noBg: false,
       stroke: false, strokeColor: '#ffffff', strokeWidth: 1,
       fontFamily: '',
@@ -635,7 +638,7 @@ class InputDialog {
       if (prefill.style) {
         // Reset to defaults first so stale values from previous edit don't bleed through
         this._style = {
-          fontSize: 13, bold: false, italic: false,
+          fontSize: 20, bold: false, italic: false,
           color: '#1a1a2e', bg: '#ffffff', noBg: false,
           stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '',
           ...prefill.style
@@ -739,13 +742,16 @@ class InputDialog {
         <span class="wt-dialog-title">Add translation</span>
         <button class="wt-btn-close" aria-label="Cancel">&#x2715;</button>
       </div>
-      <label class="wt-dialog-label">Original text (optional)</label>
+      <div class="wt-original-label-row">
+        <label class="wt-dialog-label">Original text (optional)</label>
+        <button class="wt-btn-gtranslate" type="button" title="Translate with Google Translate">Translate ↗</button>
+      </div>
       <input class="wt-input-original" type="text" placeholder="Source text..." />
       <div class="wt-ocr-status" style="display:none"></div>
       <label class="wt-dialog-label">Translation</label>
       <textarea class="wt-input-translated" rows="3" placeholder="Enter translation..."></textarea>
       <div class="wt-style-bar">
-        <input class="wt-style-fontsize" type="number" min="8" max="48" value="13" title="Font size (px)" />
+        <input class="wt-style-fontsize" type="number" min="8" max="48" value="20" title="Font size (px)" />
         <span class="wt-style-px">px</span>
         <button class="wt-style-btn wt-style-bold"   title="Bold">B</button>
         <button class="wt-style-btn wt-style-italic" title="Italic">I</button>
@@ -870,6 +876,36 @@ class InputDialog {
       if (e.target.value) loadGoogleFont(e.target.value);
     });
 
+    const translateBtn = this._el.querySelector('.wt-btn-gtranslate');
+
+    // Show/hide translate button based on provider setting
+    chrome.storage.local.get({ 'wt:translate-provider': 'google' }, (s) => {
+      translateBtn.style.display = s['wt:translate-provider'] === 'none' ? 'none' : '';
+    });
+
+    translateBtn.addEventListener('click', async () => {
+      const originalInput   = this._el.querySelector('.wt-input-original');
+      const translatedInput = this._el.querySelector('.wt-input-translated');
+      const text = originalInput.value.trim();
+      if (!text) { originalInput.focus(); return; }
+      translateBtn.disabled = true;
+      translateBtn.textContent = '…';
+      try {
+        const translated = await autoTranslate(text);
+        if (translated) {
+          translatedInput.value = translated;
+          translatedInput.focus();
+        } else {
+          this._showOcrStatus('Translation is disabled in Settings', '#94a3b8', 3000);
+        }
+      } catch (err) {
+        this._showOcrStatus(`✗ Translation failed: ${err.message}`, '#ef4444', 5000);
+      } finally {
+        translateBtn.disabled = false;
+        translateBtn.textContent = 'Translate ↗';
+      }
+    });
+
     document.body.appendChild(this._el);
   }
 
@@ -937,6 +973,141 @@ class InputDialog {
     this.hide();
     this._onDelete?.();
     this._resolve?.(null);
+    this._resolve = null;
+  }
+
+  _cancel() {
+    this.hide();
+    this._resolve?.(null);
+    this._resolve = null;
+  }
+}
+
+// ── QuickTranslateDialog ──────────────────────────────────────────────────────
+// Minimal floating dialog for Read-mode quick OCR+translate.
+// No style options — result is saved with sensible defaults.
+
+class QuickTranslateDialog {
+  constructor() {
+    this._el       = null;
+    this._resolve  = null;
+    this._origText = '';
+    this._build();
+  }
+
+  show(screenPos, prefill = {}) {
+    if (!this._el.isConnected) document.body.appendChild(this._el);
+    this._el.querySelector('.wt-quick-translated').value = prefill.translatedText || '';
+    this._origText = prefill.originalText || '';
+    const origEl = this._el.querySelector('.wt-quick-original');
+    origEl.textContent = this._origText;
+    origEl.style.display = this._origText ? 'block' : 'none';
+    this._setStatus('');
+    const isEdit = Boolean(prefill.translatedText);
+    this._el.querySelector('.wt-quick-title').innerHTML = isEdit
+      ? `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg> Edit Translation`
+      : `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg> Quick Translate`;
+
+    return new Promise(resolve => {
+      this._resolve = resolve;
+      const { innerWidth, innerHeight } = window;
+      const w = 280, h = 200;
+      let top  = screenPos.y + 10, left = screenPos.x;
+      if (left + w > scrollX + innerWidth  - 20) left = scrollX + innerWidth  - w - 20;
+      if (top  + h > scrollY + innerHeight - 20) top  = screenPos.y - h - 20;
+      if (left < scrollX + 10) left = scrollX + 10;
+      if (top  < scrollY + 10) top  = scrollY + 10;
+      this._el.style.top  = `${top}px`;
+      this._el.style.left = `${left}px`;
+      this._el.style.display = 'block';
+      this._escHandler = (e) => { if (e.key === 'Escape') this._cancel(); };
+      document.addEventListener('keydown', this._escHandler);
+    });
+  }
+
+  setStatus(text, color = '#6366f1') { this._setStatus(text, color); }
+
+  setOriginalText(text) {
+    this._origText = text;
+    const el = this._el.querySelector('.wt-quick-original');
+    el.textContent = text;
+    el.style.display = text ? 'block' : 'none';
+  }
+
+  setTranslated(text) {
+    this._el.querySelector('.wt-quick-translated').value = text;
+    this._setStatus('');
+    setTimeout(() => this._el.querySelector('.wt-quick-translated').focus(), 50);
+  }
+
+  getOriginalText() { return this._origText; }
+
+  hide() {
+    this._el.style.display = 'none';
+    document.removeEventListener('keydown', this._escHandler);
+  }
+
+  _setStatus(text, color = '#6366f1') {
+    const el = this._el.querySelector('.wt-quick-status');
+    el.textContent = text;
+    el.style.color  = color;
+    el.style.display = text ? 'block' : 'none';
+  }
+
+  _build() {
+    this._el = document.createElement('div');
+    this._el.className = 'wt-quick-dialog';
+    this._el.innerHTML = `
+      <div class="wt-quick-header">
+        <span class="wt-quick-title">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>
+          Quick Translate
+        </span>
+        <button class="wt-quick-close" aria-label="Cancel">&#x2715;</button>
+      </div>
+      <div class="wt-quick-status" style="display:none"></div>
+      <div class="wt-quick-original" style="display:none"></div>
+      <textarea class="wt-quick-translated" rows="3" placeholder="Translation will appear here…"></textarea>
+      <div class="wt-quick-actions">
+        <button class="wt-quick-cancel">Cancel</button>
+        <button class="wt-quick-save">Save</button>
+      </div>`;
+
+    this._makeDraggable(this._el.querySelector('.wt-quick-header'));
+    this._el.addEventListener('keydown', e => e.stopPropagation());
+    this._el.querySelector('.wt-quick-close').addEventListener('click',  () => this._cancel());
+    this._el.querySelector('.wt-quick-cancel').addEventListener('click', () => this._cancel());
+    this._el.querySelector('.wt-quick-save').addEventListener('click',   () => this._save());
+    this._el.querySelector('.wt-quick-translated').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) this._save();
+    });
+    document.body.appendChild(this._el);
+  }
+
+  _makeDraggable(handle) {
+    let dragging = false, ox = 0, oy = 0;
+    handle.style.cursor = 'move';
+    handle.addEventListener('mousedown', (e) => {
+      if (e.target.classList.contains('wt-quick-close')) return;
+      dragging = true;
+      const rect = this._el.getBoundingClientRect();
+      ox = e.clientX - rect.left;
+      oy = e.clientY - rect.top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      this._el.style.left = `${e.clientX - ox + window.scrollX}px`;
+      this._el.style.top  = `${e.clientY - oy + window.scrollY}px`;
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+  }
+
+  _save() {
+    const translatedText = this._el.querySelector('.wt-quick-translated').value.trim();
+    if (!translatedText) { this._el.querySelector('.wt-quick-translated').focus(); return; }
+    this.hide();
+    this._resolve?.({ translatedText });
     this._resolve = null;
   }
 
@@ -1576,6 +1747,108 @@ async function ocrRegion(img, bbox) {
   return res.text;
 }
 
+async function ocrRegionStitched(img, bbox, images) {
+  const idx = images.indexOf(img);
+  const clips = [{ img, x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h }];
+  const bottomEdge = bbox.y + bbox.h;
+  const topEdge    = bbox.y;
+
+  // Bbox near bottom edge → also grab top slice of next image
+  if (bottomEdge > 82 && idx >= 0 && idx < images.length - 1) {
+    const nextImg = images[idx + 1];
+    if (nextImg.naturalWidth) {
+      const grabH = Math.max(5, bottomEdge - 82);
+      clips.push({ img: nextImg, x: bbox.x, y: 0, w: bbox.w, h: Math.min(grabH, 35) });
+    }
+  }
+
+  // Bbox near top edge → also grab bottom slice of previous image
+  if (topEdge < 18 && idx > 0) {
+    const prevImg = images[idx - 1];
+    if (prevImg.naturalWidth) {
+      const grabH = Math.max(5, 18 - topEdge);
+      clips.unshift({ img: prevImg, x: bbox.x, y: Math.max(0, 100 - grabH), w: bbox.w, h: Math.min(grabH, 35) });
+    }
+  }
+
+  if (clips.length === 1) return ocrRegion(img, bbox);
+
+  const dataUrl = stitchClips(clips);
+  if (!dataUrl) return ocrRegion(img, bbox);
+
+  const res = await sendToBackground({
+    type: MSG.OCR_REGION,
+    payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
+  });
+  if (!res?.ok) throw new Error(res?.error || 'OCR failed');
+  return res.text;
+}
+
+function stitchClips(clips) {
+  try {
+    const rendered = clips.map(({ img, x, y, w, h }) => ({
+      img,
+      px: (x / 100) * img.naturalWidth,
+      py: (y / 100) * img.naturalHeight,
+      pw: Math.max(1, (w / 100) * img.naturalWidth),
+      ph: Math.max(1, (h / 100) * img.naturalHeight),
+    }));
+    const maxW   = Math.max(...rendered.map(r => r.pw));
+    const totalH = rendered.reduce((s, r) => s + r.ph, 0);
+    const scale  = maxW < 400 ? Math.min(3, 400 / maxW) : 1;
+    const canvas = document.createElement('canvas');
+    canvas.width  = Math.round(maxW * scale);
+    canvas.height = Math.round(totalH * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    let dy = 0;
+    for (const { img, px, py, pw, ph } of rendered) {
+      ctx.drawImage(img, px, py, pw, ph,
+        Math.round((maxW - pw) / 2 * scale), Math.round(dy * scale),
+        Math.round(pw * scale), Math.round(ph * scale));
+      dy += ph;
+    }
+    return canvas.toDataURL('image/png');
+  } catch {
+    return null;
+  }
+}
+
+async function autoTranslate(text) {
+  const s = await chrome.storage.local.get({
+    'wt:translate-provider': 'google',
+    'wt:translate-lang':     'vi',
+    'wt:deepl-key':          '',
+  });
+  const provider   = s['wt:translate-provider'];
+  const targetLang = s['wt:translate-lang'];
+  if (provider === 'none') return null;
+
+  if (provider === 'deepl') {
+    const apiKey = s['wt:deepl-key'];
+    if (!apiKey) throw new Error('DeepL API key not set — add it in Settings');
+    const base = apiKey.endsWith(':fx')
+      ? 'https://api-free.deepl.com/v2/translate'
+      : 'https://api.deepl.com/v2/translate';
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: { 'Authorization': `DeepL-Auth-Key ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: [text], target_lang: targetLang.toUpperCase().replace('-', '_') }),
+    });
+    if (!res.ok) throw new Error(`DeepL HTTP ${res.status}`);
+    const data = await res.json();
+    return data.translations[0].text;
+  }
+
+  // Google Translate (unofficial free endpoint)
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return data[0].map(s => s[0]).join('');
+}
+
 function _cropCanvas(img, bbox) {
   const sx = (bbox.x / 100) * img.naturalWidth;
   const sy = (bbox.y / 100) * img.naturalHeight;
@@ -1592,11 +1865,57 @@ function _cropCanvas(img, bbox) {
   return canvas.toDataURL('image/png'); // throws SecurityError if canvas is tainted
 }
 
+function strokeTextShadow(color, width) {
+  const shadows = [];
+  const steps = Math.max(12, width * 6);
+  for (let i = 0; i < steps; i++) {
+    const a = (i / steps) * 2 * Math.PI;
+    const x = +(width * Math.cos(a)).toFixed(2);
+    const y = +(width * Math.sin(a)).toFixed(2);
+    shadows.push(`${x}px ${y}px 0 ${color}`);
+  }
+  return shadows.join(',');
+}
+
+function detectBboxColors(imageEl, bbox) {
+  try {
+    const sx = (bbox.x / 100) * imageEl.naturalWidth;
+    const sy = (bbox.y / 100) * imageEl.naturalHeight;
+    const sw = Math.max(1, (bbox.w / 100) * imageEl.naturalWidth);
+    const sh = Math.max(1, (bbox.h / 100) * imageEl.naturalHeight);
+    const cw = Math.min(sw, 120), ch = Math.min(sh, 120);
+    const canvas = document.createElement('canvas');
+    canvas.width = cw; canvas.height = ch;
+    canvas.getContext('2d').drawImage(imageEl, sx, sy, sw, sh, 0, 0, cw, ch);
+    const data = canvas.getContext('2d').getImageData(0, 0, cw, ch).data;
+
+    let dark = { r: 0, g: 0, b: 0, n: 0 };
+    let light = { r: 0, g: 0, b: 0, n: 0 };
+    for (let i = 0; i < data.length; i += 16) {
+      const r = data[i], g = data[i+1], b = data[i+2];
+      const lum = 0.2126 * r/255 + 0.7152 * g/255 + 0.0722 * b/255;
+      if (lum < 0.45) { dark.r += r; dark.g += g; dark.b += b; dark.n++; }
+      else             { light.r += r; light.g += g; light.b += b; light.n++; }
+    }
+    const avg = (c, n) => n ? '#' + [c.r, c.g, c.b].map(v => Math.round(v/n).toString(16).padStart(2,'0')).join('') : null;
+    const darkHex  = avg(dark,  dark.n);
+    const lightHex = avg(light, light.n);
+    if (!darkHex && !lightHex) return null;
+    // Decide which is text and which is bg: majority → bg, minority → text
+    const textColor = dark.n <= light.n ? (darkHex || '#1a1a2e') : (lightHex || '#ffffff');
+    const bgColor   = dark.n <= light.n ? (lightHex || '#ffffff') : (darkHex  || '#1a1a2e');
+    return { textColor, bgColor };
+  } catch (e) {
+    return null; // canvas tainted (cross-origin image)
+  }
+}
+
 // ── Translation visibility toggle ────────────────────────────────────────────
 let _translationsVisible = true;
 
 const EYE_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_OFF_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-7 0-11-7-11-7a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+const SCAN_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>`;
 
 function buildToggleButton() {
   const btn = document.createElement('button');
@@ -1736,17 +2055,39 @@ function bootForPage() {
   });
   let allAnnotations = [];
 
-  const dialog = new InputDialog({
-    onDelete: () => { /* handled inline below via _pendingDelete */ },
-  });
+  const dialog      = new InputDialog({ onDelete: () => {} });
+  const quickDialog = new QuickTranslateDialog();
 
   let currentMode     = MODES.READ;
+  let readScanEnabled = false;
   let images          = [];
   let annotationCount = 0;
-  let disposed        = false; // set on cleanup — stops in-flight async render chains
+  let disposed        = false;
 
   // Build floating toggle button (Read mode only)
   const toggleBtn = buildToggleButton();
+
+  // Build floating scan button (Read mode only)
+  const scanBtn = document.createElement('button');
+  scanBtn.id = 'wt-scan-btn';
+  scanBtn.title = 'Quick OCR translate';
+  scanBtn.setAttribute('aria-label', 'Toggle quick OCR translate');
+  scanBtn.innerHTML = SCAN_ICON;
+  document.body.appendChild(scanBtn);
+
+  function setReadScan(on) {
+    readScanEnabled = on;
+    scanBtn.classList.toggle('wt-scan-active', on);
+    scanBtn.title = on ? 'Stop scanning' : 'Quick OCR translate';
+    if (on) {
+      if (isKakao) fixedLayer.enable(images);
+      else selector.enable(images);
+    } else {
+      if (isKakao) fixedLayer.disable();
+      else selector.disable();
+    }
+  }
+  scanBtn.addEventListener('click', () => setReadScan(!readScanEnabled));
 
   // Keyboard shortcut: T to toggle
   const keyHandler = (e) => {
@@ -1870,15 +2211,79 @@ function bootForPage() {
   const selector = new BBoxSelector({ onSelect: handleBBoxSelect });
 
   async function handleBBoxSelect({ bbox, imageEl, imageIndex }) {
+    if (currentMode === MODES.READ) {
+      await handleReadBBoxSelect({ bbox, imageEl, imageIndex });
+    } else {
+      await handleAnnotateBBoxSelect({ bbox, imageEl, imageIndex });
+    }
+  }
+
+  // Read mode: OCR → auto-translate → minimal dialog (no styling)
+  async function handleReadBBoxSelect({ bbox, imageEl, imageIndex }) {
     const rect = imageEl.getBoundingClientRect();
     const screenPos = {
       x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
       y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
     };
-    // Open the dialog immediately; OCR fills "Original text" in the background
-    const resultPromise = dialog.show(screenPos);
+    const resultPromise = quickDialog.show(screenPos);
+
+    quickDialog.setStatus('⏳ Scanning text…', '#6366f1');
+    let ocrText = '';
+    try {
+      ocrText = await ocrRegionStitched(imageEl, bbox, images);
+      if (ocrText) {
+        quickDialog.setOriginalText(ocrText);
+        quickDialog.setStatus('⏳ Translating…', '#6366f1');
+        try {
+          const translated = await autoTranslate(ocrText);
+          if (translated) {
+            quickDialog.setTranslated(translated);
+          } else {
+            // Provider is "none" — just pre-fill with OCR text
+            quickDialog.setTranslated(ocrText);
+            quickDialog.setStatus('Translation disabled — edit if needed', '#94a3b8');
+          }
+        } catch (err) {
+          quickDialog.setTranslated(ocrText);
+          quickDialog.setStatus(`⚠ Translation failed: ${err.message}`, '#f59e0b');
+        }
+      } else {
+        quickDialog.setStatus('No text found in this region', '#94a3b8');
+      }
+    } catch (err) {
+      quickDialog.setStatus(`✗ OCR failed: ${err.message}`, '#ef4444');
+    }
+
+    const result = await resultPromise;
+    if (!result) return;
+
+    const imageHash  = await hashImage(imageEl);
+    const annotation = {
+      imageHash, imageIndex, bbox,
+      originalText:   quickDialog.getOriginalText(),
+      translatedText: result.translatedText,
+      style: { fontSize: 20, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' },
+      language: 'vi', createdAt: new Date().toISOString(),
+    };
+    await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
+    _upsertAnnotation(annotation);
+    if (isKakao) fixedLayer.upsertBubble(imageEl, annotation);
+    else renderer.upsertBubble(imageEl, annotation);
+    updateProgressBar();
+  }
+
+  // Annotate mode: full dialog with style options
+  async function handleAnnotateBBoxSelect({ bbox, imageEl, imageIndex }) {
+    const rect = imageEl.getBoundingClientRect();
+    const screenPos = {
+      x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
+      y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
+    };
+    const colors = detectBboxColors(imageEl, bbox);
+    const colorStyle = colors ? { color: colors.textColor, bg: colors.bgColor, noBg: false } : {};
+    const resultPromise = dialog.show(screenPos, { style: colorStyle });
     const ocrSession    = dialog.setOcrPending();
-    ocrRegion(imageEl, bbox)
+    ocrRegionStitched(imageEl, bbox, images)
       .then(text => dialog.setOcrText(text, ocrSession))
       .catch(err => dialog.setOcrError(err.message, ocrSession));
     const result = await resultPromise;
@@ -1891,17 +2296,20 @@ function bootForPage() {
       style: result.style, language: 'vi', createdAt: new Date().toISOString(),
     };
     await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
-    // Upsert into allAnnotations by annKey — never duplicate
+    _upsertAnnotation(annotation);
+    if (isKakao) fixedLayer.upsertBubble(imageEl, annotation);
+    else renderer.upsertBubble(imageEl, annotation);
+    panel.update(allAnnotations);
+    updateProgressBar();
+  }
+
+  function _upsertAnnotation(annotation) {
     const newKey = `${annotation.imageHash}::${annotation.bbox.x.toFixed(1)}::${annotation.bbox.y.toFixed(1)}`;
     const existsIdx = allAnnotations.findIndex(a =>
       `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` === newKey
     );
     if (existsIdx >= 0) allAnnotations[existsIdx] = annotation;
     else { allAnnotations.push(annotation); annotationCount++; }
-    if (isKakao) fixedLayer.upsertBubble(imageEl, annotation);
-    else renderer.upsertBubble(imageEl, annotation);
-    panel.update(allAnnotations);
-    updateProgressBar();
   }
 
   // ── click bubble to edit ───────────────────────────────────────────────
@@ -2013,6 +2421,62 @@ function bootForPage() {
     panel.update(allAnnotations);
   });
 
+  // ── double-click bubble to edit in Read mode ───────────────────────────
+
+  document.addEventListener('dblclick', async (e) => {
+    if (currentMode !== MODES.READ) return;
+    const bubble = e.target.closest('.wt-translation-bubble');
+    if (!bubble) return;
+    e.stopPropagation();
+    e.preventDefault();
+
+    const annKeyToEdit = bubble.dataset.annKey;
+    const wrapper = bubble.closest('.wt-img-wrapper');
+    let img = wrapper?.querySelector('img');
+    if (!img && isKakao) img = fixedLayer.getBubbleImage(annKeyToEdit);
+    if (!img) return;
+    const imgIndex = images.indexOf(img);
+
+    const existingBbox = {
+      x: parseFloat(bubble.dataset.bboxX), y: parseFloat(bubble.dataset.bboxY),
+      w: parseFloat(bubble.dataset.bboxW), h: parseFloat(bubble.dataset.bboxH),
+    };
+    const existing = allAnnotations.find(a =>
+      `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` === annKeyToEdit
+    );
+
+    const rect = img.getBoundingClientRect();
+    const bubbleRight = rect.left + window.scrollX + ((existingBbox.x + existingBbox.w) / 100) * rect.width;
+    const bubbleLeft  = rect.left + window.scrollX + (existingBbox.x / 100) * rect.width;
+    const bubbleTop   = rect.top  + window.scrollY + (existingBbox.y / 100) * rect.height;
+    const spaceRight  = window.scrollX + window.innerWidth - bubbleRight - 24;
+    const screenPos   = {
+      x: spaceRight >= 280 ? bubbleRight + 8 : bubbleLeft - 288,
+      y: bubbleTop,
+    };
+
+    const result = await quickDialog.show(screenPos, {
+      originalText:   existing?.originalText   || '',
+      translatedText: existing?.translatedText || bubble.querySelector('span')?.textContent || '',
+    });
+    if (!result) return;
+
+    const imgHash  = await hashImage(img);
+    const annotation = {
+      ...(existing || {}),
+      imageHash: imgHash, imageIndex: imgIndex, bbox: existingBbox,
+      originalText:   existing?.originalText || '',
+      translatedText: result.translatedText,
+      style:          existing?.style || { fontSize: 20, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' },
+      language:       existing?.language || 'vi',
+      createdAt:      existing?.createdAt || new Date().toISOString(),
+    };
+    await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
+    _upsertAnnotation(annotation);
+    if (isKakao) fixedLayer.upsertBubble(img, annotation);
+    else renderer.upsertBubble(img, annotation);
+  });
+
   // Reposition fixed bubbles on scroll (Kakao uses position:absolute relative to page)
   if (isKakao) {
     // capture:true also catches scrolls from inner scroll containers (scroll doesn't bubble)
@@ -2067,6 +2531,9 @@ function bootForPage() {
     if (message.type === 'SET_MODE') {
       currentMode = message.mode;
       if (currentMode === MODES.ANNOTATE) {
+        // Turn off read scan before entering annotate mode
+        setReadScan(false);
+        scanBtn.style.display = 'none';
         if (isKakao) fixedLayer.enable(images);
         else selector.enable(images);
         document.body.classList.add('wt-annotate-mode');
@@ -2078,7 +2545,8 @@ function bootForPage() {
         bubbleEditor.detach();
         document.body.classList.remove('wt-annotate-mode');
         toggleBtn.style.display = '';
-        panel.hide(); // translation list is a translator tool — not for Read mode
+        scanBtn.style.display = '';
+        panel.hide();
       }
     }
     // Translation list + Export are translator tools — ignored in Read mode.
@@ -2167,6 +2635,7 @@ function bootForPage() {
     renderer.clearAll();
     bubbleEditor.detach();
     toggleBtn.remove();
+    scanBtn.remove();
     panel.hide();
     document.getElementById('wt-progress-bar')?.remove();
     document.body.classList.remove('wt-annotate-mode');

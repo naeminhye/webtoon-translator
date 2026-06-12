@@ -8,10 +8,18 @@
 <body>
   <header>
     <span class="logo"><span class="logo-icon">📖</span> Webtoon Translate</span>
-    <label class="switch" title="Enable / disable extension">
-      <input type="checkbox" id="enabled-toggle" checked />
-      <span class="slider"></span>
-    </label>
+    <div class="header-right">
+      <label class="switch" title="Enable / disable extension">
+        <input type="checkbox" id="enabled-toggle" checked />
+        <span class="slider"></span>
+      </label>
+      <button id="btn-settings" class="settings-btn" title="Settings">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
   </header>
 
   <section id="disabled-notice" class="notice hidden">
@@ -43,11 +51,16 @@
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
         Read
       </button>
-      <button id="btn-annotate" class="mode-btn">
+      <button id="btn-annotate" class="mode-btn hidden">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
         Translate
       </button>
     </div>
+
+    <p id="login-hint" class="login-hint hidden">
+      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <a id="login-hint-link">Sign in</a> to unlock the Translate mode.
+    </p>
 
     <div class="actions hidden" id="action-buttons">
       <button id="btn-panel" class="action-btn">
@@ -71,58 +84,7 @@
     </div>
   </div>
 
-  <section id="ocr-settings">
-    <div class="settings-head">OCR Engine</div>
-    <div class="provider-row">
-      <label class="provider-opt">
-        <input type="radio" name="ocr-provider" value="tesseract" />
-        <span>Tesseract.js</span>
-        <span class="provider-hint">offline</span>
-      </label>
-      <label class="provider-opt">
-        <input type="radio" name="ocr-provider" value="ocrspace" />
-        <span>OCR.space</span>
-        <span class="provider-hint">online · faster</span>
-      </label>
-    </div>
-    <div id="ocrspace-key-row" class="hidden">
-      <input type="password" id="ocrspace-key" placeholder="Paste your OCR.space API key" autocomplete="off" />
-      <button id="save-ocrspace-key" class="key-save-btn">Save</button>
-    </div>
-    <p id="ocrspace-key-saved" class="key-saved hidden">API key saved ✓</p>
-  </section>
-
-  <section id="sync-settings">
-    <div class="settings-head">
-      Cloud Sync
-      <span id="sync-status-dot" class="sync-dot sync-dot-off" title="Not configured"></span>
-    </div>
-
-    <!-- Step 1: Supabase project config (shown until configured) -->
-    <div id="sb-config-wrap">
-      <input type="text"     id="sb-url"      placeholder="https://xxxx.supabase.co" autocomplete="off" />
-      <input type="text"     id="sb-anon-key" placeholder="Anon / public key"        autocomplete="off" />
-      <button id="sb-save-config" class="key-save-btn">Connect</button>
-    </div>
-
-    <!-- Step 2: Auth (shown once project is configured) -->
-    <div id="sb-auth-wrap" class="hidden">
-      <!-- Logged-out state -->
-      <div id="sb-login-form">
-        <input type="email"    id="sb-email"    placeholder="Email"    autocomplete="email" />
-        <input type="password" id="sb-password" placeholder="Password" autocomplete="current-password" />
-        <button id="sb-signin-btn" class="key-save-btn" style="margin-top:2px">Sign in</button>
-        <p id="sb-auth-error" class="sb-error hidden"></p>
-      </div>
-      <!-- Logged-in state -->
-      <div id="sb-user-row" class="hidden">
-        <span id="sb-user-email" class="sb-user-email"></span>
-        <button id="sb-signout-btn" class="sb-link-btn">Sign out</button>
-      </div>
-    </div>
-  </section>
-
-  <footer>v0.2.0 · <span id="footer-sync-label">local only</span></footer>
+  <footer>v0.2.0</footer>
   <script src="popup.js"></script>
 </body>
 </html>
