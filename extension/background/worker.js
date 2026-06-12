@@ -35,9 +35,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     case 'SB_GET_STATUS':  sbGetStatus().then(sendResponse);                          return true;
     case 'SB_SAVE_CONFIG': sb.saveConfig(message.payload).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e.message })); return true;
-    case 'SB_SIGN_IN':     sbSignIn(message.payload).then(sendResponse);              return true;
-    case 'SB_SIGN_UP':     sbSignUp(message.payload).then(sendResponse);              return true;
-    case 'SB_SIGN_OUT':    sb.signOut().then(() => sendResponse({ ok: true }));       return true;
+    case 'SB_SIGN_IN':     sbSignIn(message.payload).then(sendResponse);        return true;
+    case 'SB_SIGN_OUT':    sb.signOut().then(() => sendResponse({ ok: true })); return true;
   }
 });
 
@@ -320,15 +319,6 @@ async function sbSignIn({ email, password }) {
   try {
     const session = await sb.signIn(email, password);
     return { ok: true, user: session.user };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-}
-
-async function sbSignUp({ email, password }) {
-  try {
-    const result = await sb.signUp(email, password);
-    return { ok: true, user: result.user ?? null, needsConfirm: !result.access_token };
   } catch (e) {
     return { ok: false, error: e.message };
   }

@@ -187,23 +187,6 @@ async function initSyncSettings() {
   $('sb-signin-btn').addEventListener('click', doSignIn);
   $('sb-password').addEventListener('keydown', e => { if (e.key === 'Enter') doSignIn(); });
 
-  $('sb-signup-btn').addEventListener('click', async () => {
-    const email    = $('sb-email').value.trim();
-    const password = $('sb-password').value;
-    if (!email || !password) return;
-    $('sb-signup-btn').disabled = true;
-    $('sb-auth-error').classList.add('hidden');
-    const res = await chrome.runtime.sendMessage({ type: 'SB_SIGN_UP', payload: { email, password } });
-    $('sb-signup-btn').disabled = false;
-    if (res.ok && res.needsConfirm) {
-      $('sb-confirm-notice').classList.remove('hidden');
-    } else if (res.ok && res.user) {
-      showConfigured(res.user);
-    } else if (!res.ok) {
-      $('sb-auth-error').textContent = res.error;
-      $('sb-auth-error').classList.remove('hidden');
-    }
-  });
 
   $('sb-signout-btn').addEventListener('click', async () => {
     await chrome.runtime.sendMessage({ type: 'SB_SIGN_OUT' });
