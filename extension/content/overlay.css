@@ -68,7 +68,8 @@
 }
 
 /* Read mode: bubbles show double-click cursor to hint editability */
-body:not(.wt-annotate-mode) .wt-translation-bubble {
+body:not(.wt-annotate-mode) .wt-translation-bubble,
+body:not(.wt-annotate-mode) .wt-fixed-bubble {
   pointer-events: auto;
   cursor: text;
 }

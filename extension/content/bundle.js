@@ -293,7 +293,7 @@ class FixedOverlayLayer {
     b.style.boxShadow = 'none';
     if (ann.style) {
       const s = ann.style;
-      b.style.fontSize   = `${s.fontSize || 13}px`;
+      b.style.fontSize   = `${s.fontSize || 20}px`;
       b.style.fontWeight = s.bold   ? 'bold'   : 'normal';
       b.style.fontStyle  = s.italic ? 'italic' : 'normal';
       b.style.color      = s.color  || '#1a1a2e';
@@ -550,7 +550,7 @@ class OverlayRenderer {
     b.style.boxShadow = 'none';
     if (ann.style) {
       const s = ann.style;
-      b.style.fontSize   = `${s.fontSize || 13}px`;
+      b.style.fontSize   = `${s.fontSize || 20}px`;
       b.style.fontWeight = s.bold   ? 'bold'   : 'normal';
       b.style.fontStyle  = s.italic ? 'italic' : 'normal';
       b.style.color      = s.color  || '#1a1a2e';
@@ -613,7 +613,7 @@ class InputDialog {
     this._onDelete = onDelete;
     this._isEdit   = false;
     this._style    = {
-      fontSize: 13, bold: false, italic: false,
+      fontSize: 20, bold: false, italic: false,
       color: '#1a1a2e', bg: '#ffffff', noBg: false,
       stroke: false, strokeColor: '#ffffff', strokeWidth: 1,
       fontFamily: '',
@@ -638,7 +638,7 @@ class InputDialog {
       if (prefill.style) {
         // Reset to defaults first so stale values from previous edit don't bleed through
         this._style = {
-          fontSize: 13, bold: false, italic: false,
+          fontSize: 20, bold: false, italic: false,
           color: '#1a1a2e', bg: '#ffffff', noBg: false,
           stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '',
           ...prefill.style
@@ -751,7 +751,7 @@ class InputDialog {
       <label class="wt-dialog-label">Translation</label>
       <textarea class="wt-input-translated" rows="3" placeholder="Enter translation..."></textarea>
       <div class="wt-style-bar">
-        <input class="wt-style-fontsize" type="number" min="8" max="48" value="13" title="Font size (px)" />
+        <input class="wt-style-fontsize" type="number" min="8" max="48" value="20" title="Font size (px)" />
         <span class="wt-style-px">px</span>
         <button class="wt-style-btn wt-style-bold"   title="Bold">B</button>
         <button class="wt-style-btn wt-style-italic" title="Italic">I</button>
@@ -2194,7 +2194,7 @@ function bootForPage() {
       imageHash, imageIndex, bbox,
       originalText:   quickDialog.getOriginalText(),
       translatedText: result.translatedText,
-      style: { fontSize: 13, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' },
+      style: { fontSize: 20, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' },
       language: 'vi', createdAt: new Date().toISOString(),
     };
     await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
@@ -2213,7 +2213,9 @@ function bootForPage() {
     };
     const colors = detectBboxColors(imageEl, bbox);
     const colorStyle = colors ? { color: colors.textColor, bg: colors.bgColor, noBg: false } : {};
-    const resultPromise = dialog.show(screenPos, { style: colorStyle });
+    const bboxDisplayH = (bbox.h / 100) * rect.height;
+    const detectedFontSize = Math.min(40, Math.max(12, Math.round(bboxDisplayH * 0.6)));
+    const resultPromise = dialog.show(screenPos, { style: { fontSize: detectedFontSize, ...colorStyle } });
     const ocrSession    = dialog.setOcrPending();
     ocrRegion(imageEl, bbox)
       .then(text => dialog.setOcrText(text, ocrSession))
@@ -2399,7 +2401,7 @@ function bootForPage() {
       imageHash: imgHash, imageIndex: imgIndex, bbox: existingBbox,
       originalText:   existing?.originalText || '',
       translatedText: result.translatedText,
-      style:          existing?.style || { fontSize: 13, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' },
+      style:          existing?.style || { fontSize: 20, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' },
       language:       existing?.language || 'vi',
       createdAt:      existing?.createdAt || new Date().toISOString(),
     };

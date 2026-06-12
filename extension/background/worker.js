@@ -90,8 +90,9 @@ async function handleLoad({ site, titleId, chapterId }) {
   }
 
   // Merge with Supabase — server wins for same key (other translators' edits)
-  const syncOn = await isSyncActive();
-  const serverAnns = syncOn ? await sb.loadChapter({ site, titleId, chapterId }).catch(() => null) : null;
+  // Always pull from server when logged in, regardless of write-sync toggle
+  const canRead = (await sb.isConfigured()) && Boolean(await sb.getSession());
+  const serverAnns = canRead ? await sb.loadChapter({ site, titleId, chapterId }).catch(() => null) : null;
   if (serverAnns) {
     for (const ann of serverAnns) seen.set(annKey(ann), ann); // server overwrites local for same key
     // Persist merged result so offline reads reflect latest server state
