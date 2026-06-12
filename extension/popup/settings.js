@@ -5,8 +5,6 @@ const OCR_SPACE_KEY_STR = 'wt:ocrspace-key';
 // Mirrors background/worker.js — keep in sync.
 const DEV_OCR_SPACE_KEY = '';
 
-$('btn-back').addEventListener('click', () => window.close());
-
 async function initOcrSettings() {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
@@ -43,11 +41,17 @@ async function initSyncSettings() {
   const status = await chrome.runtime.sendMessage({ type: 'SB_GET_STATUS' });
 
   function setSyncDot(state) {
-    const dot = $('sync-status-dot');
-    dot.className = `sync-dot sync-dot-${state}`;
-    dot.title = state === 'off' ? 'Not configured'
-              : state === 'on'  ? 'Connected — not signed in'
-              :                   'Connected & signed in';
+    const pill = $('sync-status-pill');
+    if (state === 'off') {
+      pill.className = 'status-pill status-off';
+      pill.textContent = 'Not configured';
+    } else if (state === 'on') {
+      pill.className = 'status-pill status-on';
+      pill.textContent = 'Connected';
+    } else {
+      pill.className = 'status-pill status-synced';
+      pill.textContent = 'Synced ✓';
+    }
   }
 
   function showConfigured(user) {
