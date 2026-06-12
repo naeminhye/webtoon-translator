@@ -1,8 +1,8 @@
 /**
- * background/worker.js — Phase 1: chrome.storage.local
- * Migration note: replace handleSave/handleLoad/handleDelete with
- * Supabase REST calls in Phase 2. Auth token refresh lives here.
+ * background/worker.js — Phase 2: chrome.storage.local + Supabase cloud sync
  */
+
+import * as sb from './supabase.js';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
@@ -33,6 +33,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       });
       return false;
+    case 'SB_GET_STATUS':  sbGetStatus().then(sendResponse);                          return true;
+    case 'SB_SAVE_CONFIG': sb.saveConfig(message.payload).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e.message })); return true;
+    case 'SB_SIGN_IN':     sbSignIn(message.payload).then(sendResponse);              return true;
+    case 'SB_SIGN_UP':     sbSignUp(message.payload).then(sendResponse);              return true;
+    case 'SB_SIGN_OUT':    sb.signOut().then(() => sendResponse({ ok: true }));       return true;
   }
 });
 
@@ -41,7 +46,6 @@ async function handleSave({ site, titleId, chapterId, annotations }) {
   const existing = await getLocal(key) || { site, titleId, chapterId, annotations: [] };
 
   for (const incoming of annotations) {
-    // Match by imageHash + exact bbox X (rounded to 1dp) — stable identifier
     const incomingKey = annKey(incoming);
     const idx = existing.annotations.findIndex(a => annKey(a) === incomingKey);
     if (idx >= 0) existing.annotations[idx] = incoming;
@@ -49,6 +53,8 @@ async function handleSave({ site, titleId, chapterId, annotations }) {
   }
 
   await chrome.storage.local.set({ [key]: existing });
+  // Fire-and-forget push to Supabase — never blocks or errors the caller
+  sb.saveAnnotations(annotations, { site, titleId, chapterId }).catch(() => {});
   return { ok: true };
 }
 
@@ -57,34 +63,38 @@ async function handleLoad({ site, titleId, chapterId }) {
   const data = await getLocal(key);
   const raw  = data?.annotations || [];
 
-  // Dedupe on read — last write wins by createdAt
+  // Dedupe local
   const seen = new Map();
   for (const ann of raw) {
     const k = annKey(ann);
     const existing = seen.get(k);
     if (!existing || new Date(ann.createdAt) >= new Date(existing.createdAt)) seen.set(k, ann);
   }
-  const deduped = [...seen.values()];
 
-  // If we found duplicates, write back the clean version
-  if (deduped.length < raw.length && data) {
-    data.annotations = deduped;
-    await chrome.storage.local.set({ [key]: data });
+  // Merge with Supabase — server wins for same key (other translators' edits)
+  const serverAnns = await sb.loadChapter({ site, titleId, chapterId }).catch(() => null);
+  if (serverAnns) {
+    for (const ann of serverAnns) seen.set(annKey(ann), ann); // server overwrites local for same key
+    // Persist merged result so offline reads reflect latest server state
+    const merged = { site, titleId, chapterId, annotations: [...seen.values()] };
+    await chrome.storage.local.set({ [key]: merged });
   }
 
+  const deduped = [...seen.values()];
   return { annotations: deduped };
 }
 
 async function handleDelete({ site, titleId, chapterId, annKey: keyToDelete }) {
   const key  = storageKey(site, titleId, chapterId);
   const data = await getLocal(key);
-  if (!data) return { ok: true };
-
-  const before = data.annotations.length;
-  data.annotations = data.annotations.filter(a => annKey(a) !== keyToDelete);
-
-  await chrome.storage.local.set({ [key]: data });
-  return { ok: true, removed: before - data.annotations.length };
+  if (data) {
+    const before = data.annotations.length;
+    data.annotations = data.annotations.filter(a => annKey(a) !== keyToDelete);
+    await chrome.storage.local.set({ [key]: data });
+  }
+  // Fire-and-forget delete from Supabase
+  sb.deleteAnnotation({ site, titleId, chapterId, annKey: keyToDelete }).catch(() => {});
+  return { ok: true, removed: data ? (data.annotations.length) : 0 };
 }
 
 async function handleExport({ site, titleId }) {
@@ -124,6 +134,7 @@ async function handleImport({ jsonString }) {
   return { ok: true, imported: count };
 }
 
+<<<<<<< HEAD
 // ── OCR ───────────────────────────────────────────────────────────────────────
 // Two providers: 'tesseract' (offline, offscreen doc) and 'ocrspace' (online API).
 // If the content script couldn't crop (tainted canvas), imageUrl + bbox are sent
@@ -295,6 +306,33 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.runtime.onInstalled.addListener(updateBadge);
 chrome.runtime.onStartup.addListener(updateBadge);
 updateBadge();
+
+// ── Supabase auth handlers ────────────────────────────────────────────────────
+
+async function sbGetStatus() {
+  const configured = await sb.isConfigured();
+  if (!configured) return { configured: false, user: null };
+  const session = await sb.getSession();
+  return { configured: true, user: session?.user ?? null };
+}
+
+async function sbSignIn({ email, password }) {
+  try {
+    const session = await sb.signIn(email, password);
+    return { ok: true, user: session.user };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+async function sbSignUp({ email, password }) {
+  try {
+    const result = await sb.signUp(email, password);
+    return { ok: true, user: result.user ?? null, needsConfirm: !result.access_token };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

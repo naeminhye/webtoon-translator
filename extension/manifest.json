@@ -12,7 +12,8 @@
     "https://ridibooks.com/*",
     "https://page.kakao.com/*",
     "https://*.pstatic.net/*",
-    "https://api.ocr.space/*"
+    "https://api.ocr.space/*",
+    "https://*.supabase.co/*"
   ],
 
   "content_security_policy": {

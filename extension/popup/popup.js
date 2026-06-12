@@ -127,3 +127,88 @@ async function initOcrSettings() {
 
 init();
 initOcrSettings();
+
+async function initSyncSettings() {
+  const status = await chrome.runtime.sendMessage({ type: 'SB_GET_STATUS' });
+
+  function setSyncDot(state) { // 'off' | 'on' | 'synced'
+    const dot = $('sync-status-dot');
+    dot.className = `sync-dot sync-dot-${state}`;
+    dot.title = state === 'off' ? 'Not configured' : state === 'on' ? 'Connected — not signed in' : 'Connected & signed in';
+  }
+
+  function showConfigured(user) {
+    $('sb-config-wrap').classList.add('hidden');
+    $('sb-auth-wrap').classList.remove('hidden');
+    if (user) {
+      $('sb-login-form').classList.add('hidden');
+      $('sb-user-row').classList.remove('hidden');
+      $('sb-user-email').textContent = user.email;
+      setSyncDot('synced');
+      $('footer-sync-label').textContent = 'Supabase sync ✓';
+    } else {
+      $('sb-login-form').classList.remove('hidden');
+      $('sb-user-row').classList.add('hidden');
+      setSyncDot('on');
+      $('footer-sync-label').textContent = 'Supabase (not signed in)';
+    }
+  }
+
+  function showNotConfigured() {
+    $('sb-config-wrap').classList.remove('hidden');
+    $('sb-auth-wrap').classList.add('hidden');
+    setSyncDot('off');
+    $('footer-sync-label').textContent = 'local only';
+  }
+
+  if (status.configured) showConfigured(status.user);
+  else showNotConfigured();
+
+  $('sb-save-config').addEventListener('click', async () => {
+    const url     = $('sb-url').value.trim().replace(/\/$/, '');
+    const anonKey = $('sb-anon-key').value.trim();
+    if (!url || !anonKey) return;
+    await chrome.runtime.sendMessage({ type: 'SB_SAVE_CONFIG', payload: { url, anonKey } });
+    showConfigured(null);
+  });
+
+  async function doSignIn() {
+    const email    = $('sb-email').value.trim();
+    const password = $('sb-password').value;
+    if (!email || !password) return;
+    $('sb-signin-btn').disabled = true;
+    $('sb-auth-error').classList.add('hidden');
+    const res = await chrome.runtime.sendMessage({ type: 'SB_SIGN_IN', payload: { email, password } });
+    $('sb-signin-btn').disabled = false;
+    if (res.ok) { showConfigured(res.user); }
+    else { $('sb-auth-error').textContent = res.error; $('sb-auth-error').classList.remove('hidden'); }
+  }
+
+  $('sb-signin-btn').addEventListener('click', doSignIn);
+  $('sb-password').addEventListener('keydown', e => { if (e.key === 'Enter') doSignIn(); });
+
+  $('sb-signup-btn').addEventListener('click', async () => {
+    const email    = $('sb-email').value.trim();
+    const password = $('sb-password').value;
+    if (!email || !password) return;
+    $('sb-signup-btn').disabled = true;
+    $('sb-auth-error').classList.add('hidden');
+    const res = await chrome.runtime.sendMessage({ type: 'SB_SIGN_UP', payload: { email, password } });
+    $('sb-signup-btn').disabled = false;
+    if (res.ok && res.needsConfirm) {
+      $('sb-confirm-notice').classList.remove('hidden');
+    } else if (res.ok && res.user) {
+      showConfigured(res.user);
+    } else if (!res.ok) {
+      $('sb-auth-error').textContent = res.error;
+      $('sb-auth-error').classList.remove('hidden');
+    }
+  });
+
+  $('sb-signout-btn').addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: 'SB_SIGN_OUT' });
+    showConfigured(null);
+  });
+}
+
+initSyncSettings();
