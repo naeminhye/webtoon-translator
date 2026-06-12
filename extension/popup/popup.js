@@ -1,12 +1,24 @@
 const $ = id => document.getElementById(id);
 const ENABLED_KEY = 'wt:enabled';
 
-let activeTabId = null;
+let activeTabId  = null;
+let userLoggedIn = false;
 
 function applyEnabledUI(enabled) {
   $('enabled-toggle').checked = enabled;
   $('main-ui').classList.toggle('hidden', !enabled);
   $('disabled-notice').classList.toggle('hidden', enabled);
+}
+
+function applyAuthUI(loggedIn) {
+  userLoggedIn = loggedIn;
+  $('btn-annotate').classList.toggle('hidden', !loggedIn);
+  $('login-hint').classList.toggle('hidden', loggedIn);
+  // If currently in annotate mode but user is no longer logged in, switch to read
+  if (!loggedIn && $('btn-annotate').classList.contains('active')) {
+    chrome.tabs.sendMessage(activeTabId, { type: 'SET_MODE', mode: 'read' });
+    setActiveMode('read');
+  }
 }
 
 function refreshMeta() {
@@ -33,7 +45,8 @@ function refreshMeta() {
     badge.textContent = meta.site;
     badge.className   = `badge badge-${meta.site}`;
 
-    setActiveMode(meta.currentMode === 'annotate' ? 'annotate' : 'read');
+    const mode = meta.currentMode === 'annotate' && userLoggedIn ? 'annotate' : 'read';
+    setActiveMode(mode);
   });
 }
 
@@ -50,7 +63,14 @@ async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab?.id ?? null;
 
-  const stored  = await chrome.storage.local.get({ [ENABLED_KEY]: true });
+  // Check auth status and extension enabled state in parallel
+  const [stored, authStatus] = await Promise.all([
+    chrome.storage.local.get({ [ENABLED_KEY]: true }),
+    chrome.runtime.sendMessage({ type: 'SB_GET_STATUS' }).catch(() => ({ user: null })),
+  ]);
+
+  applyAuthUI(Boolean(authStatus?.user));
+
   const enabled = stored[ENABLED_KEY];
   applyEnabledUI(enabled);
   if (enabled) refreshMeta();
@@ -67,15 +87,16 @@ async function init() {
     }
   });
 
-  $('btn-settings').addEventListener('click', () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('popup/settings.html') });
-  });
+  const openSettings = () => chrome.tabs.create({ url: chrome.runtime.getURL('popup/settings.html') });
+  $('btn-settings').addEventListener('click', openSettings);
+  $('login-hint-link').addEventListener('click', openSettings);
 
   $('btn-read').addEventListener('click', () => {
     chrome.tabs.sendMessage(activeTabId, { type: 'SET_MODE', mode: 'read' });
     setActiveMode('read');
   });
   $('btn-annotate').addEventListener('click', () => {
+    if (!userLoggedIn) return;
     chrome.tabs.sendMessage(activeTabId, { type: 'SET_MODE', mode: 'annotate' });
     setActiveMode('annotate');
   });
