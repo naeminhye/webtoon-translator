@@ -10,8 +10,8 @@
  */
 
 const STORAGE_KEY   = 'wt:supabase';
-const DEV_URL       = '';   // e.g. 'https://xxxx.supabase.co'
-const DEV_ANON_KEY  = '';   // your project's anon/public key
+const DEV_URL       = 'https://ipromkubljtyvbaqvraj.supabase.co';
+const DEV_ANON_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlwcm9ta3VibGp0eXZiYXF2cmFqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyMzgxNjQsImV4cCI6MjA5NjgxNDE2NH0.P8UtyaHd4z3ZLtZNiiaOeWzzwBcspSYD2qh0xgqIwgk';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
