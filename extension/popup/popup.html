@@ -92,7 +92,37 @@
     <p id="ocrspace-key-saved" class="key-saved hidden">API key saved ✓</p>
   </section>
 
-  <footer>v0.1.0 · Phase 1 (local only)</footer>
+  <section id="sync-settings">
+    <div class="settings-head">
+      Cloud Sync
+      <span id="sync-status-dot" class="sync-dot sync-dot-off" title="Not configured"></span>
+    </div>
+
+    <!-- Step 1: Supabase project config (shown until configured) -->
+    <div id="sb-config-wrap">
+      <input type="text"     id="sb-url"      placeholder="https://xxxx.supabase.co" autocomplete="off" />
+      <input type="text"     id="sb-anon-key" placeholder="Anon / public key"        autocomplete="off" />
+      <button id="sb-save-config" class="key-save-btn">Connect</button>
+    </div>
+
+    <!-- Step 2: Auth (shown once project is configured) -->
+    <div id="sb-auth-wrap" class="hidden">
+      <!-- Logged-out state -->
+      <div id="sb-login-form">
+        <input type="email"    id="sb-email"    placeholder="Email"    autocomplete="email" />
+        <input type="password" id="sb-password" placeholder="Password" autocomplete="current-password" />
+        <button id="sb-signin-btn" class="key-save-btn" style="margin-top:2px">Sign in</button>
+        <p id="sb-auth-error" class="sb-error hidden"></p>
+      </div>
+      <!-- Logged-in state -->
+      <div id="sb-user-row" class="hidden">
+        <span id="sb-user-email" class="sb-user-email"></span>
+        <button id="sb-signout-btn" class="sb-link-btn">Sign out</button>
+      </div>
+    </div>
+  </section>
+
+  <footer>v0.2.0 · <span id="footer-sync-label">local only</span></footer>
   <script src="popup.js"></script>
 </body>
 </html>

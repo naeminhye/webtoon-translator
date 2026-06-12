@@ -1,14 +1,15 @@
 /**
- * background/worker.js — Phase 1: chrome.storage.local
- * Migration note: replace handleSave/handleLoad/handleDelete with
- * Supabase REST calls in Phase 2. Auth token refresh lives here.
+ * background/worker.js — Phase 2: chrome.storage.local + Supabase cloud sync
  */
 
+import * as sb from './supabase.js';
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const tabId = sender?.tab?.id ?? null;
   switch (message.type) {
-    case 'SAVE_TRANSLATIONS':   handleSave(message.payload).then(sendResponse);   return true;
-    case 'LOAD_TRANSLATIONS':   handleLoad(message.payload).then(sendResponse);   return true;
-    case 'DELETE_ANNOTATION':   handleDelete(message.payload).then(sendResponse); return true;
+    case 'SAVE_TRANSLATIONS':   handleSave(message.payload, tabId).then(sendResponse);   return true;
+    case 'LOAD_TRANSLATIONS':   handleLoad(message.payload).then(sendResponse);          return true;
+    case 'DELETE_ANNOTATION':   handleDelete(message.payload, tabId).then(sendResponse); return true;
     case 'EXPORT_CHAPTER':      handleExport(message.payload).then(sendResponse); return true;
     case 'IMPORT_FILE':         handleImport(message.payload).then(sendResponse); return true;
     case 'CLEAR_CHAPTER':       handleClear(message.payload).then(sendResponse);  return true;
@@ -33,15 +34,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       });
       return false;
+    case 'SB_GET_STATUS':  sbGetStatus().then(sendResponse);                          return true;
+    case 'SB_SAVE_CONFIG': sb.saveConfig(message.payload).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e.message })); return true;
+    case 'SB_SIGN_IN':     sbSignIn(message.payload).then(sendResponse);        return true;
+    case 'SB_SIGN_OUT':    sb.signOut().then(() => sendResponse({ ok: true })); return true;
   }
 });
 
-async function handleSave({ site, titleId, chapterId, annotations }) {
+async function handleSave({ site, titleId, chapterId, annotations }, tabId) {
   const key      = storageKey(site, titleId, chapterId);
   const existing = await getLocal(key) || { site, titleId, chapterId, annotations: [] };
 
   for (const incoming of annotations) {
-    // Match by imageHash + exact bbox X (rounded to 1dp) — stable identifier
     const incomingKey = annKey(incoming);
     const idx = existing.annotations.findIndex(a => annKey(a) === incomingKey);
     if (idx >= 0) existing.annotations[idx] = incoming;
@@ -49,7 +53,15 @@ async function handleSave({ site, titleId, chapterId, annotations }) {
   }
 
   await chrome.storage.local.set({ [key]: existing });
+  // Async push — returns immediately so UI isn't blocked, then notifies tab
+  _syncSave(annotations, { site, titleId, chapterId }, tabId);
   return { ok: true };
+}
+
+async function _syncSave(annotations, meta, tabId) {
+  if (!(await sb.isConfigured()) || !(await sb.getSession())) return;
+  const result = await sb.saveAnnotations(annotations, meta).catch(e => ({ ok: false, error: e.message }));
+  _sendSyncStatus(tabId, result?.ok ? 'saved' : 'error', result?.error);
 }
 
 async function handleLoad({ site, titleId, chapterId }) {
@@ -57,34 +69,48 @@ async function handleLoad({ site, titleId, chapterId }) {
   const data = await getLocal(key);
   const raw  = data?.annotations || [];
 
-  // Dedupe on read — last write wins by createdAt
+  // Dedupe local
   const seen = new Map();
   for (const ann of raw) {
     const k = annKey(ann);
     const existing = seen.get(k);
     if (!existing || new Date(ann.createdAt) >= new Date(existing.createdAt)) seen.set(k, ann);
   }
-  const deduped = [...seen.values()];
 
-  // If we found duplicates, write back the clean version
-  if (deduped.length < raw.length && data) {
-    data.annotations = deduped;
-    await chrome.storage.local.set({ [key]: data });
+  // Merge with Supabase — server wins for same key (other translators' edits)
+  const serverAnns = await sb.loadChapter({ site, titleId, chapterId }).catch(() => null);
+  if (serverAnns) {
+    for (const ann of serverAnns) seen.set(annKey(ann), ann); // server overwrites local for same key
+    // Persist merged result so offline reads reflect latest server state
+    const merged = { site, titleId, chapterId, annotations: [...seen.values()] };
+    await chrome.storage.local.set({ [key]: merged });
   }
 
+  const deduped = [...seen.values()];
   return { annotations: deduped };
 }
 
-async function handleDelete({ site, titleId, chapterId, annKey: keyToDelete }) {
+async function handleDelete({ site, titleId, chapterId, annKey: keyToDelete }, tabId) {
   const key  = storageKey(site, titleId, chapterId);
   const data = await getLocal(key);
-  if (!data) return { ok: true };
+  if (data) {
+    const before = data.annotations.length;
+    data.annotations = data.annotations.filter(a => annKey(a) !== keyToDelete);
+    await chrome.storage.local.set({ [key]: data });
+  }
+  _syncDelete({ site, titleId, chapterId, annKey: keyToDelete }, tabId);
+  return { ok: true, removed: data ? (data.annotations.length) : 0 };
+}
 
-  const before = data.annotations.length;
-  data.annotations = data.annotations.filter(a => annKey(a) !== keyToDelete);
+async function _syncDelete(payload, tabId) {
+  if (!(await sb.isConfigured()) || !(await sb.getSession())) return;
+  const ok = await sb.deleteAnnotation(payload).catch(() => false);
+  _sendSyncStatus(tabId, ok ? 'deleted' : 'error');
+}
 
-  await chrome.storage.local.set({ [key]: data });
-  return { ok: true, removed: before - data.annotations.length };
+function _sendSyncStatus(tabId, status, error) {
+  if (tabId == null) return;
+  chrome.tabs.sendMessage(tabId, { type: 'SYNC_STATUS', status, error }, () => void chrome.runtime.lastError);
 }
 
 async function handleExport({ site, titleId }) {
@@ -104,6 +130,10 @@ async function handleExport({ site, titleId }) {
 
 async function handleClear({ site, titleId, chapterId }) {
   await chrome.storage.local.remove(storageKey(site, titleId, chapterId));
+  // Also remove from Supabase if signed in
+  if (await sb.isConfigured() && await sb.getSession()) {
+    await sb.clearChapter({ site, titleId, chapterId }).catch(() => {});
+  }
   return { ok: true };
 }
 
@@ -117,8 +147,7 @@ async function handleImport({ jsonString }) {
   const { site, titleId, chapters } = parsed;
   let count = 0;
   for (const [chapterId, annotations] of Object.entries(chapters)) {
-    // handleSave upserts by annKey — no duplicates even if imported twice
-    await handleSave({ site, titleId, chapterId, annotations });
+    await handleSave({ site, titleId, chapterId, annotations }, null);
     count += annotations.length;
   }
   return { ok: true, imported: count };
@@ -295,6 +324,24 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.runtime.onInstalled.addListener(updateBadge);
 chrome.runtime.onStartup.addListener(updateBadge);
 updateBadge();
+
+// ── Supabase auth handlers ────────────────────────────────────────────────────
+
+async function sbGetStatus() {
+  const configured = await sb.isConfigured();
+  if (!configured) return { configured: false, user: null };
+  const session = await sb.getSession();
+  return { configured: true, user: session?.user ?? null };
+}
+
+async function sbSignIn({ email, password }) {
+  try {
+    const session = await sb.signIn(email, password);
+    return { ok: true, user: session.user };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
