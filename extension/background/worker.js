@@ -5,10 +5,11 @@
 import * as sb from './supabase.js';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const tabId = sender?.tab?.id ?? null;
   switch (message.type) {
-    case 'SAVE_TRANSLATIONS':   handleSave(message.payload).then(sendResponse);   return true;
-    case 'LOAD_TRANSLATIONS':   handleLoad(message.payload).then(sendResponse);   return true;
-    case 'DELETE_ANNOTATION':   handleDelete(message.payload).then(sendResponse); return true;
+    case 'SAVE_TRANSLATIONS':   handleSave(message.payload, tabId).then(sendResponse);   return true;
+    case 'LOAD_TRANSLATIONS':   handleLoad(message.payload).then(sendResponse);          return true;
+    case 'DELETE_ANNOTATION':   handleDelete(message.payload, tabId).then(sendResponse); return true;
     case 'EXPORT_CHAPTER':      handleExport(message.payload).then(sendResponse); return true;
     case 'IMPORT_FILE':         handleImport(message.payload).then(sendResponse); return true;
     case 'CLEAR_CHAPTER':       handleClear(message.payload).then(sendResponse);  return true;
@@ -40,7 +41,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-async function handleSave({ site, titleId, chapterId, annotations }) {
+async function handleSave({ site, titleId, chapterId, annotations }, tabId) {
   const key      = storageKey(site, titleId, chapterId);
   const existing = await getLocal(key) || { site, titleId, chapterId, annotations: [] };
 
@@ -52,9 +53,15 @@ async function handleSave({ site, titleId, chapterId, annotations }) {
   }
 
   await chrome.storage.local.set({ [key]: existing });
-  // Fire-and-forget push to Supabase — never blocks or errors the caller
-  sb.saveAnnotations(annotations, { site, titleId, chapterId }).catch(() => {});
+  // Async push — returns immediately so UI isn't blocked, then notifies tab
+  _syncSave(annotations, { site, titleId, chapterId }, tabId);
   return { ok: true };
+}
+
+async function _syncSave(annotations, meta, tabId) {
+  if (!(await sb.isConfigured()) || !(await sb.getSession())) return;
+  const ok = await sb.saveAnnotations(annotations, meta).catch(() => false);
+  _sendSyncStatus(tabId, ok ? 'saved' : 'error');
 }
 
 async function handleLoad({ site, titleId, chapterId }) {
@@ -83,7 +90,7 @@ async function handleLoad({ site, titleId, chapterId }) {
   return { annotations: deduped };
 }
 
-async function handleDelete({ site, titleId, chapterId, annKey: keyToDelete }) {
+async function handleDelete({ site, titleId, chapterId, annKey: keyToDelete }, tabId) {
   const key  = storageKey(site, titleId, chapterId);
   const data = await getLocal(key);
   if (data) {
@@ -91,9 +98,19 @@ async function handleDelete({ site, titleId, chapterId, annKey: keyToDelete }) {
     data.annotations = data.annotations.filter(a => annKey(a) !== keyToDelete);
     await chrome.storage.local.set({ [key]: data });
   }
-  // Fire-and-forget delete from Supabase
-  sb.deleteAnnotation({ site, titleId, chapterId, annKey: keyToDelete }).catch(() => {});
+  _syncDelete({ site, titleId, chapterId, annKey: keyToDelete }, tabId);
   return { ok: true, removed: data ? (data.annotations.length) : 0 };
+}
+
+async function _syncDelete(payload, tabId) {
+  if (!(await sb.isConfigured()) || !(await sb.getSession())) return;
+  const ok = await sb.deleteAnnotation(payload).catch(() => false);
+  _sendSyncStatus(tabId, ok ? 'deleted' : 'error');
+}
+
+function _sendSyncStatus(tabId, status) {
+  if (tabId == null) return;
+  chrome.tabs.sendMessage(tabId, { type: 'SYNC_STATUS', status }, () => void chrome.runtime.lastError);
 }
 
 async function handleExport({ site, titleId }) {

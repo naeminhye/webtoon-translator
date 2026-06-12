@@ -1622,12 +1622,12 @@ function toggleTranslations(force) {
   }
 }
 
-function showToast(text, color = '#22c55e') {
+function showToast(text, color = '#22c55e', duration = 3000) {
   const t = document.createElement('div');
   t.textContent = text;
   t.style.cssText = `position:fixed;bottom:84px;right:24px;z-index:99999;background:${color};color:#fff;padding:10px 18px;border-radius:8px;font-family:system-ui;font-size:14px;font-weight:500;pointer-events:none;`;
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), 3000);
+  setTimeout(() => t.remove(), duration);
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
@@ -2092,6 +2092,11 @@ function bootForPage() {
     if (message.type === 'TRIGGER_IMPORT') triggerImport();
     if (message.type === 'TRIGGER_CLEAR')  triggerClear();
     if (message.type === 'OCR_STATUS')     dialog.setOcrStatus(message.payload);
+    if (message.type === 'SYNC_STATUS') {
+      if (message.status === 'saved')   showToast('☁ Synced', '#6366f1', 2000);
+      else if (message.status === 'deleted') { /* silent — delete already has visual feedback */ }
+      else if (message.status === 'error')  showToast('⚠ Sync failed — saved locally', '#f59e0b', 4000);
+    }
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
