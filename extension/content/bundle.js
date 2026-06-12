@@ -1219,6 +1219,8 @@ class SidePanel {
     }
 
     for (const [imgIdx, anns] of [...grouped.entries()].sort((a,b) => a[0]-b[0])) {
+      // Sort within each panel: top-to-bottom (bbox.y), then left-to-right (bbox.x)
+      anns.sort((a, b) => a.bbox.y !== b.bbox.y ? a.bbox.y - b.bbox.y : a.bbox.x - b.bbox.x);
       const section = document.createElement('div');
       section.className = 'wt-sp-section';
       section.innerHTML = `<div class="wt-sp-section-label">Panel ${imgIdx + 1}</div>`;
