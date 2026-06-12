@@ -11,7 +11,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'LOAD_TRANSLATIONS':   handleLoad(message.payload).then(sendResponse);          return true;
     case 'DELETE_ANNOTATION':   handleDelete(message.payload, tabId).then(sendResponse); return true;
     case 'EXPORT_CHAPTER':      handleExport(message.payload).then(sendResponse); return true;
-    case 'IMPORT_FILE':         handleImport(message.payload, tabId).then(sendResponse); return true;
+    case 'IMPORT_FILE':         handleImport(message.payload).then(sendResponse); return true;
     case 'CLEAR_CHAPTER':       handleClear(message.payload).then(sendResponse);  return true;
     case 'OCR_REGION':
       handleOcr(message.payload)
@@ -137,7 +137,7 @@ async function handleClear({ site, titleId, chapterId }) {
   return { ok: true };
 }
 
-async function handleImport({ jsonString }, tabId) {
+async function handleImport({ jsonString }) {
   let parsed;
   try { parsed = JSON.parse(jsonString); }
   catch { return { ok: false, error: 'Invalid JSON' }; }
@@ -147,22 +147,9 @@ async function handleImport({ jsonString }, tabId) {
   const { site, titleId, chapters } = parsed;
   let count = 0;
   for (const [chapterId, annotations] of Object.entries(chapters)) {
-    // Save to local storage (handleSave upserts by annKey — no duplicates even if imported twice)
-    await handleSave({ site, titleId, chapterId, annotations }, null); // null tabId — suppress per-chapter toasts
+    await handleSave({ site, titleId, chapterId, annotations }, null);
     count += annotations.length;
   }
-
-  // Sync all imported data to Supabase and show a single consolidated toast
-  if (tabId != null && await sb.isConfigured() && await sb.getSession()) {
-    let syncOk = true;
-    let syncErr = null;
-    for (const [chapterId, annotations] of Object.entries(chapters)) {
-      const result = await sb.saveAnnotations(annotations, { site, titleId, chapterId }).catch(e => ({ ok: false, error: e.message }));
-      if (!result?.ok) { syncOk = false; syncErr = result?.error; }
-    }
-    _sendSyncStatus(tabId, syncOk ? 'imported' : 'error', syncOk ? String(count) : syncErr);
-  }
-
   return { ok: true, imported: count };
 }
 
