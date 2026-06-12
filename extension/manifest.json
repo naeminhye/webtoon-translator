@@ -14,7 +14,9 @@
     "https://*.pstatic.net/*",
     "https://api.ocr.space/*",
     "https://*.supabase.co/*",
-    "https://translate.googleapis.com/*"
+    "https://translate.googleapis.com/*",
+    "https://api-free.deepl.com/*",
+    "https://api.deepl.com/*"
   ],
 
   "content_security_policy": {

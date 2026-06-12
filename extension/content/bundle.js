@@ -876,27 +876,58 @@ class InputDialog {
       if (e.target.value) loadGoogleFont(e.target.value);
     });
 
-    this._el.querySelector('.wt-btn-gtranslate').addEventListener('click', async () => {
-      const btn = this._el.querySelector('.wt-btn-gtranslate');
-      const originalInput = this._el.querySelector('.wt-input-original');
+    const translateBtn = this._el.querySelector('.wt-btn-gtranslate');
+
+    // Show/hide translate button based on provider setting
+    chrome.storage.local.get({ 'wt:translate-provider': 'google' }, (s) => {
+      translateBtn.style.display = s['wt:translate-provider'] === 'none' ? 'none' : '';
+    });
+
+    translateBtn.addEventListener('click', async () => {
+      const originalInput   = this._el.querySelector('.wt-input-original');
       const translatedInput = this._el.querySelector('.wt-input-translated');
       const text = originalInput.value.trim();
       if (!text) { originalInput.focus(); return; }
-      btn.disabled = true;
-      btn.textContent = '…';
+      translateBtn.disabled = true;
+      translateBtn.textContent = '…';
       try {
-        const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=vi&dt=t&q=${encodeURIComponent(text)}`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const translated = data[0].map(s => s[0]).join('');
+        const s = await chrome.storage.local.get({
+          'wt:translate-provider': 'google',
+          'wt:translate-lang':     'vi',
+          'wt:deepl-key':          '',
+        });
+        const provider = s['wt:translate-provider'];
+        const targetLang = s['wt:translate-lang'];
+
+        let translated;
+        if (provider === 'deepl') {
+          const apiKey = s['wt:deepl-key'];
+          if (!apiKey) throw new Error('DeepL API key not set — add it in Settings');
+          const base = apiKey.endsWith(':fx')
+            ? 'https://api-free.deepl.com/v2/translate'
+            : 'https://api.deepl.com/v2/translate';
+          const res = await fetch(base, {
+            method: 'POST',
+            headers: { 'Authorization': `DeepL-Auth-Key ${apiKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: [text], target_lang: targetLang.toUpperCase().replace('-', '_') }),
+          });
+          if (!res.ok) throw new Error(`DeepL HTTP ${res.status}`);
+          const data = await res.json();
+          translated = data.translations[0].text;
+        } else {
+          const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          translated = data[0].map(s => s[0]).join('');
+        }
         translatedInput.value = translated;
         translatedInput.focus();
       } catch (err) {
-        this._showOcrStatus(`✗ Translation failed: ${err.message}`, '#ef4444', 4000);
+        this._showOcrStatus(`✗ Translation failed: ${err.message}`, '#ef4444', 5000);
       } finally {
-        btn.disabled = false;
-        btn.textContent = 'Translate ↗';
+        translateBtn.disabled = false;
+        translateBtn.textContent = 'Translate ↗';
       }
     });
 
