@@ -2093,9 +2093,10 @@ function bootForPage() {
     if (message.type === 'TRIGGER_CLEAR')  triggerClear();
     if (message.type === 'OCR_STATUS')     dialog.setOcrStatus(message.payload);
     if (message.type === 'SYNC_STATUS') {
-      if (message.status === 'saved')   showToast('☁ Synced', '#6366f1', 2000);
-      else if (message.status === 'deleted') { /* silent — delete already has visual feedback */ }
-      else if (message.status === 'error')  showToast(`⚠ Sync failed: ${message.error || 'unknown error'}`, '#f59e0b', 5000);
+      if (message.status === 'saved')    showToast('☁ Synced', '#6366f1', 2000);
+      else if (message.status === 'imported') showToast(`☁ Synced ${message.error || ''} translations`, '#6366f1', 3000);
+      else if (message.status === 'deleted') { /* silent */ }
+      else if (message.status === 'error')   showToast(`⚠ Sync failed: ${message.error || 'unknown error'}`, '#f59e0b', 5000);
     }
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);

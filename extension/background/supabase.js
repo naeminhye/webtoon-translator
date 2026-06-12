@@ -191,6 +191,32 @@ export async function saveAnnotations(annotations, { site, titleId, chapterId })
 }
 
 /**
+ * Delete all annotations for a chapter from Supabase. Requires a signed-in session.
+ */
+export async function clearChapter({ site, titleId, chapterId }) {
+  const session = await getSession();
+  const { url, anonKey } = await getConfig();
+  if (!url || !anonKey || !session?.access_token) return false;
+
+  const params = new URLSearchParams({
+    site:       `eq.${site}`,
+    title_id:   `eq.${titleId}`,
+    chapter_id: `eq.${chapterId}`,
+  });
+
+  try {
+    const res = await _fetchWithTimeout(`${url}/rest/v1/translations?${params}`, {
+      method: 'DELETE',
+      headers: {
+        'apikey': anonKey,
+        'Authorization': `Bearer ${session.access_token}`,
+      },
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
+/**
  * Delete a single annotation from Supabase by its ann_key.
  * ann_key format: imageHash::bboxX::bboxY
  */
