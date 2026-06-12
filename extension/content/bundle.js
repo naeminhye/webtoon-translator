@@ -1784,13 +1784,18 @@ function bootForPage() {
       if (!byHash.has(ann.imageHash)) byHash.set(ann.imageHash, []);
       byHash.get(ann.imageHash).push(ann);
     }
-    for (const img of images) {
-      const hash = await hashImage(img);
-      const anns = byHash.get(hash) || [];
+    // Re-derive imageIndex from the sorted images array so panel numbers in the
+    // sidebar always reflect true visual scroll order, even for old annotations.
+    const hashToIndex = new Map();
+    for (let i = 0; i < images.length; i++) {
+      const h = await hashImage(images[i]);
+      hashToIndex.set(h, i);
+      const anns = byHash.get(h) || [];
+      for (const ann of anns) ann.imageIndex = i; // patch in-memory; storage updated lazily
       if (isKakao) {
-        for (const ann of anns) fixedLayer.upsertBubble(img, ann);
+        for (const ann of anns) fixedLayer.upsertBubble(images[i], ann);
       } else {
-        renderer.renderForImage(img, anns);
+        renderer.renderForImage(images[i], anns);
       }
     }
     // Keep side panel in sync
@@ -1842,7 +1847,11 @@ function bootForPage() {
   const stopWatching = adapter.watchNewImages(async (newImages) => {
     const added = newImages.filter(img => !images.includes(img));
     if (!added.length) return;
-    images = [...images, ...added];
+    // Merge then sort by DOM position so imageIndex matches visual scroll order
+    // even when lazy-loaded images arrive out of sequence.
+    images = [...images, ...added].sort((a, b) =>
+      a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+    );
     if (currentMode === MODES.ANNOTATE) {
       if (isKakao) fixedLayer.enable(images);
       else added.forEach(img => selector.attachImage(img, images.indexOf(img)));
