@@ -150,7 +150,6 @@ async function handleImport({ jsonString }) {
   return { ok: true, imported: count };
 }
 
-<<<<<<< HEAD
 // ── OCR ───────────────────────────────────────────────────────────────────────
 // Two providers: 'tesseract' (offline, offscreen doc) and 'ocrspace' (online API).
 // If the content script couldn't crop (tainted canvas), imageUrl + bbox are sent
