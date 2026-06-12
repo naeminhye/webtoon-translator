@@ -67,6 +67,12 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* Read mode: bubbles show double-click cursor to hint editability */
+body:not(.wt-annotate-mode) .wt-translation-bubble {
+  pointer-events: auto;
+  cursor: text;
+}
+
 /* Annotation mode: bubbles are clickable for editing */
 .wt-annotate-mode .wt-translation-bubble {
   pointer-events: auto;

@@ -299,8 +299,9 @@ class FixedOverlayLayer {
       b.style.color      = s.color  || '#1a1a2e';
       b.style.background = s.noBg   ? 'transparent' : (s.bg || 'rgba(255,255,255,0.95)');
       if (s.stroke && s.strokeColor) {
-        const sc = s.strokeColor, sw = s.strokeWidth || 1;
-        b.style.textShadow = `${sw}px 0 ${sc},-${sw}px 0 ${sc},0 ${sw}px ${sc},0 -${sw}px ${sc}`;
+        b.style.textShadow = strokeTextShadow(s.strokeColor, s.strokeWidth || 1);
+      } else {
+        b.style.textShadow = 'none';
       }
       if (s.fontFamily) b.style.fontFamily = `'${s.fontFamily}', system-ui, sans-serif`;
     }
@@ -555,8 +556,7 @@ class OverlayRenderer {
       b.style.color      = s.color  || '#1a1a2e';
       b.style.background = s.noBg   ? 'transparent' : (s.bg || 'rgba(255,255,255,0.95)');
       if (s.stroke && s.strokeColor) {
-        const sc = s.strokeColor, sw = s.strokeWidth || 1;
-        b.style.textShadow = `${sw}px 0 ${sc},-${sw}px 0 ${sc},0 ${sw}px ${sc},0 -${sw}px ${sc}`;
+        b.style.textShadow = strokeTextShadow(s.strokeColor, s.strokeWidth || 1);
       } else {
         b.style.textShadow = 'none';
       }
@@ -995,13 +995,18 @@ class QuickTranslateDialog {
     this._build();
   }
 
-  show(screenPos) {
+  show(screenPos, prefill = {}) {
     if (!this._el.isConnected) document.body.appendChild(this._el);
-    this._el.querySelector('.wt-quick-translated').value = '';
-    this._el.querySelector('.wt-quick-original').textContent = '';
-    this._el.querySelector('.wt-quick-original').style.display = 'none';
-    this._origText = '';
+    this._el.querySelector('.wt-quick-translated').value = prefill.translatedText || '';
+    this._origText = prefill.originalText || '';
+    const origEl = this._el.querySelector('.wt-quick-original');
+    origEl.textContent = this._origText;
+    origEl.style.display = this._origText ? 'block' : 'none';
     this._setStatus('');
+    const isEdit = Boolean(prefill.translatedText);
+    this._el.querySelector('.wt-quick-title').innerHTML = isEdit
+      ? `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg> Edit Translation`
+      : `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg> Quick Translate`;
 
     return new Promise(resolve => {
       this._resolve = resolve;
@@ -1792,6 +1797,51 @@ function _cropCanvas(img, bbox) {
   return canvas.toDataURL('image/png'); // throws SecurityError if canvas is tainted
 }
 
+function strokeTextShadow(color, width) {
+  const shadows = [];
+  const steps = Math.max(12, width * 6);
+  for (let i = 0; i < steps; i++) {
+    const a = (i / steps) * 2 * Math.PI;
+    const x = +(width * Math.cos(a)).toFixed(2);
+    const y = +(width * Math.sin(a)).toFixed(2);
+    shadows.push(`${x}px ${y}px 0 ${color}`);
+  }
+  return shadows.join(',');
+}
+
+function detectBboxColors(imageEl, bbox) {
+  try {
+    const sx = (bbox.x / 100) * imageEl.naturalWidth;
+    const sy = (bbox.y / 100) * imageEl.naturalHeight;
+    const sw = Math.max(1, (bbox.w / 100) * imageEl.naturalWidth);
+    const sh = Math.max(1, (bbox.h / 100) * imageEl.naturalHeight);
+    const cw = Math.min(sw, 120), ch = Math.min(sh, 120);
+    const canvas = document.createElement('canvas');
+    canvas.width = cw; canvas.height = ch;
+    canvas.getContext('2d').drawImage(imageEl, sx, sy, sw, sh, 0, 0, cw, ch);
+    const data = canvas.getContext('2d').getImageData(0, 0, cw, ch).data;
+
+    let dark = { r: 0, g: 0, b: 0, n: 0 };
+    let light = { r: 0, g: 0, b: 0, n: 0 };
+    for (let i = 0; i < data.length; i += 16) {
+      const r = data[i], g = data[i+1], b = data[i+2];
+      const lum = 0.2126 * r/255 + 0.7152 * g/255 + 0.0722 * b/255;
+      if (lum < 0.45) { dark.r += r; dark.g += g; dark.b += b; dark.n++; }
+      else             { light.r += r; light.g += g; light.b += b; light.n++; }
+    }
+    const avg = (c, n) => n ? '#' + [c.r, c.g, c.b].map(v => Math.round(v/n).toString(16).padStart(2,'0')).join('') : null;
+    const darkHex  = avg(dark,  dark.n);
+    const lightHex = avg(light, light.n);
+    if (!darkHex && !lightHex) return null;
+    // Decide which is text and which is bg: majority → bg, minority → text
+    const textColor = dark.n <= light.n ? (darkHex || '#1a1a2e') : (lightHex || '#ffffff');
+    const bgColor   = dark.n <= light.n ? (lightHex || '#ffffff') : (darkHex  || '#1a1a2e');
+    return { textColor, bgColor };
+  } catch (e) {
+    return null; // canvas tainted (cross-origin image)
+  }
+}
+
 // ── Translation visibility toggle ────────────────────────────────────────────
 let _translationsVisible = true;
 
@@ -2161,7 +2211,9 @@ function bootForPage() {
       x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
       y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
     };
-    const resultPromise = dialog.show(screenPos);
+    const colors = detectBboxColors(imageEl, bbox);
+    const colorStyle = colors ? { color: colors.textColor, bg: colors.bgColor, noBg: false } : {};
+    const resultPromise = dialog.show(screenPos, { style: colorStyle });
     const ocrSession    = dialog.setOcrPending();
     ocrRegion(imageEl, bbox)
       .then(text => dialog.setOcrText(text, ocrSession))
@@ -2299,6 +2351,62 @@ function bootForPage() {
     );
     allAnnotations.push(annotation);
     panel.update(allAnnotations);
+  });
+
+  // ── double-click bubble to edit in Read mode ───────────────────────────
+
+  document.addEventListener('dblclick', async (e) => {
+    if (currentMode !== MODES.READ) return;
+    const bubble = e.target.closest('.wt-translation-bubble');
+    if (!bubble) return;
+    e.stopPropagation();
+    e.preventDefault();
+
+    const annKeyToEdit = bubble.dataset.annKey;
+    const wrapper = bubble.closest('.wt-img-wrapper');
+    let img = wrapper?.querySelector('img');
+    if (!img && isKakao) img = fixedLayer.getBubbleImage(annKeyToEdit);
+    if (!img) return;
+    const imgIndex = images.indexOf(img);
+
+    const existingBbox = {
+      x: parseFloat(bubble.dataset.bboxX), y: parseFloat(bubble.dataset.bboxY),
+      w: parseFloat(bubble.dataset.bboxW), h: parseFloat(bubble.dataset.bboxH),
+    };
+    const existing = allAnnotations.find(a =>
+      `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` === annKeyToEdit
+    );
+
+    const rect = img.getBoundingClientRect();
+    const bubbleRight = rect.left + window.scrollX + ((existingBbox.x + existingBbox.w) / 100) * rect.width;
+    const bubbleLeft  = rect.left + window.scrollX + (existingBbox.x / 100) * rect.width;
+    const bubbleTop   = rect.top  + window.scrollY + (existingBbox.y / 100) * rect.height;
+    const spaceRight  = window.scrollX + window.innerWidth - bubbleRight - 24;
+    const screenPos   = {
+      x: spaceRight >= 280 ? bubbleRight + 8 : bubbleLeft - 288,
+      y: bubbleTop,
+    };
+
+    const result = await quickDialog.show(screenPos, {
+      originalText:   existing?.originalText   || '',
+      translatedText: existing?.translatedText || bubble.querySelector('span')?.textContent || '',
+    });
+    if (!result) return;
+
+    const imgHash  = await hashImage(img);
+    const annotation = {
+      ...(existing || {}),
+      imageHash: imgHash, imageIndex: imgIndex, bbox: existingBbox,
+      originalText:   existing?.originalText || '',
+      translatedText: result.translatedText,
+      style:          existing?.style || { fontSize: 13, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' },
+      language:       existing?.language || 'vi',
+      createdAt:      existing?.createdAt || new Date().toISOString(),
+    };
+    await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
+    _upsertAnnotation(annotation);
+    if (isKakao) fixedLayer.upsertBubble(img, annotation);
+    else renderer.upsertBubble(img, annotation);
   });
 
   // Reposition fixed bubbles on scroll (Kakao uses position:absolute relative to page)
