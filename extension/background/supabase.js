@@ -163,16 +163,20 @@ export async function saveAnnotations(annotations, { site, titleId, chapterId })
   );
 
   try {
-    const res = await _fetchWithTimeout(`${url}/rest/v1/translations`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': anonKey,
-        'Authorization': `Bearer ${session.access_token}`,
-        'Prefer': 'resolution=merge-duplicates,return=minimal',
-      },
-      body: JSON.stringify(rows),
-    });
+    // on_conflict tells PostgREST exactly which columns define uniqueness for the upsert
+    const res = await _fetchWithTimeout(
+      `${url}/rest/v1/translations?on_conflict=site,title_id,chapter_id,image_hash,bbox_x,bbox_y`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': anonKey,
+          'Authorization': `Bearer ${session.access_token}`,
+          'Prefer': 'resolution=merge-duplicates,return=minimal',
+        },
+        body: JSON.stringify(rows),
+      }
+    );
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       const msg = err.message || err.hint || err.code || `HTTP ${res.status}`;
