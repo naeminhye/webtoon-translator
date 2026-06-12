@@ -1747,6 +1747,74 @@ async function ocrRegion(img, bbox) {
   return res.text;
 }
 
+async function ocrRegionStitched(img, bbox, images) {
+  const idx = images.indexOf(img);
+  const clips = [{ img, x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h }];
+  const bottomEdge = bbox.y + bbox.h;
+  const topEdge    = bbox.y;
+
+  // Bbox near bottom edge → also grab top slice of next image
+  if (bottomEdge > 82 && idx >= 0 && idx < images.length - 1) {
+    const nextImg = images[idx + 1];
+    if (nextImg.naturalWidth) {
+      const grabH = Math.max(5, bottomEdge - 82);
+      clips.push({ img: nextImg, x: bbox.x, y: 0, w: bbox.w, h: Math.min(grabH, 35) });
+    }
+  }
+
+  // Bbox near top edge → also grab bottom slice of previous image
+  if (topEdge < 18 && idx > 0) {
+    const prevImg = images[idx - 1];
+    if (prevImg.naturalWidth) {
+      const grabH = Math.max(5, 18 - topEdge);
+      clips.unshift({ img: prevImg, x: bbox.x, y: Math.max(0, 100 - grabH), w: bbox.w, h: Math.min(grabH, 35) });
+    }
+  }
+
+  if (clips.length === 1) return ocrRegion(img, bbox);
+
+  const dataUrl = stitchClips(clips);
+  if (!dataUrl) return ocrRegion(img, bbox);
+
+  const res = await sendToBackground({
+    type: MSG.OCR_REGION,
+    payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
+  });
+  if (!res?.ok) throw new Error(res?.error || 'OCR failed');
+  return res.text;
+}
+
+function stitchClips(clips) {
+  try {
+    const rendered = clips.map(({ img, x, y, w, h }) => ({
+      img,
+      px: (x / 100) * img.naturalWidth,
+      py: (y / 100) * img.naturalHeight,
+      pw: Math.max(1, (w / 100) * img.naturalWidth),
+      ph: Math.max(1, (h / 100) * img.naturalHeight),
+    }));
+    const maxW   = Math.max(...rendered.map(r => r.pw));
+    const totalH = rendered.reduce((s, r) => s + r.ph, 0);
+    const scale  = maxW < 400 ? Math.min(3, 400 / maxW) : 1;
+    const canvas = document.createElement('canvas');
+    canvas.width  = Math.round(maxW * scale);
+    canvas.height = Math.round(totalH * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    let dy = 0;
+    for (const { img, px, py, pw, ph } of rendered) {
+      ctx.drawImage(img, px, py, pw, ph,
+        Math.round((maxW - pw) / 2 * scale), Math.round(dy * scale),
+        Math.round(pw * scale), Math.round(ph * scale));
+      dy += ph;
+    }
+    return canvas.toDataURL('image/png');
+  } catch {
+    return null;
+  }
+}
+
 async function autoTranslate(text) {
   const s = await chrome.storage.local.get({
     'wt:translate-provider': 'google',
@@ -2162,7 +2230,7 @@ function bootForPage() {
     quickDialog.setStatus('⏳ Scanning text…', '#6366f1');
     let ocrText = '';
     try {
-      ocrText = await ocrRegion(imageEl, bbox);
+      ocrText = await ocrRegionStitched(imageEl, bbox, images);
       if (ocrText) {
         quickDialog.setOriginalText(ocrText);
         quickDialog.setStatus('⏳ Translating…', '#6366f1');
@@ -2215,7 +2283,7 @@ function bootForPage() {
     const colorStyle = colors ? { color: colors.textColor, bg: colors.bgColor, noBg: false } : {};
     const resultPromise = dialog.show(screenPos, { style: colorStyle });
     const ocrSession    = dialog.setOcrPending();
-    ocrRegion(imageEl, bbox)
+    ocrRegionStitched(imageEl, bbox, images)
       .then(text => dialog.setOcrText(text, ocrSession))
       .catch(err => dialog.setOcrError(err.message, ocrSession));
     const result = await resultPromise;
