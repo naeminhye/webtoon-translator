@@ -60,8 +60,8 @@ async function handleSave({ site, titleId, chapterId, annotations }, tabId) {
 
 async function _syncSave(annotations, meta, tabId) {
   if (!(await sb.isConfigured()) || !(await sb.getSession())) return;
-  const ok = await sb.saveAnnotations(annotations, meta).catch(() => false);
-  _sendSyncStatus(tabId, ok ? 'saved' : 'error');
+  const result = await sb.saveAnnotations(annotations, meta).catch(e => ({ ok: false, error: e.message }));
+  _sendSyncStatus(tabId, result?.ok ? 'saved' : 'error', result?.error);
 }
 
 async function handleLoad({ site, titleId, chapterId }) {
@@ -108,9 +108,9 @@ async function _syncDelete(payload, tabId) {
   _sendSyncStatus(tabId, ok ? 'deleted' : 'error');
 }
 
-function _sendSyncStatus(tabId, status) {
+function _sendSyncStatus(tabId, status, error) {
   if (tabId == null) return;
-  chrome.tabs.sendMessage(tabId, { type: 'SYNC_STATUS', status }, () => void chrome.runtime.lastError);
+  chrome.tabs.sendMessage(tabId, { type: 'SYNC_STATUS', status, error }, () => void chrome.runtime.lastError);
 }
 
 async function handleExport({ site, titleId }) {

@@ -2095,7 +2095,7 @@ function bootForPage() {
     if (message.type === 'SYNC_STATUS') {
       if (message.status === 'saved')   showToast('☁ Synced', '#6366f1', 2000);
       else if (message.status === 'deleted') { /* silent — delete already has visual feedback */ }
-      else if (message.status === 'error')  showToast('⚠ Sync failed — saved locally', '#f59e0b', 4000);
+      else if (message.status === 'error')  showToast(`⚠ Sync failed: ${message.error || 'unknown error'}`, '#f59e0b', 5000);
     }
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);

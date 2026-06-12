@@ -173,8 +173,17 @@ export async function saveAnnotations(annotations, { site, titleId, chapterId })
       },
       body: JSON.stringify(rows),
     });
-    return res.ok;
-  } catch { return false; }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const msg = err.message || err.hint || err.code || `HTTP ${res.status}`;
+      console.error('[WebtoonTranslate] Supabase save failed:', msg, err);
+      return { ok: false, error: msg };
+    }
+    return { ok: true };
+  } catch (e) {
+    console.error('[WebtoonTranslate] Supabase save error:', e);
+    return { ok: false, error: e.message };
+  }
 }
 
 /**
