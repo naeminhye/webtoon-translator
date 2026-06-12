@@ -47,6 +47,9 @@ export async function signIn(email, password) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    if (res.status === 404) throw new Error('Project URL not found — check Project URL in Supabase → Settings → API');
+    if (res.status === 400) throw new Error(err.error_description || err.msg || 'Invalid email or password');
+    if (res.status === 401) throw new Error('Invalid API key (anon key)');
     throw new Error(err.error_description || err.msg || `Sign-in failed (${res.status})`);
   }
   const session = await res.json();
