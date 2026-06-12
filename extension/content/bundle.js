@@ -955,6 +955,14 @@ class BubbleEditor {
   constructor({ onBboxChange }) {
     this._onBboxChange = onBboxChange;
     this._active = null; // { bubble, img, handles }
+    this._justDragged = false;
+  }
+
+  /** Returns true (and clears) if a drag/resize just ended — used to suppress the post-drag click. */
+  consumeDrag() {
+    const v = this._justDragged;
+    this._justDragged = false;
+    return v;
   }
 
   attach(bubble, img) {
@@ -1034,6 +1042,7 @@ class BubbleEditor {
 
     const onMove = (e) => {
       if (!dragging) return;
+      this._justDragged = true;
       const iw = img.offsetWidth || img.naturalWidth || 375;
       const ih = img.offsetHeight || img.naturalHeight || 500;
       const newLeft = Math.max(0, Math.min(iw - parseFloat(bubble.style.width), origLeft + (e.clientX - startX)));
@@ -1077,6 +1086,7 @@ class BubbleEditor {
 
     const onMove = (e) => {
       if (!dragging) return;
+      this._justDragged = true;
       const dx = e.clientX - startX, dy = e.clientY - startY;
       const iw = img.offsetWidth || img.naturalWidth || 375;
       const ih = img.offsetHeight || img.naturalHeight || 500;
@@ -1222,7 +1232,7 @@ class SidePanel {
         row.innerHTML = `
           <div class="wt-sp-row-actions">
             <button class="wt-sp-row-edit" title="Edit translation">✏</button>
-            <button class="wt-sp-row-del"  title="Delete translation">&#x2715;</button>
+            <button class="wt-sp-row-del"  title="Delete translation">Delete</button>
           </div>
           <div class="wt-sp-row-text">${ann.translatedText}</div>
           ${ann.originalText ? `<div class="wt-sp-row-orig">${ann.originalText}</div>` : ''}
@@ -1238,12 +1248,16 @@ class SidePanel {
         const editWrap = row.querySelector('.wt-sp-row-edit-wrap');
         const textarea = row.querySelector('.wt-sp-row-textarea');
 
-        row.querySelector('.wt-sp-row-edit').addEventListener('click', (e) => {
-          e.stopPropagation();
+        const openEditMode = () => {
           textEl.classList.add('hidden');
           editWrap.classList.remove('hidden');
           textarea.focus();
           textarea.select();
+        };
+
+        row.querySelector('.wt-sp-row-edit').addEventListener('click', (e) => {
+          e.stopPropagation();
+          openEditMode();
         });
 
         row.querySelector('.wt-sp-row-cancel').addEventListener('click', (e) => {
@@ -1290,9 +1304,11 @@ class SidePanel {
           } else if (bubble) {
             bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
           } else {
+            openEditMode();
             return;
           }
           this._onJump?.(ann, img);
+          openEditMode();
         });
         section.appendChild(row);
       }
@@ -1661,8 +1677,8 @@ function bootForPage() {
       // Refresh the bubble on the page
       const img = images[ann.imageIndex ?? 0];
       if (img) {
-        if (isKakao) { fixedLayer.removeBubble(`${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`); fixedLayer.addBubble(ann, img); }
-        else { renderer.removeBubble(img, `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`); renderer.addBubble(ann, img); }
+        if (isKakao) { fixedLayer.removeBubble(`${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`); fixedLayer.upsertBubble(img, ann); }
+        else { renderer.upsertBubble(img, ann); }
       }
     },
     onDelete: async (ann) => {
@@ -1699,6 +1715,12 @@ function bootForPage() {
       if (newKey !== annKey) {
         await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
         bubble.dataset.annKey = newKey;
+        // Keep renderer state map in sync so removeBubble/upsertBubble work on the new key
+        const rendState = renderer.imageState.get(img);
+        if (rendState) {
+          rendState.bubbles.delete(annKey);
+          rendState.bubbles.set(newKey, bubble);
+        }
       }
       // Update dataset so dialog re-edit picks up new bbox
       bubble.dataset.bboxX = newBbox.x;
@@ -1877,6 +1899,8 @@ function bootForPage() {
     if (currentMode !== MODES.ANNOTATE) return;
     const bubble = e.target.closest('.wt-translation-bubble');
     if (!bubble) return;
+    // If the user just finished a drag/resize, suppress the click-to-edit dialog
+    if (bubbleEditor.consumeDrag()) return;
     e.stopPropagation();
 
     const wrapper = bubble.closest('.wt-img-wrapper');
