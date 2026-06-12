@@ -2213,9 +2213,7 @@ function bootForPage() {
     };
     const colors = detectBboxColors(imageEl, bbox);
     const colorStyle = colors ? { color: colors.textColor, bg: colors.bgColor, noBg: false } : {};
-    const bboxDisplayH = (bbox.h / 100) * rect.height;
-    const detectedFontSize = Math.min(40, Math.max(12, Math.round(bboxDisplayH * 0.6)));
-    const resultPromise = dialog.show(screenPos, { style: { fontSize: detectedFontSize, ...colorStyle } });
+    const resultPromise = dialog.show(screenPos, { style: colorStyle });
     const ocrSession    = dialog.setOcrPending();
     ocrRegion(imageEl, bbox)
       .then(text => dialog.setOcrText(text, ocrSession))
