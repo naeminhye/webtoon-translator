@@ -891,38 +891,13 @@ class InputDialog {
       translateBtn.disabled = true;
       translateBtn.textContent = '…';
       try {
-        const s = await chrome.storage.local.get({
-          'wt:translate-provider': 'google',
-          'wt:translate-lang':     'vi',
-          'wt:deepl-key':          '',
-        });
-        const provider = s['wt:translate-provider'];
-        const targetLang = s['wt:translate-lang'];
-
-        let translated;
-        if (provider === 'deepl') {
-          const apiKey = s['wt:deepl-key'];
-          if (!apiKey) throw new Error('DeepL API key not set — add it in Settings');
-          const base = apiKey.endsWith(':fx')
-            ? 'https://api-free.deepl.com/v2/translate'
-            : 'https://api.deepl.com/v2/translate';
-          const res = await fetch(base, {
-            method: 'POST',
-            headers: { 'Authorization': `DeepL-Auth-Key ${apiKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: [text], target_lang: targetLang.toUpperCase().replace('-', '_') }),
-          });
-          if (!res.ok) throw new Error(`DeepL HTTP ${res.status}`);
-          const data = await res.json();
-          translated = data.translations[0].text;
+        const translated = await autoTranslate(text);
+        if (translated) {
+          translatedInput.value = translated;
+          translatedInput.focus();
         } else {
-          const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
-          const res = await fetch(url);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const data = await res.json();
-          translated = data[0].map(s => s[0]).join('');
+          this._showOcrStatus('Translation is disabled in Settings', '#94a3b8', 3000);
         }
-        translatedInput.value = translated;
-        translatedInput.focus();
       } catch (err) {
         this._showOcrStatus(`✗ Translation failed: ${err.message}`, '#ef4444', 5000);
       } finally {
@@ -998,6 +973,136 @@ class InputDialog {
     this.hide();
     this._onDelete?.();
     this._resolve?.(null);
+    this._resolve = null;
+  }
+
+  _cancel() {
+    this.hide();
+    this._resolve?.(null);
+    this._resolve = null;
+  }
+}
+
+// ── QuickTranslateDialog ──────────────────────────────────────────────────────
+// Minimal floating dialog for Read-mode quick OCR+translate.
+// No style options — result is saved with sensible defaults.
+
+class QuickTranslateDialog {
+  constructor() {
+    this._el       = null;
+    this._resolve  = null;
+    this._origText = '';
+    this._build();
+  }
+
+  show(screenPos) {
+    if (!this._el.isConnected) document.body.appendChild(this._el);
+    this._el.querySelector('.wt-quick-translated').value = '';
+    this._el.querySelector('.wt-quick-original').textContent = '';
+    this._el.querySelector('.wt-quick-original').style.display = 'none';
+    this._origText = '';
+    this._setStatus('');
+
+    return new Promise(resolve => {
+      this._resolve = resolve;
+      const { innerWidth, innerHeight } = window;
+      const w = 280, h = 200;
+      let top  = screenPos.y + 10, left = screenPos.x;
+      if (left + w > scrollX + innerWidth  - 20) left = scrollX + innerWidth  - w - 20;
+      if (top  + h > scrollY + innerHeight - 20) top  = screenPos.y - h - 20;
+      if (left < scrollX + 10) left = scrollX + 10;
+      if (top  < scrollY + 10) top  = scrollY + 10;
+      this._el.style.top  = `${top}px`;
+      this._el.style.left = `${left}px`;
+      this._el.style.display = 'block';
+      this._escHandler = (e) => { if (e.key === 'Escape') this._cancel(); };
+      document.addEventListener('keydown', this._escHandler);
+    });
+  }
+
+  setStatus(text, color = '#6366f1') { this._setStatus(text, color); }
+
+  setOriginalText(text) {
+    this._origText = text;
+    const el = this._el.querySelector('.wt-quick-original');
+    el.textContent = text;
+    el.style.display = text ? 'block' : 'none';
+  }
+
+  setTranslated(text) {
+    this._el.querySelector('.wt-quick-translated').value = text;
+    this._setStatus('');
+    setTimeout(() => this._el.querySelector('.wt-quick-translated').focus(), 50);
+  }
+
+  getOriginalText() { return this._origText; }
+
+  hide() {
+    this._el.style.display = 'none';
+    document.removeEventListener('keydown', this._escHandler);
+  }
+
+  _setStatus(text, color = '#6366f1') {
+    const el = this._el.querySelector('.wt-quick-status');
+    el.textContent = text;
+    el.style.color  = color;
+    el.style.display = text ? 'block' : 'none';
+  }
+
+  _build() {
+    this._el = document.createElement('div');
+    this._el.className = 'wt-quick-dialog';
+    this._el.innerHTML = `
+      <div class="wt-quick-header">
+        <span class="wt-quick-title">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>
+          Quick Translate
+        </span>
+        <button class="wt-quick-close" aria-label="Cancel">&#x2715;</button>
+      </div>
+      <div class="wt-quick-status" style="display:none"></div>
+      <div class="wt-quick-original" style="display:none"></div>
+      <textarea class="wt-quick-translated" rows="3" placeholder="Translation will appear here…"></textarea>
+      <div class="wt-quick-actions">
+        <button class="wt-quick-cancel">Cancel</button>
+        <button class="wt-quick-save">Save</button>
+      </div>`;
+
+    this._makeDraggable(this._el.querySelector('.wt-quick-header'));
+    this._el.addEventListener('keydown', e => e.stopPropagation());
+    this._el.querySelector('.wt-quick-close').addEventListener('click',  () => this._cancel());
+    this._el.querySelector('.wt-quick-cancel').addEventListener('click', () => this._cancel());
+    this._el.querySelector('.wt-quick-save').addEventListener('click',   () => this._save());
+    this._el.querySelector('.wt-quick-translated').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) this._save();
+    });
+    document.body.appendChild(this._el);
+  }
+
+  _makeDraggable(handle) {
+    let dragging = false, ox = 0, oy = 0;
+    handle.style.cursor = 'move';
+    handle.addEventListener('mousedown', (e) => {
+      if (e.target.classList.contains('wt-quick-close')) return;
+      dragging = true;
+      const rect = this._el.getBoundingClientRect();
+      ox = e.clientX - rect.left;
+      oy = e.clientY - rect.top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      this._el.style.left = `${e.clientX - ox + window.scrollX}px`;
+      this._el.style.top  = `${e.clientY - oy + window.scrollY}px`;
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+  }
+
+  _save() {
+    const translatedText = this._el.querySelector('.wt-quick-translated').value.trim();
+    if (!translatedText) { this._el.querySelector('.wt-quick-translated').focus(); return; }
+    this.hide();
+    this._resolve?.({ translatedText });
     this._resolve = null;
   }
 
@@ -1637,6 +1742,40 @@ async function ocrRegion(img, bbox) {
   return res.text;
 }
 
+async function autoTranslate(text) {
+  const s = await chrome.storage.local.get({
+    'wt:translate-provider': 'google',
+    'wt:translate-lang':     'vi',
+    'wt:deepl-key':          '',
+  });
+  const provider   = s['wt:translate-provider'];
+  const targetLang = s['wt:translate-lang'];
+  if (provider === 'none') return null;
+
+  if (provider === 'deepl') {
+    const apiKey = s['wt:deepl-key'];
+    if (!apiKey) throw new Error('DeepL API key not set — add it in Settings');
+    const base = apiKey.endsWith(':fx')
+      ? 'https://api-free.deepl.com/v2/translate'
+      : 'https://api.deepl.com/v2/translate';
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: { 'Authorization': `DeepL-Auth-Key ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: [text], target_lang: targetLang.toUpperCase().replace('-', '_') }),
+    });
+    if (!res.ok) throw new Error(`DeepL HTTP ${res.status}`);
+    const data = await res.json();
+    return data.translations[0].text;
+  }
+
+  // Google Translate (unofficial free endpoint)
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return data[0].map(s => s[0]).join('');
+}
+
 function _cropCanvas(img, bbox) {
   const sx = (bbox.x / 100) * img.naturalWidth;
   const sy = (bbox.y / 100) * img.naturalHeight;
@@ -1658,6 +1797,7 @@ let _translationsVisible = true;
 
 const EYE_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_OFF_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-7 0-11-7-11-7a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+const SCAN_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>`;
 
 function buildToggleButton() {
   const btn = document.createElement('button');
@@ -1797,17 +1937,39 @@ function bootForPage() {
   });
   let allAnnotations = [];
 
-  const dialog = new InputDialog({
-    onDelete: () => { /* handled inline below via _pendingDelete */ },
-  });
+  const dialog      = new InputDialog({ onDelete: () => {} });
+  const quickDialog = new QuickTranslateDialog();
 
   let currentMode     = MODES.READ;
+  let readScanEnabled = false;
   let images          = [];
   let annotationCount = 0;
-  let disposed        = false; // set on cleanup — stops in-flight async render chains
+  let disposed        = false;
 
   // Build floating toggle button (Read mode only)
   const toggleBtn = buildToggleButton();
+
+  // Build floating scan button (Read mode only)
+  const scanBtn = document.createElement('button');
+  scanBtn.id = 'wt-scan-btn';
+  scanBtn.title = 'Quick OCR translate';
+  scanBtn.setAttribute('aria-label', 'Toggle quick OCR translate');
+  scanBtn.innerHTML = SCAN_ICON;
+  document.body.appendChild(scanBtn);
+
+  function setReadScan(on) {
+    readScanEnabled = on;
+    scanBtn.classList.toggle('wt-scan-active', on);
+    scanBtn.title = on ? 'Stop scanning' : 'Quick OCR translate';
+    if (on) {
+      if (isKakao) fixedLayer.enable(images);
+      else selector.enable(images);
+    } else {
+      if (isKakao) fixedLayer.disable();
+      else selector.disable();
+    }
+  }
+  scanBtn.addEventListener('click', () => setReadScan(!readScanEnabled));
 
   // Keyboard shortcut: T to toggle
   const keyHandler = (e) => {
@@ -1931,12 +2093,74 @@ function bootForPage() {
   const selector = new BBoxSelector({ onSelect: handleBBoxSelect });
 
   async function handleBBoxSelect({ bbox, imageEl, imageIndex }) {
+    if (currentMode === MODES.READ) {
+      await handleReadBBoxSelect({ bbox, imageEl, imageIndex });
+    } else {
+      await handleAnnotateBBoxSelect({ bbox, imageEl, imageIndex });
+    }
+  }
+
+  // Read mode: OCR → auto-translate → minimal dialog (no styling)
+  async function handleReadBBoxSelect({ bbox, imageEl, imageIndex }) {
     const rect = imageEl.getBoundingClientRect();
     const screenPos = {
       x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
       y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
     };
-    // Open the dialog immediately; OCR fills "Original text" in the background
+    const resultPromise = quickDialog.show(screenPos);
+
+    quickDialog.setStatus('⏳ Scanning text…', '#6366f1');
+    let ocrText = '';
+    try {
+      ocrText = await ocrRegion(imageEl, bbox);
+      if (ocrText) {
+        quickDialog.setOriginalText(ocrText);
+        quickDialog.setStatus('⏳ Translating…', '#6366f1');
+        try {
+          const translated = await autoTranslate(ocrText);
+          if (translated) {
+            quickDialog.setTranslated(translated);
+          } else {
+            // Provider is "none" — just pre-fill with OCR text
+            quickDialog.setTranslated(ocrText);
+            quickDialog.setStatus('Translation disabled — edit if needed', '#94a3b8');
+          }
+        } catch (err) {
+          quickDialog.setTranslated(ocrText);
+          quickDialog.setStatus(`⚠ Translation failed: ${err.message}`, '#f59e0b');
+        }
+      } else {
+        quickDialog.setStatus('No text found in this region', '#94a3b8');
+      }
+    } catch (err) {
+      quickDialog.setStatus(`✗ OCR failed: ${err.message}`, '#ef4444');
+    }
+
+    const result = await resultPromise;
+    if (!result) return;
+
+    const imageHash  = await hashImage(imageEl);
+    const annotation = {
+      imageHash, imageIndex, bbox,
+      originalText:   quickDialog.getOriginalText(),
+      translatedText: result.translatedText,
+      style: { fontSize: 13, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' },
+      language: 'vi', createdAt: new Date().toISOString(),
+    };
+    await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
+    _upsertAnnotation(annotation);
+    if (isKakao) fixedLayer.upsertBubble(imageEl, annotation);
+    else renderer.upsertBubble(imageEl, annotation);
+    updateProgressBar();
+  }
+
+  // Annotate mode: full dialog with style options
+  async function handleAnnotateBBoxSelect({ bbox, imageEl, imageIndex }) {
+    const rect = imageEl.getBoundingClientRect();
+    const screenPos = {
+      x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
+      y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
+    };
     const resultPromise = dialog.show(screenPos);
     const ocrSession    = dialog.setOcrPending();
     ocrRegion(imageEl, bbox)
@@ -1952,17 +2176,20 @@ function bootForPage() {
       style: result.style, language: 'vi', createdAt: new Date().toISOString(),
     };
     await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
-    // Upsert into allAnnotations by annKey — never duplicate
+    _upsertAnnotation(annotation);
+    if (isKakao) fixedLayer.upsertBubble(imageEl, annotation);
+    else renderer.upsertBubble(imageEl, annotation);
+    panel.update(allAnnotations);
+    updateProgressBar();
+  }
+
+  function _upsertAnnotation(annotation) {
     const newKey = `${annotation.imageHash}::${annotation.bbox.x.toFixed(1)}::${annotation.bbox.y.toFixed(1)}`;
     const existsIdx = allAnnotations.findIndex(a =>
       `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` === newKey
     );
     if (existsIdx >= 0) allAnnotations[existsIdx] = annotation;
     else { allAnnotations.push(annotation); annotationCount++; }
-    if (isKakao) fixedLayer.upsertBubble(imageEl, annotation);
-    else renderer.upsertBubble(imageEl, annotation);
-    panel.update(allAnnotations);
-    updateProgressBar();
   }
 
   // ── click bubble to edit ───────────────────────────────────────────────
@@ -2128,6 +2355,9 @@ function bootForPage() {
     if (message.type === 'SET_MODE') {
       currentMode = message.mode;
       if (currentMode === MODES.ANNOTATE) {
+        // Turn off read scan before entering annotate mode
+        setReadScan(false);
+        scanBtn.style.display = 'none';
         if (isKakao) fixedLayer.enable(images);
         else selector.enable(images);
         document.body.classList.add('wt-annotate-mode');
@@ -2139,7 +2369,8 @@ function bootForPage() {
         bubbleEditor.detach();
         document.body.classList.remove('wt-annotate-mode');
         toggleBtn.style.display = '';
-        panel.hide(); // translation list is a translator tool — not for Read mode
+        scanBtn.style.display = '';
+        panel.hide();
       }
     }
     // Translation list + Export are translator tools — ignored in Read mode.
@@ -2228,6 +2459,7 @@ function bootForPage() {
     renderer.clearAll();
     bubbleEditor.detach();
     toggleBtn.remove();
+    scanBtn.remove();
     panel.hide();
     document.getElementById('wt-progress-bar')?.remove();
     document.body.classList.remove('wt-annotate-mode');

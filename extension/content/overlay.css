@@ -519,6 +519,158 @@
   cursor: pointer;
 }
 
+/* ── Quick translate dialog (Read mode) ──────────────────────────────── */
+
+.wt-quick-dialog {
+  position: absolute;
+  z-index: 99998;
+  width: 280px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+  padding: 12px;
+  font-family: system-ui, sans-serif;
+  display: none;
+}
+
+.wt-quick-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.wt-quick-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.wt-quick-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #64748b;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.wt-quick-status {
+  font-size: 11px;
+  color: #6366f1;
+  margin-bottom: 6px;
+  line-height: 1.4;
+  display: none;
+}
+
+.wt-quick-original {
+  font-size: 11px;
+  color: #94a3b8;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  padding: 5px 8px;
+  margin-bottom: 8px;
+  word-break: break-word;
+  line-height: 1.45;
+  display: none;
+}
+
+.wt-quick-translated {
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #1e293b;
+  background: #f8fafc;
+  box-sizing: border-box;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.15s;
+  margin-bottom: 10px;
+}
+
+.wt-quick-translated:focus { border-color: #6366f1; background: #fff; }
+
+.wt-quick-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.wt-quick-cancel {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+  transition: background 0.15s;
+}
+
+.wt-quick-cancel:hover { background: #e2e8f0; }
+
+.wt-quick-save {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  transition: background 0.15s;
+}
+
+.wt-quick-save:hover { background: #4f46e5; }
+
+/* ── Quick scan button (Read mode, above visibility toggle) ──────────── */
+
+#wt-scan-btn {
+  position: fixed;
+  bottom: 76px;
+  right: 24px;
+  z-index: 99997;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.85);
+  color: #fff;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease, background 0.2s ease;
+}
+
+#wt-scan-btn:hover  { transform: scale(1.08); }
+#wt-scan-btn:active { transform: scale(0.96); }
+
+#wt-scan-btn.wt-scan-active {
+  background: rgba(99, 102, 241, 0.92);
+  box-shadow: 0 2px 16px rgba(99, 102, 241, 0.5);
+  animation: wt-scan-pulse 2s infinite;
+}
+
+@keyframes wt-scan-pulse {
+  0%, 100% { box-shadow: 0 2px 16px rgba(99, 102, 241, 0.5); }
+  50%       { box-shadow: 0 2px 24px rgba(99, 102, 241, 0.8); }
+}
+
+body.wt-panel-open #wt-scan-btn { right: 304px; }
+
 /* ── Translation visibility toggle (corner icon button) ──────────────── */
 
 #wt-toggle-btn {
