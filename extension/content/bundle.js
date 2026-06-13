@@ -1766,26 +1766,24 @@ async function ocrRegionStitched(img, bbox, images) {
   const primaryY = Math.max(0, bbox.y);
   const clips = [{ img, x: bbox.x, y: primaryY, w: bbox.w, h: Math.max(1, primaryH), dispW }];
 
-  // Bottom cross-panel: user dragged past image boundary (>100%) OR is near bottom (>70%)
-  if (bottomEdge > 70 && idx >= 0 && idx < images.length - 1) {
+  // Bottom cross-panel: only when user explicitly dragged past image boundary (bottomEdge > 100)
+  if (bottomEdge > 100 && idx >= 0 && idx < images.length - 1) {
     const nextImg = images[idx + 1];
-    // Allow stitching even if next image isn't loaded yet — background can fetch by URL
     if (nextImg.src && !nextImg.src.startsWith('data:')) {
       const nextDispW = (bbox.w / 100) * (nextImg.getBoundingClientRect().width || imgDispW);
-      // If user explicitly dragged past boundary, grab at least that overflow; otherwise 45%
-      const overflow = Math.max(0, bottomEdge - 100);
-      const grabH    = Math.max(overflow + 5, 45);
+      const overflow  = bottomEdge - 100;
+      const grabH     = Math.max(overflow + 10, 40);
       clips.push({ img: nextImg, x: bbox.x, y: 0, w: bbox.w, h: Math.min(grabH, 60), dispW: nextDispW });
     }
   }
 
-  // Top cross-panel: user dragged above image top (<0%) OR is near top (<30%)
-  if (topEdge < 30 && idx > 0) {
+  // Top cross-panel: only when user explicitly dragged above image top (topEdge < 0)
+  if (topEdge < 0 && idx > 0) {
     const prevImg = images[idx - 1];
     if (prevImg.src && !prevImg.src.startsWith('data:')) {
       const prevDispW = (bbox.w / 100) * (prevImg.getBoundingClientRect().width || imgDispW);
-      const overflow  = Math.max(0, -topEdge);
-      const grabH     = Math.max(overflow + 5, 45);
+      const overflow  = -topEdge;
+      const grabH     = Math.max(overflow + 10, 40);
       clips.unshift({ img: prevImg, x: bbox.x, y: Math.max(0, 100 - grabH), w: bbox.w, h: Math.min(grabH, 60), dispW: prevDispW });
     }
   }
