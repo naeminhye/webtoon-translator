@@ -1755,32 +1755,34 @@ async function ocrRegion(img, bbox) {
 }
 
 async function ocrRegionStitched(img, bbox, images) {
-  const idx = images.indexOf(img);
-  const clips = [{ img, x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h }];
+  const idx        = images.indexOf(img);
   const bottomEdge = bbox.y + bbox.h;
   const topEdge    = bbox.y;
+  // clips: {img, x, y, w, h, dispW} — dispW = display-pixel width of clip (for normalization)
+  const dispW = (bbox.w / 100) * img.getBoundingClientRect().width;
+  const clips = [{ img, x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h, dispW }];
 
-  // Bbox near bottom edge → also grab top slice of next image
-  if (bottomEdge > 82 && idx >= 0 && idx < images.length - 1) {
+  // Bbox near bottom edge → grab top 45% of next image at same x/w
+  if (bottomEdge > 75 && idx >= 0 && idx < images.length - 1) {
     const nextImg = images[idx + 1];
     if (nextImg.naturalWidth) {
-      const grabH = Math.max(5, bottomEdge - 82);
-      clips.push({ img: nextImg, x: bbox.x, y: 0, w: bbox.w, h: Math.min(grabH, 35) });
+      const nextDispW = (bbox.w / 100) * (nextImg.getBoundingClientRect().width || img.getBoundingClientRect().width);
+      clips.push({ img: nextImg, x: bbox.x, y: 0, w: bbox.w, h: 45, dispW: nextDispW });
     }
   }
 
-  // Bbox near top edge → also grab bottom slice of previous image
-  if (topEdge < 18 && idx > 0) {
+  // Bbox near top edge → grab bottom 45% of previous image at same x/w
+  if (topEdge < 25 && idx > 0) {
     const prevImg = images[idx - 1];
     if (prevImg.naturalWidth) {
-      const grabH = Math.max(5, 18 - topEdge);
-      clips.unshift({ img: prevImg, x: bbox.x, y: Math.max(0, 100 - grabH), w: bbox.w, h: Math.min(grabH, 35) });
+      const prevDispW = (bbox.w / 100) * (prevImg.getBoundingClientRect().width || img.getBoundingClientRect().width);
+      clips.unshift({ img: prevImg, x: bbox.x, y: 55, w: bbox.w, h: 45, dispW: prevDispW });
     }
   }
 
   if (clips.length === 1) return ocrRegion(img, bbox);
 
-  // Try client-side stitching (only works for same-origin/blob images)
+  // Try client-side stitching (same-origin/blob images)
   const dataUrl = stitchClips(clips);
   if (dataUrl) {
     const res = await sendToBackground({
@@ -1791,16 +1793,27 @@ async function ocrRegionStitched(img, bbox, images) {
     return res.text;
   }
 
-  // Cross-origin images: send clip descriptors to background worker for fetch+stitch
-  const bgClips = clips.map(({ img: i, x, y, w, h }) => ({ imageUrl: i.src, bbox: { x, y, w, h } }));
+  // Cross-origin: send to background for fetch+stitch
+  const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src, bbox: { x, y, w, h }, dispW: dw }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
   return res.text;
 }
 
 async function ocrClips(clips) {
-  // Try client-side stitch first (blob/same-origin images)
-  const dataUrl = stitchClips(clips.map(c => ({ img: c.img, x: c.bbox.x, y: c.bbox.y, w: c.bbox.w, h: c.bbox.h })));
+  // clips from FixedOverlayLayer: {img, bbox: {x,y,w,h}}
+  // Convert to internal {img, x, y, w, h, dispW} format
+  const items = clips.map(c => {
+    const r = c.img.getBoundingClientRect();
+    return {
+      img:   c.img,
+      x:     c.bbox.x, y: c.bbox.y, w: c.bbox.w, h: c.bbox.h,
+      dispW: (c.bbox.w / 100) * r.width,
+    };
+  });
+
+  // Try client-side stitch first
+  const dataUrl = stitchClips(items);
   if (dataUrl) {
     const res = await sendToBackground({
       type: MSG.OCR_REGION,
@@ -1809,41 +1822,56 @@ async function ocrClips(clips) {
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
     return res.text;
   }
-  // Cross-origin: delegate to background
-  const bgClips = clips.map(c => ({ imageUrl: c.img.src, bbox: c.bbox }));
+  // Cross-origin: background fetch+stitch
+  const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src, bbox: { x, y, w, h }, dispW }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
   return res.text;
 }
 
+// Stitch multiple image clips vertically into one canvas.
+// All clips are normalized to the SAME output pixel width (based on display width)
+// so text from different panels renders at the same scale.
 function stitchClips(clips) {
   try {
-    const rendered = clips.map(({ img, x, y, w, h }) => ({
-      img,
-      px: (x / 100) * img.naturalWidth,
-      py: (y / 100) * img.naturalHeight,
-      pw: Math.max(1, (w / 100) * img.naturalWidth),
-      ph: Math.max(1, (h / 100) * img.naturalHeight),
-    }));
-    const maxW   = Math.max(...rendered.map(r => r.pw));
-    const totalH = rendered.reduce((s, r) => s + r.ph, 0);
-    const scale  = maxW < 400 ? Math.min(3, 400 / maxW) : 1;
-    const canvas = document.createElement('canvas');
-    canvas.width  = Math.round(maxW * scale);
-    canvas.height = Math.round(totalH * scale);
+    const items = clips.map(({ img, x, y, w, h, dispW }) => {
+      const px = (x / 100) * img.naturalWidth;
+      const py = (y / 100) * img.naturalHeight;
+      const pw = Math.max(1, (w / 100) * img.naturalWidth);
+      const ph = Math.max(1, (h / 100) * img.naturalHeight);
+      // dispW is the display-pixel width; use it to normalize scale
+      const dw = dispW || pw;
+      return { img, px, py, pw, ph, dw };
+    });
+
+    // Normalize: all clips rendered at TARGET_W pixels wide
+    // Use the maximum display width, upscale to at least 600px for OCR quality
+    const maxDispW = Math.max(...items.map(r => r.dw));
+    const TARGET_W = Math.max(600, maxDispW * (maxDispW < 600 ? Math.min(3, 600 / maxDispW) : 1));
+
+    // Compute output height for each clip proportional to its natural aspect
+    const rows = items.map(({ img, px, py, pw, ph, dw }) => {
+      const scale = TARGET_W / dw; // display→output scale
+      // Output height = display height of clip * same scale
+      const dispH = ph * (dw / pw); // display-pixel height of clip
+      return { img, px, py, pw, ph, dw: Math.round(TARGET_W), dh: Math.round(dispH * scale) };
+    });
+
+    const totalH = rows.reduce((s, r) => s + r.dh, 0);
+    const canvas  = document.createElement('canvas');
+    canvas.width  = Math.round(TARGET_W);
+    canvas.height = totalH;
     const ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     let dy = 0;
-    for (const { img, px, py, pw, ph } of rendered) {
-      ctx.drawImage(img, px, py, pw, ph,
-        Math.round((maxW - pw) / 2 * scale), Math.round(dy * scale),
-        Math.round(pw * scale), Math.round(ph * scale));
-      dy += ph;
+    for (const { img, px, py, pw, ph, dw, dh } of rows) {
+      ctx.drawImage(img, px, py, pw, ph, 0, dy, dw, dh);
+      dy += dh;
     }
     return canvas.toDataURL('image/png');
   } catch {
-    return null; // tainted canvas (cross-origin) → fall through to background fetch
+    return null; // tainted canvas (cross-origin) → caller sends to background
   }
 }
 

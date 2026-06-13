@@ -230,40 +230,47 @@ async function handleOcr({ dataUrl, imageUrl, bbox }) {
 // ── Multi-image stitch OCR ───────────────────────────────────────────────────────
 
 async function handleOcrStitch({ clips }) {
-  // Fetch and crop each clip, stitch vertically, then OCR the composite
-  const bitmaps = await Promise.all(clips.map(async ({ imageUrl, bbox }) => {
-    const res    = await fetch(imageUrl, { credentials: 'omit' });
-    const blob   = await res.blob();
-    const bm     = await createImageBitmap(blob);
+  // Fetch and crop each clip, normalize to same display scale, stitch vertically, OCR
+  const items = await Promise.all(clips.map(async ({ imageUrl, bbox, dispW }) => {
+    const res  = await fetch(imageUrl, { credentials: 'omit' });
+    const blob = await res.blob();
+    const bm   = await createImageBitmap(blob);
     const sx = (bbox.x / 100) * bm.width;
     const sy = (bbox.y / 100) * bm.height;
     const sw = Math.max(1, (bbox.w / 100) * bm.width);
     const sh = Math.max(1, (bbox.h / 100) * bm.height);
-    return { bm, sx, sy, sw, sh };
+    // dispW: display-pixel width of clip (used for scale normalization)
+    return { bm, sx, sy, sw, sh, dispW: dispW || sw };
   }));
 
-  const maxW   = Math.max(...bitmaps.map(b => b.sw));
-  const totalH = bitmaps.reduce((s, b) => s + b.sh, 0);
-  const scale  = maxW < 400 ? Math.min(3, 400 / maxW) : 1;
-  const canvas = new OffscreenCanvas(Math.round(maxW * scale), Math.round(totalH * scale));
+  // All clips rendered at TARGET_W pixels wide so text from each panel is same scale
+  const maxDispW = Math.max(...items.map(i => i.dispW));
+  const TARGET_W = Math.max(600, Math.round(maxDispW * (maxDispW < 600 ? Math.min(3, 600 / maxDispW) : 1)));
+
+  const rows = items.map(({ bm, sx, sy, sw, sh, dispW }) => {
+    const scale = TARGET_W / dispW;
+    const dispH = sh * (dispW / sw);        // display-pixel height of this clip
+    return { bm, sx, sy, sw, sh, dw: TARGET_W, dh: Math.round(dispH * scale) };
+  });
+
+  const totalH = rows.reduce((s, r) => s + r.dh, 0);
+  const canvas = new OffscreenCanvas(TARGET_W, totalH);
   const ctx    = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
 
   let dy = 0;
-  for (const { bm, sx, sy, sw, sh } of bitmaps) {
-    ctx.drawImage(bm, sx, sy, sw, sh,
-      Math.round((maxW - sw) / 2 * scale), Math.round(dy * scale),
-      Math.round(sw * scale), Math.round(sh * scale));
+  for (const { bm, sx, sy, sw, sh, dw, dh } of rows) {
+    ctx.drawImage(bm, sx, sy, sw, sh, 0, dy, dw, dh);
     bm.close();
-    dy += sh;
+    dy += dh;
   }
 
   const blob    = await canvas.convertToBlob({ type: 'image/png' });
-  const dataUrl = await new Promise((res, rej) => {
+  const dataUrl = await new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload  = () => res(reader.result);
-    reader.onerror = () => rej(new Error('Failed to encode stitched image'));
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to encode stitched image'));
     reader.readAsDataURL(blob);
   });
 
