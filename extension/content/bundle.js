@@ -13,6 +13,7 @@ const MSG    = {
   IMPORT_FILE:       'IMPORT_FILE',
   CLEAR_CHAPTER:     'CLEAR_CHAPTER',
   OCR_REGION:        'OCR_REGION',
+  OCR_STITCH:        'OCR_STITCH',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
 };
 
@@ -617,6 +618,7 @@ class InputDialog {
       color: '#1a1a2e', bg: '#ffffff', noBg: false,
       stroke: false, strokeColor: '#ffffff', strokeWidth: 1,
       fontFamily: '',
+      ...(InputDialog._lastStyle || {}),
     };
     this._build();
   }
@@ -833,7 +835,10 @@ class InputDialog {
     this._el.querySelector('.wt-btn-save').addEventListener('click',   () => this._save());
     this._el.querySelector('.wt-btn-delete').addEventListener('click', () => this._delete());
     this._el.querySelector('.wt-input-translated').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) this._save();
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this._save(); }
+    });
+    this._el.querySelector('.wt-input-original').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); this._el.querySelector('.wt-input-translated').focus(); }
     });
 
     // Style bar
@@ -964,6 +969,7 @@ class InputDialog {
     const translatedText = this._el.querySelector('.wt-input-translated').value.trim();
     if (!translatedText) { this._el.querySelector('.wt-input-translated').focus(); return; }
     const resizedBbox = this._isEdit ? this._getBboxFromResize() : null;
+    InputDialog._lastStyle = { ...this._style };
     this.hide();
     this._resolve?.({ originalText, translatedText, style: { ...this._style }, resizedBbox });
     this._resolve = null;
@@ -1773,14 +1779,21 @@ async function ocrRegionStitched(img, bbox, images) {
 
   if (clips.length === 1) return ocrRegion(img, bbox);
 
+  // Try client-side stitching (only works for same-origin/blob images)
   const dataUrl = stitchClips(clips);
-  if (!dataUrl) return ocrRegion(img, bbox);
+  if (dataUrl) {
+    const res = await sendToBackground({
+      type: MSG.OCR_REGION,
+      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
+    });
+    if (!res?.ok) throw new Error(res?.error || 'OCR failed');
+    return res.text;
+  }
 
-  const res = await sendToBackground({
-    type: MSG.OCR_REGION,
-    payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
-  });
-  if (!res?.ok) throw new Error(res?.error || 'OCR failed');
+  // Cross-origin images: send clip descriptors to background worker for fetch+stitch
+  const bgClips = clips.map(({ img: i, x, y, w, h }) => ({ imageUrl: i.src, bbox: { x, y, w, h } }));
+  const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
+  if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
   return res.text;
 }
 
@@ -1811,7 +1824,7 @@ function stitchClips(clips) {
     }
     return canvas.toDataURL('image/png');
   } catch {
-    return null;
+    return null; // tainted canvas (cross-origin) → fall through to background fetch
   }
 }
 

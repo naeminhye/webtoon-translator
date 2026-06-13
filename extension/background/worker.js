@@ -18,6 +18,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(sendResponse)
         .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
       return true;
+    case 'OCR_STITCH':
+      handleOcrStitch(message.payload)
+        .then(sendResponse)
+        .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
+      return true;
     case 'OCR_STATUS':
       // Relay engine progress from the offscreen document to content scripts
       // (runtime.sendMessage never reaches content scripts directly)
@@ -220,6 +225,49 @@ async function handleOcr({ dataUrl, imageUrl, bbox }) {
   // Return the original Tesseract result (even if empty/low-confidence) when
   // no OCR.space key is available or OCR.space also failed.
   return tessResult;
+}
+
+// ── Multi-image stitch OCR ───────────────────────────────────────────────────────
+
+async function handleOcrStitch({ clips }) {
+  // Fetch and crop each clip, stitch vertically, then OCR the composite
+  const bitmaps = await Promise.all(clips.map(async ({ imageUrl, bbox }) => {
+    const res    = await fetch(imageUrl, { credentials: 'omit' });
+    const blob   = await res.blob();
+    const bm     = await createImageBitmap(blob);
+    const sx = (bbox.x / 100) * bm.width;
+    const sy = (bbox.y / 100) * bm.height;
+    const sw = Math.max(1, (bbox.w / 100) * bm.width);
+    const sh = Math.max(1, (bbox.h / 100) * bm.height);
+    return { bm, sx, sy, sw, sh };
+  }));
+
+  const maxW   = Math.max(...bitmaps.map(b => b.sw));
+  const totalH = bitmaps.reduce((s, b) => s + b.sh, 0);
+  const scale  = maxW < 400 ? Math.min(3, 400 / maxW) : 1;
+  const canvas = new OffscreenCanvas(Math.round(maxW * scale), Math.round(totalH * scale));
+  const ctx    = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  let dy = 0;
+  for (const { bm, sx, sy, sw, sh } of bitmaps) {
+    ctx.drawImage(bm, sx, sy, sw, sh,
+      Math.round((maxW - sw) / 2 * scale), Math.round(dy * scale),
+      Math.round(sw * scale), Math.round(sh * scale));
+    bm.close();
+    dy += sh;
+  }
+
+  const blob    = await canvas.convertToBlob({ type: 'image/png' });
+  const dataUrl = await new Promise((res, rej) => {
+    const reader = new FileReader();
+    reader.onload  = () => res(reader.result);
+    reader.onerror = () => rej(new Error('Failed to encode stitched image'));
+    reader.readAsDataURL(blob);
+  });
+
+  return handleOcr({ dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } });
 }
 
 // ── OCR.space ─────────────────────────────────────────────────────────────────
