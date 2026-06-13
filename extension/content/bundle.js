@@ -425,16 +425,22 @@ class BBoxSelector {
 
     const onMouseUp = (e) => {
       if (!this._currentDrag || this._currentDrag.overlay !== overlay) return;
-      const rect = overlay.getBoundingClientRect();
-      const ex = e.clientX - rect.left, ey = e.clientY - rect.top;
+      const overlayRect = overlay.getBoundingClientRect();
+      const ex = e.clientX - overlayRect.left, ey = e.clientY - overlayRect.top;
       const px = Math.min(startX, ex), py = Math.min(startY, ey);
       const pw = Math.abs(ex - startX), ph = Math.abs(ey - startY);
       selectionEl.remove();
       this._currentDrag = null;
       if (pw < 10 || ph < 10) return;
+      // Use IMAGE dimensions (not overlay) for %-coordinates.
+      // The overlay is 80px taller than the image for cross-panel drag affordance;
+      // dividing by overlayRect.height would shift/compress all Y values.
+      const imgRect = img.getBoundingClientRect();
       this.onSelect({
-        bbox: { x: (px/rect.width)*100, y: (py/rect.height)*100,
-                w: (pw/rect.width)*100, h: (ph/rect.height)*100 },
+        bbox: { x: (px / imgRect.width)  * 100,
+                y: (py / imgRect.height) * 100,
+                w: (pw / imgRect.width)  * 100,
+                h: (ph / imgRect.height) * 100 },
         imageEl: img, imageIndex,
       });
     };
