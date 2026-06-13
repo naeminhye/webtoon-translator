@@ -19,11 +19,13 @@
   top: 0;
   left: 0;
   width: 100%;
-  height: 100%;
+  /* Extend 80px below image so user can drag past the panel boundary */
+  height: calc(100% + 80px);
   cursor: crosshair !important;
   z-index: 100;
   background: rgba(99, 102, 241, 0.04);
   border: 1.5px dashed rgba(99, 102, 241, 0.4);
+  border-bottom: none; /* no border in extension zone */
   box-sizing: border-box;
   pointer-events: auto !important;
 }
@@ -57,6 +59,7 @@
   pointer-events: none;  /* read mode: unclickable */
   cursor: default;
   word-break: break-word;
+  white-space: pre-wrap;
   /* width/height set by JS from bbox — do NOT add width/fit-content here */
   box-sizing: border-box;
   animation: wt-fade-in 0.15s ease;
@@ -98,7 +101,7 @@ body:not(.wt-annotate-mode) .wt-fixed-bubble {
 .wt-input-dialog {
   position: absolute;
   z-index: 99998; /* above site UI layers (Kakao uses high z-indexes) and our overlays */
-  width: 280px;
+  width: 300px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
@@ -175,24 +178,25 @@ body:not(.wt-annotate-mode) .wt-fixed-bubble {
 .wt-input-original,
 .wt-input-translated {
   width: 100%;
-  border: 1px solid #e2e8f0;
+  border: 1.5px solid #e2e8f0;
   border-radius: 6px;
-  padding: 7px 9px;
+  padding: 7px 10px;
   font-size: 13px;
   font-family: inherit;
   color: #1e293b;
   background: #f8fafc;
   box-sizing: border-box;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   resize: vertical;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .wt-input-original:focus,
 .wt-input-translated:focus {
   border-color: #6366f1;
   background: #fff;
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.1);
 }
 
 .wt-dialog-actions {
@@ -531,7 +535,7 @@ body:not(.wt-annotate-mode) .wt-fixed-bubble {
 .wt-quick-dialog {
   position: absolute;
   z-index: 99998;
-  width: 280px;
+  width: 300px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
@@ -723,7 +727,7 @@ body.wt-panel-open #wt-toggle-btn {
   position: fixed;
   top: 0;
   right: 0;
-  width: 280px;
+  width: 300px;
   height: 100vh;
   z-index: 99995;
   background: #ffffff;

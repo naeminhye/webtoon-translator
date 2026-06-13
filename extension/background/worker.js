@@ -18,6 +18,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(sendResponse)
         .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
       return true;
+    case 'OCR_STITCH':
+      handleOcrStitch(message.payload)
+        .then(sendResponse)
+        .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
+      return true;
     case 'OCR_STATUS':
       // Relay engine progress from the offscreen document to content scripts
       // (runtime.sendMessage never reaches content scripts directly)
@@ -220,6 +225,56 @@ async function handleOcr({ dataUrl, imageUrl, bbox }) {
   // Return the original Tesseract result (even if empty/low-confidence) when
   // no OCR.space key is available or OCR.space also failed.
   return tessResult;
+}
+
+// ── Multi-image stitch OCR ───────────────────────────────────────────────────────
+
+async function handleOcrStitch({ clips }) {
+  // Fetch and crop each clip, normalize to same display scale, stitch vertically, OCR
+  const items = await Promise.all(clips.map(async ({ imageUrl, bbox, dispW }) => {
+    const res  = await fetch(imageUrl, { credentials: 'omit' });
+    const blob = await res.blob();
+    const bm   = await createImageBitmap(blob);
+    const sx = (bbox.x / 100) * bm.width;
+    const sy = (bbox.y / 100) * bm.height;
+    const sw = Math.max(1, (bbox.w / 100) * bm.width);
+    const sh = Math.max(1, (bbox.h / 100) * bm.height);
+    // dispW: display-pixel width of clip (used for scale normalization)
+    return { bm, sx, sy, sw, sh, dispW: dispW || sw };
+  }));
+
+  // All clips rendered at TARGET_W pixels wide so text from each panel is same scale
+  const maxDispW = Math.max(...items.map(i => i.dispW));
+  const TARGET_W = Math.max(600, Math.round(maxDispW * (maxDispW < 600 ? Math.min(3, 600 / maxDispW) : 1)));
+
+  const rows = items.map(({ bm, sx, sy, sw, sh, dispW }) => {
+    const scale = TARGET_W / dispW;
+    const dispH = sh * (dispW / sw);        // display-pixel height of this clip
+    return { bm, sx, sy, sw, sh, dw: TARGET_W, dh: Math.round(dispH * scale) };
+  });
+
+  const totalH = rows.reduce((s, r) => s + r.dh, 0);
+  const canvas = new OffscreenCanvas(TARGET_W, totalH);
+  const ctx    = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  let dy = 0;
+  for (const { bm, sx, sy, sw, sh, dw, dh } of rows) {
+    ctx.drawImage(bm, sx, sy, sw, sh, 0, dy, dw, dh);
+    bm.close();
+    dy += dh;
+  }
+
+  const blob    = await canvas.convertToBlob({ type: 'image/png' });
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to encode stitched image'));
+    reader.readAsDataURL(blob);
+  });
+
+  return handleOcr({ dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } });
 }
 
 // ── OCR.space ─────────────────────────────────────────────────────────────────

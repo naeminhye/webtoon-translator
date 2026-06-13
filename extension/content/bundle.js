@@ -13,6 +13,7 @@ const MSG    = {
   IMPORT_FILE:       'IMPORT_FILE',
   CLEAR_CHAPTER:     'CLEAR_CHAPTER',
   OCR_REGION:        'OCR_REGION',
+  OCR_STITCH:        'OCR_STITCH',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
 };
 
@@ -209,39 +210,63 @@ class FixedOverlayLayer {
       const pw = Math.abs(endX - startX), ph = Math.abs(endY - startY);
       if (pw < 10 || ph < 10) return;
 
-      // Find which image this drag is over (center of selection).
-      // Hit-test against the live image list — this._images can be a stale
-      // snapshot on Kakao (lazy-loaded / React-remounted panels).
-      const cx = (Math.min(startX, endX) + pw / 2);
-      const cy = (Math.min(startY, endY) + ph / 2);
+      const selL = Math.min(startX, endX), selT = Math.min(startY, endY);
+      const selR = selL + pw, selB = selT + ph;
+      const cx   = selL + pw / 2, cy = selT + ph / 2;
       const imgs = this._liveImages();
-      let img = this._imageAtViewportPoint(cx, cy, imgs);
-      // Last resort: scan every <img> on the page, bypassing adapter filters —
-      // covers viewers whose DOM/src scheme the adapter doesn't recognize.
-      if (!img) img = this._anyImageAtPoint(cx, cy);
-      if (!img) {
-        showToast('✗ No panel image found under selection. Scroll so the panel is fully loaded, then try again.', '#ef4444');
+
+      // Detect all images that overlap with the drawn selection rect
+      const overlapping = imgs
+        .filter(i => {
+          const r = i.getBoundingClientRect();
+          return r.width > 100 && r.height > 100 &&
+            selL < r.right && selR > r.left && selT < r.bottom && selB > r.top;
+        })
+        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+
+      if (overlapping.length === 0) {
+        // Fallback: any image at center
+        const fb = this._anyImageAtPoint(cx, cy);
+        if (!fb) { showToast('✗ No panel image found under selection. Scroll so the panel is fully loaded, then try again.', '#ef4444'); return; }
+        overlapping.push(fb);
+      }
+
+      if (overlapping.length > 1) {
+        // Multi-image selection: compute per-image bbox clips
+        const clips = overlapping.map(i => {
+          const r = i.getBoundingClientRect();
+          const clipL = Math.max(selL, r.left), clipT = Math.max(selT, r.top);
+          const clipR = Math.min(selR, r.right), clipB = Math.min(selB, r.bottom);
+          return {
+            img: i,
+            bbox: {
+              x: ((clipL - r.left) / r.width)  * 100,
+              y: ((clipT - r.top)  / r.height) * 100,
+              w: ((clipR - clipL)  / r.width)  * 100,
+              h: ((clipB - clipT)  / r.height) * 100,
+            },
+          };
+        });
+        const primary = overlapping[0];
+        let primaryIdx = imgs.indexOf(primary);
+        if (primaryIdx === -1) { imgs.push(primary); primaryIdx = imgs.length - 1; }
+        this._onSelect({ bbox: clips[0].bbox, imageEl: primary, imageIndex: primaryIdx, clips });
         return;
       }
 
+      const img  = overlapping[0];
       const rect = img.getBoundingClientRect();
       const bbox = {
-        x: ((Math.min(startX, endX) - rect.left) / rect.width)  * 100,
-        y: ((Math.min(startY, endY) - rect.top)  / rect.height) * 100,
-        w: (pw / rect.width)  * 100,
-        h: (ph / rect.height) * 100,
+        x: Math.max(0, (selL - rect.left) / rect.width  * 100),
+        y: Math.max(0, (selT - rect.top)  / rect.height * 100),
+        w: Math.min(100, pw / rect.width  * 100),
+        h: Math.min(100, ph / rect.height * 100),
       };
-      // Clamp
-      bbox.x = Math.max(0, bbox.x); bbox.y = Math.max(0, bbox.y);
       bbox.w = Math.min(100 - bbox.x, bbox.w);
       bbox.h = Math.min(100 - bbox.y, bbox.h);
 
       let imageIndex = imgs.indexOf(img);
-      if (imageIndex === -1) {
-        // Found via fallback scan — register it so index/progress stay consistent
-        imgs.push(img);
-        imageIndex = imgs.length - 1;
-      }
+      if (imageIndex === -1) { imgs.push(img); imageIndex = imgs.length - 1; }
       this._onSelect({ bbox, imageEl: img, imageIndex });
     });
   }
@@ -400,16 +425,22 @@ class BBoxSelector {
 
     const onMouseUp = (e) => {
       if (!this._currentDrag || this._currentDrag.overlay !== overlay) return;
-      const rect = overlay.getBoundingClientRect();
-      const ex = e.clientX - rect.left, ey = e.clientY - rect.top;
+      const overlayRect = overlay.getBoundingClientRect();
+      const ex = e.clientX - overlayRect.left, ey = e.clientY - overlayRect.top;
       const px = Math.min(startX, ex), py = Math.min(startY, ey);
       const pw = Math.abs(ex - startX), ph = Math.abs(ey - startY);
       selectionEl.remove();
       this._currentDrag = null;
       if (pw < 10 || ph < 10) return;
+      // Use IMAGE dimensions (not overlay) for %-coordinates.
+      // The overlay is 80px taller than the image for cross-panel drag affordance;
+      // dividing by overlayRect.height would shift/compress all Y values.
+      const imgRect = img.getBoundingClientRect();
       this.onSelect({
-        bbox: { x: (px/rect.width)*100, y: (py/rect.height)*100,
-                w: (pw/rect.width)*100, h: (ph/rect.height)*100 },
+        bbox: { x: (px / imgRect.width)  * 100,
+                y: (py / imgRect.height) * 100,
+                w: (pw / imgRect.width)  * 100,
+                h: (ph / imgRect.height) * 100 },
         imageEl: img, imageIndex,
       });
     };
@@ -617,6 +648,7 @@ class InputDialog {
       color: '#1a1a2e', bg: '#ffffff', noBg: false,
       stroke: false, strokeColor: '#ffffff', strokeWidth: 1,
       fontFamily: '',
+      ...(InputDialog._lastStyle || {}),
     };
     this._build();
   }
@@ -635,29 +667,19 @@ class InputDialog {
       this._resolve = resolve;
       this._el.querySelector('.wt-input-original').value   = prefill.originalText   || '';
       this._el.querySelector('.wt-input-translated').value = prefill.translatedText || '';
-      if (prefill.style) {
-        // Reset to defaults first so stale values from previous edit don't bleed through
-        this._style = {
-          fontSize: 20, bold: false, italic: false,
-          color: '#1a1a2e', bg: '#ffffff', noBg: false,
-          stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '',
-          ...prefill.style
-        };
-        this._syncStyleUI();
-      }
+      // Merge: defaults → last saved style → prefill.style (prefill wins)
+      this._style = {
+        fontSize: 20, bold: false, italic: false,
+        color: '#1a1a2e', bg: '#ffffff', noBg: false,
+        stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '',
+        ...(InputDialog._lastStyle || {}),
+        ...(prefill.style || {}),
+      };
+      this._syncStyleUI();
 
       // Store bbox for resize
       this._currentBbox = prefill.bbox || null;
       this._currentImg  = prefill.img  || null;
-      if (this._isEdit && prefill.bbox && prefill.img) {
-        this._el.querySelector('.wt-resize-row').style.display = 'flex';
-        this._el.querySelector('.wt-resize-x').value  = prefill.bbox.x.toFixed(1);
-        this._el.querySelector('.wt-resize-y').value  = prefill.bbox.y.toFixed(1);
-        this._el.querySelector('.wt-resize-w').value  = prefill.bbox.w.toFixed(1);
-        this._el.querySelector('.wt-resize-h').value  = prefill.bbox.h.toFixed(1);
-      } else {
-        this._el.querySelector('.wt-resize-row').style.display = 'none';
-      }
 
       const { innerWidth, innerHeight } = window;
       const w = this._el.offsetWidth || 300, h = this._el.offsetHeight || 320;
@@ -809,13 +831,7 @@ class InputDialog {
           </optgroup>
         </select>
       </div>
-      <div class="wt-resize-row" style="display:none">
-        <span class="wt-dialog-label" style="margin:0;flex-shrink:0">Resize</span>
-        <label class="wt-resize-label">X<input class="wt-resize-x wt-resize-input" type="number" step="0.1"/></label>
-        <label class="wt-resize-label">Y<input class="wt-resize-y wt-resize-input" type="number" step="0.1"/></label>
-        <label class="wt-resize-label">W<input class="wt-resize-w wt-resize-input" type="number" step="0.1"/></label>
-        <label class="wt-resize-label">H<input class="wt-resize-h wt-resize-input" type="number" step="0.1"/></label>
-      </div>
+      
       <div class="wt-dialog-actions">
         <button class="wt-btn-delete" style="display:none">Delete</button>
         <button class="wt-btn-cancel">Cancel</button>
@@ -833,7 +849,14 @@ class InputDialog {
     this._el.querySelector('.wt-btn-save').addEventListener('click',   () => this._save());
     this._el.querySelector('.wt-btn-delete').addEventListener('click', () => this._delete());
     this._el.querySelector('.wt-input-translated').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) this._save();
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this._save(); }
+    });
+    this._el.querySelector('.wt-input-original').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); this._el.querySelector('.wt-input-translated').focus(); }
+    });
+    // Enter in any number/style input also saves
+    this._el.querySelectorAll('.wt-style-fontsize, .wt-style-stroke-width').forEach(inp => {
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); this._save(); } });
     });
 
     // Style bar
@@ -945,18 +968,7 @@ class InputDialog {
   }
 
   _getBboxFromResize() {
-    const x = parseFloat(this._el.querySelector('.wt-resize-x').value);
-    const y = parseFloat(this._el.querySelector('.wt-resize-y').value);
-    const w = parseFloat(this._el.querySelector('.wt-resize-w').value);
-    const h = parseFloat(this._el.querySelector('.wt-resize-h').value);
-    if ([x,y,w,h].some(isNaN)) return null;
-    // Clamp to [0,100]
-    return {
-      x: Math.max(0, Math.min(99, x)),
-      y: Math.max(0, Math.min(99, y)),
-      w: Math.max(1, Math.min(100 - x, w)),
-      h: Math.max(1, Math.min(100 - y, h)),
-    };
+    return this._currentBbox || null;
   }
 
   _save() {
@@ -964,6 +976,7 @@ class InputDialog {
     const translatedText = this._el.querySelector('.wt-input-translated').value.trim();
     if (!translatedText) { this._el.querySelector('.wt-input-translated').focus(); return; }
     const resizedBbox = this._isEdit ? this._getBboxFromResize() : null;
+    InputDialog._lastStyle = { ...this._style };
     this.hide();
     this._resolve?.({ originalText, translatedText, style: { ...this._style }, resizedBbox });
     this._resolve = null;
@@ -1748,70 +1761,131 @@ async function ocrRegion(img, bbox) {
 }
 
 async function ocrRegionStitched(img, bbox, images) {
-  const idx = images.indexOf(img);
-  const clips = [{ img, x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h }];
-  const bottomEdge = bbox.y + bbox.h;
-  const topEdge    = bbox.y;
+  const idx        = images.indexOf(img);
+  const bottomEdge = bbox.y + bbox.h;  // may exceed 100 when user drags past image bottom
+  const topEdge    = bbox.y;           // may be < 0 when user drags past image top
+  const imgDispW   = img.getBoundingClientRect().width;
+  const dispW      = (bbox.w / 100) * imgDispW;
 
-  // Bbox near bottom edge → also grab top slice of next image
-  if (bottomEdge > 82 && idx >= 0 && idx < images.length - 1) {
+  // Primary clip — clamp to valid image coordinates
+  const primaryH = Math.min(bbox.h, 100 - Math.max(0, bbox.y));
+  const primaryY = Math.max(0, bbox.y);
+  const clips = [{ img, x: bbox.x, y: primaryY, w: bbox.w, h: Math.max(1, primaryH), dispW }];
+
+  // Bottom cross-panel: only when user explicitly dragged past image boundary (bottomEdge > 100)
+  if (bottomEdge > 100 && idx >= 0 && idx < images.length - 1) {
     const nextImg = images[idx + 1];
-    if (nextImg.naturalWidth) {
-      const grabH = Math.max(5, bottomEdge - 82);
-      clips.push({ img: nextImg, x: bbox.x, y: 0, w: bbox.w, h: Math.min(grabH, 35) });
+    if (nextImg.src && !nextImg.src.startsWith('data:')) {
+      const nextDispW = (bbox.w / 100) * (nextImg.getBoundingClientRect().width || imgDispW);
+      const overflow  = bottomEdge - 100;
+      const grabH     = Math.max(overflow + 10, 40);
+      clips.push({ img: nextImg, x: bbox.x, y: 0, w: bbox.w, h: Math.min(grabH, 60), dispW: nextDispW });
     }
   }
 
-  // Bbox near top edge → also grab bottom slice of previous image
-  if (topEdge < 18 && idx > 0) {
+  // Top cross-panel: only when user explicitly dragged above image top (topEdge < 0)
+  if (topEdge < 0 && idx > 0) {
     const prevImg = images[idx - 1];
-    if (prevImg.naturalWidth) {
-      const grabH = Math.max(5, 18 - topEdge);
-      clips.unshift({ img: prevImg, x: bbox.x, y: Math.max(0, 100 - grabH), w: bbox.w, h: Math.min(grabH, 35) });
+    if (prevImg.src && !prevImg.src.startsWith('data:')) {
+      const prevDispW = (bbox.w / 100) * (prevImg.getBoundingClientRect().width || imgDispW);
+      const overflow  = -topEdge;
+      const grabH     = Math.max(overflow + 10, 40);
+      clips.unshift({ img: prevImg, x: bbox.x, y: Math.max(0, 100 - grabH), w: bbox.w, h: Math.min(grabH, 60), dispW: prevDispW });
     }
   }
 
   if (clips.length === 1) return ocrRegion(img, bbox);
 
+  // Try client-side stitching (same-origin/blob images)
   const dataUrl = stitchClips(clips);
-  if (!dataUrl) return ocrRegion(img, bbox);
+  if (dataUrl) {
+    const res = await sendToBackground({
+      type: MSG.OCR_REGION,
+      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
+    });
+    if (!res?.ok) throw new Error(res?.error || 'OCR failed');
+    return res.text;
+  }
 
-  const res = await sendToBackground({
-    type: MSG.OCR_REGION,
-    payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
-  });
-  if (!res?.ok) throw new Error(res?.error || 'OCR failed');
+  // Cross-origin: send to background for fetch+stitch
+  const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src, bbox: { x, y, w, h }, dispW: dw }));
+  const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
+  if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
   return res.text;
 }
 
+async function ocrClips(clips) {
+  // clips from FixedOverlayLayer: {img, bbox: {x,y,w,h}}
+  // Convert to internal {img, x, y, w, h, dispW} format
+  const items = clips.map(c => {
+    const r = c.img.getBoundingClientRect();
+    return {
+      img:   c.img,
+      x:     c.bbox.x, y: c.bbox.y, w: c.bbox.w, h: c.bbox.h,
+      dispW: (c.bbox.w / 100) * r.width,
+    };
+  });
+
+  // Try client-side stitch first
+  const dataUrl = stitchClips(items);
+  if (dataUrl) {
+    const res = await sendToBackground({
+      type: MSG.OCR_REGION,
+      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
+    });
+    if (!res?.ok) throw new Error(res?.error || 'OCR failed');
+    return res.text;
+  }
+  // Cross-origin: background fetch+stitch
+  const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src, bbox: { x, y, w, h }, dispW }));
+  const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
+  if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
+  return res.text;
+}
+
+// Stitch multiple image clips vertically into one canvas.
+// All clips are normalized to the SAME output pixel width (based on display width)
+// so text from different panels renders at the same scale.
 function stitchClips(clips) {
   try {
-    const rendered = clips.map(({ img, x, y, w, h }) => ({
-      img,
-      px: (x / 100) * img.naturalWidth,
-      py: (y / 100) * img.naturalHeight,
-      pw: Math.max(1, (w / 100) * img.naturalWidth),
-      ph: Math.max(1, (h / 100) * img.naturalHeight),
-    }));
-    const maxW   = Math.max(...rendered.map(r => r.pw));
-    const totalH = rendered.reduce((s, r) => s + r.ph, 0);
-    const scale  = maxW < 400 ? Math.min(3, 400 / maxW) : 1;
-    const canvas = document.createElement('canvas');
-    canvas.width  = Math.round(maxW * scale);
-    canvas.height = Math.round(totalH * scale);
+    const items = clips.map(({ img, x, y, w, h, dispW }) => {
+      const px = (x / 100) * img.naturalWidth;
+      const py = (y / 100) * img.naturalHeight;
+      const pw = Math.max(1, (w / 100) * img.naturalWidth);
+      const ph = Math.max(1, (h / 100) * img.naturalHeight);
+      // dispW is the display-pixel width; use it to normalize scale
+      const dw = dispW || pw;
+      return { img, px, py, pw, ph, dw };
+    });
+
+    // Normalize: all clips rendered at TARGET_W pixels wide
+    // Use the maximum display width, upscale to at least 600px for OCR quality
+    const maxDispW = Math.max(...items.map(r => r.dw));
+    const TARGET_W = Math.max(600, maxDispW * (maxDispW < 600 ? Math.min(3, 600 / maxDispW) : 1));
+
+    // Compute output height for each clip proportional to its natural aspect
+    const rows = items.map(({ img, px, py, pw, ph, dw }) => {
+      const scale = TARGET_W / dw; // display→output scale
+      // Output height = display height of clip * same scale
+      const dispH = ph * (dw / pw); // display-pixel height of clip
+      return { img, px, py, pw, ph, dw: Math.round(TARGET_W), dh: Math.round(dispH * scale) };
+    });
+
+    const totalH = rows.reduce((s, r) => s + r.dh, 0);
+    const canvas  = document.createElement('canvas');
+    canvas.width  = Math.round(TARGET_W);
+    canvas.height = totalH;
     const ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     let dy = 0;
-    for (const { img, px, py, pw, ph } of rendered) {
-      ctx.drawImage(img, px, py, pw, ph,
-        Math.round((maxW - pw) / 2 * scale), Math.round(dy * scale),
-        Math.round(pw * scale), Math.round(ph * scale));
-      dy += ph;
+    for (const { img, px, py, pw, ph, dw, dh } of rows) {
+      ctx.drawImage(img, px, py, pw, ph, 0, dy, dw, dh);
+      dy += dh;
     }
     return canvas.toDataURL('image/png');
   } catch {
-    return null;
+    return null; // tainted canvas (cross-origin) → caller sends to background
   }
 }
 
@@ -2210,16 +2284,16 @@ function bootForPage() {
 
   const selector = new BBoxSelector({ onSelect: handleBBoxSelect });
 
-  async function handleBBoxSelect({ bbox, imageEl, imageIndex }) {
+  async function handleBBoxSelect({ bbox, imageEl, imageIndex, clips }) {
     if (currentMode === MODES.READ) {
-      await handleReadBBoxSelect({ bbox, imageEl, imageIndex });
+      await handleReadBBoxSelect({ bbox, imageEl, imageIndex, clips });
     } else {
-      await handleAnnotateBBoxSelect({ bbox, imageEl, imageIndex });
+      await handleAnnotateBBoxSelect({ bbox, imageEl, imageIndex, clips });
     }
   }
 
   // Read mode: OCR → auto-translate → minimal dialog (no styling)
-  async function handleReadBBoxSelect({ bbox, imageEl, imageIndex }) {
+  async function handleReadBBoxSelect({ bbox, imageEl, imageIndex, clips }) {
     const rect = imageEl.getBoundingClientRect();
     const screenPos = {
       x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
@@ -2230,7 +2304,7 @@ function bootForPage() {
     quickDialog.setStatus('⏳ Scanning text…', '#6366f1');
     let ocrText = '';
     try {
-      ocrText = await ocrRegionStitched(imageEl, bbox, images);
+      ocrText = clips ? await ocrClips(clips) : await ocrRegionStitched(imageEl, bbox, images);
       if (ocrText) {
         quickDialog.setOriginalText(ocrText);
         quickDialog.setStatus('⏳ Translating…', '#6366f1');
@@ -2273,7 +2347,7 @@ function bootForPage() {
   }
 
   // Annotate mode: full dialog with style options
-  async function handleAnnotateBBoxSelect({ bbox, imageEl, imageIndex }) {
+  async function handleAnnotateBBoxSelect({ bbox, imageEl, imageIndex, clips }) {
     const rect = imageEl.getBoundingClientRect();
     const screenPos = {
       x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
@@ -2283,7 +2357,7 @@ function bootForPage() {
     const colorStyle = colors ? { color: colors.textColor, bg: colors.bgColor, noBg: false } : {};
     const resultPromise = dialog.show(screenPos, { style: colorStyle });
     const ocrSession    = dialog.setOcrPending();
-    ocrRegionStitched(imageEl, bbox, images)
+    clips ? ocrClips(clips) : ocrRegionStitched(imageEl, bbox, images)
       .then(text => dialog.setOcrText(text, ocrSession))
       .catch(err => dialog.setOcrError(err.message, ocrSession));
     const result = await resultPromise;
