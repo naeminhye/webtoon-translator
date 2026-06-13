@@ -1756,27 +1756,37 @@ async function ocrRegion(img, bbox) {
 
 async function ocrRegionStitched(img, bbox, images) {
   const idx        = images.indexOf(img);
-  const bottomEdge = bbox.y + bbox.h;
-  const topEdge    = bbox.y;
-  // clips: {img, x, y, w, h, dispW} — dispW = display-pixel width of clip (for normalization)
-  const dispW = (bbox.w / 100) * img.getBoundingClientRect().width;
-  const clips = [{ img, x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h, dispW }];
+  const bottomEdge = bbox.y + bbox.h;  // may exceed 100 when user drags past image bottom
+  const topEdge    = bbox.y;           // may be < 0 when user drags past image top
+  const imgDispW   = img.getBoundingClientRect().width;
+  const dispW      = (bbox.w / 100) * imgDispW;
 
-  // Bbox near bottom edge → grab top 45% of next image at same x/w
-  if (bottomEdge > 75 && idx >= 0 && idx < images.length - 1) {
+  // Primary clip — clamp to valid image coordinates
+  const primaryH = Math.min(bbox.h, 100 - Math.max(0, bbox.y));
+  const primaryY = Math.max(0, bbox.y);
+  const clips = [{ img, x: bbox.x, y: primaryY, w: bbox.w, h: Math.max(1, primaryH), dispW }];
+
+  // Bottom cross-panel: user dragged past image boundary (>100%) OR is near bottom (>70%)
+  if (bottomEdge > 70 && idx >= 0 && idx < images.length - 1) {
     const nextImg = images[idx + 1];
-    if (nextImg.naturalWidth) {
-      const nextDispW = (bbox.w / 100) * (nextImg.getBoundingClientRect().width || img.getBoundingClientRect().width);
-      clips.push({ img: nextImg, x: bbox.x, y: 0, w: bbox.w, h: 45, dispW: nextDispW });
+    // Allow stitching even if next image isn't loaded yet — background can fetch by URL
+    if (nextImg.src && !nextImg.src.startsWith('data:')) {
+      const nextDispW = (bbox.w / 100) * (nextImg.getBoundingClientRect().width || imgDispW);
+      // If user explicitly dragged past boundary, grab at least that overflow; otherwise 45%
+      const overflow = Math.max(0, bottomEdge - 100);
+      const grabH    = Math.max(overflow + 5, 45);
+      clips.push({ img: nextImg, x: bbox.x, y: 0, w: bbox.w, h: Math.min(grabH, 60), dispW: nextDispW });
     }
   }
 
-  // Bbox near top edge → grab bottom 45% of previous image at same x/w
-  if (topEdge < 25 && idx > 0) {
+  // Top cross-panel: user dragged above image top (<0%) OR is near top (<30%)
+  if (topEdge < 30 && idx > 0) {
     const prevImg = images[idx - 1];
-    if (prevImg.naturalWidth) {
-      const prevDispW = (bbox.w / 100) * (prevImg.getBoundingClientRect().width || img.getBoundingClientRect().width);
-      clips.unshift({ img: prevImg, x: bbox.x, y: 55, w: bbox.w, h: 45, dispW: prevDispW });
+    if (prevImg.src && !prevImg.src.startsWith('data:')) {
+      const prevDispW = (bbox.w / 100) * (prevImg.getBoundingClientRect().width || imgDispW);
+      const overflow  = Math.max(0, -topEdge);
+      const grabH     = Math.max(overflow + 5, 45);
+      clips.unshift({ img: prevImg, x: bbox.x, y: Math.max(0, 100 - grabH), w: bbox.w, h: Math.min(grabH, 60), dispW: prevDispW });
     }
   }
 
