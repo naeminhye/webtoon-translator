@@ -159,12 +159,18 @@ class FixedOverlayLayer {
     this._el.style.display = 'none';
     document.body.appendChild(this._el);
 
-    // Forward wheel events to the element underneath so the page can still scroll.
-    // pointer-events:auto on the overlay swallows them otherwise.
-    // Guard against re-dispatched (non-trusted) events to prevent infinite recursion
-    // when a bubble child is inside the overlay and the bubbling event re-triggers this listener.
+    // Forward wheel events so the page can still scroll while the overlay is active.
+    // Ridi uses simplebar — its custom scroll container doesn't respond to re-dispatched
+    // WheelEvents (isTrusted:false), so we scroll it directly. Other sites fall back to
+    // the re-dispatch trick. Guard against non-trusted events to avoid infinite recursion.
     this._el.addEventListener('wheel', (e) => {
       if (!e.isTrusted) return;
+      const simplebarWrapper = document.querySelector('.simplebar-content-wrapper');
+      if (simplebarWrapper) {
+        simplebarWrapper.scrollTop  += e.deltaY;
+        simplebarWrapper.scrollLeft += e.deltaX;
+        return;
+      }
       this._el.style.pointerEvents = 'none';
       const target = document.elementFromPoint(e.clientX, e.clientY);
       this._el.style.pointerEvents = 'auto';
@@ -2101,9 +2107,61 @@ function showToast(text, color = '#22c55e', duration = 3000) {
   setTimeout(() => t.remove(), duration);
 }
 
+// ── BomtoonAdapter ────────────────────────────────────────────────────────────
+// https://www.bomtoon.com/viewer/{titleId}/{chapterId}
+
+class BomtoonAdapter {
+  detect() {
+    return location.hostname === 'www.bomtoon.com' &&
+           location.pathname.startsWith('/viewer/');
+  }
+
+  getChapterMeta() {
+    const parts = location.pathname.split('/').filter(Boolean);
+    // /viewer/{titleId}/{chapterId}
+    const titleId   = parts[1] || 'unknown';
+    const chapterId = parts[2] || 'unknown';
+    return { site: 'bomtoon', titleId, chapterId };
+  }
+
+  getImages() {
+    // Bomtoon renders panel images vertically; pick large images inside the viewer
+    const MIN_W = 200;
+    const viewer = document.querySelector('.viewer_wrap')
+                || document.querySelector('.view_content')
+                || document.querySelector('[class*="viewer"]')
+                || document.querySelector('[class*="view"]')
+                || document.body;
+    return [...viewer.querySelectorAll('img')].filter(img => {
+      const w = img.naturalWidth || img.offsetWidth || img.width;
+      if (w < MIN_W) return false;
+      const src = img.src || '';
+      if (!src || src.startsWith('data:') || src.includes('logo') || src.includes('icon')) return false;
+      return true;
+    });
+  }
+
+  watchNewImages(callback) {
+    const root = document.querySelector('.viewer_wrap')
+              || document.querySelector('.view_content')
+              || document.querySelector('[class*="viewer"]')
+              || document.body;
+    let debounce = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        const imgs = this.getImages();
+        if (imgs.length) callback(imgs);
+      }, 150);
+    });
+    observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
+    return () => observer.disconnect();
+  }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter()];
+const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter(), new BomtoonAdapter()];
 
 function findAdapter() { return ADAPTERS.find(a => a.detect()); }
 
