@@ -1023,6 +1023,8 @@ class InputDialog {
   _firePreview() {
     if (!this._onPreview) return;
     const text = this._el.querySelector('.wt-input-translated').value;
+    // Only show preview when the user has actually typed something
+    if (!text.trim()) { this._onCancel?.(); return; }
     this._onPreview(text, { ...this._style });
   }
 
