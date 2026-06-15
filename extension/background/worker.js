@@ -277,6 +277,8 @@ async function handleOcrStitch({ clips }) {
   return handleOcr({ dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } });
 }
 
+// ── OCR Detect: full-image block detection for auto-indicators ────────────────
+
 // ── OCR.space ─────────────────────────────────────────────────────────────────
 
 async function ocrSpaceRun(dataUrl, apiKey) {

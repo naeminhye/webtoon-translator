@@ -667,7 +667,7 @@ body:not(.wt-annotate-mode) .wt-fixed-bubble {
 #wt-scan-btn {
   position: fixed;
   bottom: 76px;
-  right: 24px;
+  left: 24px;
   z-index: 99997;
   width: 44px;
   height: 44px;
@@ -698,14 +698,14 @@ body:not(.wt-annotate-mode) .wt-fixed-bubble {
   50%       { box-shadow: 0 2px 24px rgba(99, 102, 241, 0.8); }
 }
 
-body.wt-panel-open #wt-scan-btn { right: 304px; }
+body.wt-panel-open #wt-scan-btn { left: 24px; }
 
 /* ── Translation visibility toggle (corner icon button) ──────────────── */
 
 #wt-toggle-btn {
   position: fixed;
   bottom: 24px;
-  right: 24px;
+  left: 24px;
   z-index: 99997;
   width: 44px;
   height: 44px;
@@ -736,7 +736,7 @@ body.wt-panel-open #wt-scan-btn { right: 304px; }
 
 /* Shift out of the way while the side panel (280px) is open */
 body.wt-panel-open #wt-toggle-btn {
-  right: 304px;
+  left: 24px;
 }
 
 /* ── Side Panel ───────────────────────────────────────────────────────── */

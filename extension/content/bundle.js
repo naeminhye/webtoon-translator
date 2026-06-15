@@ -1629,7 +1629,9 @@ function showStorageWarning(usedBytes, quotaBytes) {
 class NaverAdapter {
   detect() {
     return location.hostname.endsWith('comic.naver.com') &&
-           location.pathname.startsWith('/webtoon/detail');
+           (location.pathname.startsWith('/webtoon/detail') ||
+            location.pathname.startsWith('/challenge/detail') ||
+            location.pathname.startsWith('/bestChallenge/detail'));
   }
   getChapterMeta() {
     // Naver doesn't have og:url — parse from location.search directly
