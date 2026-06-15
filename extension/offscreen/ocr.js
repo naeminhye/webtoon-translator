@@ -73,15 +73,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const worker = await getWorker();
         const { data } = await worker.recognize(message.payload.dataUrl);
         broadcast('ready');
-        // Return paragraph-level blocks with pixel bounding boxes and text
-        const blocks = (data.blocks || [])
-          .filter(b => b.confidence > 30 && (b.text || '').trim().length > 0)
-          .map(b => ({
-            text: (b.text || '').replace(/\s+/g, ' ').trim(),
-            confidence: b.confidence,
-            bbox: { x0: b.bbox.x0, y0: b.bbox.y0, x1: b.bbox.x1, y1: b.bbox.y1 },
-          }));
-        sendResponse({ ok: true, blocks });
+        // Use paragraph-level granularity (blocks are too coarse)
+        const paragraphs = [];
+        for (const block of (data.blocks || [])) {
+          for (const para of (block.paragraphs || [])) {
+            const text = (para.text || '').replace(/\s+/g, ' ').trim();
+            if (para.confidence > 25 && text.length > 0) {
+              paragraphs.push({
+                text,
+                confidence: para.confidence,
+                bbox: { x0: para.bbox.x0, y0: para.bbox.y0, x1: para.bbox.x1, y1: para.bbox.y1 },
+              });
+            }
+          }
+        }
+        sendResponse({ ok: true, blocks: paragraphs });
       } catch (err) {
         sendResponse({ ok: false, error: err.message || String(err) });
       }

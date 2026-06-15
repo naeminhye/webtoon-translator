@@ -2328,30 +2328,19 @@ function bootForPage() {
   async function detectAndShowIndicators(img) {
     clearIndicators(img);
 
-    // Try client-side canvas first (same-origin / blob URLs)
-    let dataUrl = null;
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width  = img.naturalWidth  || img.width;
-      canvas.height = img.naturalHeight || img.height;
-      canvas.getContext('2d').drawImage(img, 0, 0);
-      dataUrl = canvas.toDataURL('image/png');
-    } catch (_) { /* cross-origin — fall back to background fetch */ }
-
+    // Always let background fetch the image (avoids large dataUrl over message channel)
     const res = await sendToBackground({
       type: MSG.OCR_DETECT,
-      payload: { dataUrl, imageUrl: dataUrl ? null : img.src },
+      payload: { dataUrl: null, imageUrl: img.src },
     });
     if (!res?.ok || !res.blocks?.length) return;
 
-    const imgRect    = img.getBoundingClientRect();
-    const natW       = img.naturalWidth  || imgRect.width;
-    const natH       = img.naturalHeight || imgRect.height;
-    const dots       = [];
+    const natW = img.naturalWidth  || img.getBoundingClientRect().width;
+    const natH = img.naturalHeight || img.getBoundingClientRect().height;
+    const dots = [];
 
     for (const block of res.blocks) {
       const { x0, y0, x1, y1 } = block.bbox;
-      // Convert pixel bbox → % of image
       const bboxPct = {
         x: (x0 / natW) * 100,
         y: (y0 / natH) * 100,
@@ -2362,21 +2351,25 @@ function bootForPage() {
       const dot = document.createElement('button');
       dot.className = 'wt-text-indicator';
       dot.title     = block.text.slice(0, 60);
-
-      // Position: top-left corner of the block, relative to viewport
-      const posX = imgRect.left + window.scrollX + (bboxPct.x / 100) * imgRect.width;
-      const posY = imgRect.top  + window.scrollY + (bboxPct.y / 100) * imgRect.height;
-      dot.style.cssText = `left:${posX}px; top:${posY}px;`;
       document.body.appendChild(dot);
       dots.push(dot);
+
+      // Reposition dot relative to current scroll/layout
+      function repositionDot() {
+        const r = img.getBoundingClientRect();
+        const x = r.left + window.scrollX + (bboxPct.x / 100) * r.width;
+        const y = r.top  + window.scrollY + (bboxPct.y / 100) * r.height;
+        dot.style.left = `${x}px`;
+        dot.style.top  = `${y}px`;
+      }
+      repositionDot();
 
       dot.addEventListener('click', async (e) => {
         e.stopPropagation();
         if (dot.classList.contains('wt-indicator-done')) return;
         dot.classList.add('wt-indicator-loading');
-
         try {
-          const ocrText   = await ocrRegion(img, bboxPct);
+          const ocrText    = await ocrRegion(img, bboxPct);
           if (!ocrText) { dot.classList.remove('wt-indicator-loading'); return; }
           const translated = await autoTranslate(ocrText);
           const imageHash  = await hashImage(img);
