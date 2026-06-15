@@ -1939,10 +1939,12 @@ async function ocrClips(clips) {
 function stitchClips(clips) {
   try {
     const items = clips.map(({ img, x, y, w, h, dispW }) => {
-      const px = (x / 100) * img.naturalWidth;
-      const py = (y / 100) * img.naturalHeight;
-      const pw = Math.max(1, (w / 100) * img.naturalWidth);
-      const ph = Math.max(1, (h / 100) * img.naturalHeight);
+      const nw = img.naturalWidth  || img.width  || img.offsetWidth;
+      const nh = img.naturalHeight || img.height || img.offsetHeight;
+      const px = (x / 100) * nw;
+      const py = (y / 100) * nh;
+      const pw = Math.max(1, (w / 100) * nw);
+      const ph = Math.max(1, (h / 100) * nh);
       // dispW is the display-pixel width; use it to normalize scale
       const dw = dispW || pw;
       return { img, px, py, pw, ph, dw };
@@ -2014,10 +2016,12 @@ async function autoTranslate(text) {
 }
 
 function _cropCanvas(img, bbox) {
-  const sx = (bbox.x / 100) * img.naturalWidth;
-  const sy = (bbox.y / 100) * img.naturalHeight;
-  const sw = Math.max(1, (bbox.w / 100) * img.naturalWidth);
-  const sh = Math.max(1, (bbox.h / 100) * img.naturalHeight);
+  const nw = img.naturalWidth  || img.width  || img.offsetWidth;
+  const nh = img.naturalHeight || img.height || img.offsetHeight;
+  const sx = (bbox.x / 100) * nw;
+  const sy = (bbox.y / 100) * nh;
+  const sw = Math.max(1, (bbox.w / 100) * nw);
+  const sh = Math.max(1, (bbox.h / 100) * nh);
   const scale = sw < 400 ? Math.min(3, 400 / sw) : 1;
   const canvas = document.createElement('canvas');
   canvas.width  = Math.round(sw * scale);
@@ -2043,10 +2047,12 @@ function strokeTextShadow(color, width) {
 
 function detectBboxColors(imageEl, bbox) {
   try {
-    const sx = (bbox.x / 100) * imageEl.naturalWidth;
-    const sy = (bbox.y / 100) * imageEl.naturalHeight;
-    const sw = Math.max(1, (bbox.w / 100) * imageEl.naturalWidth);
-    const sh = Math.max(1, (bbox.h / 100) * imageEl.naturalHeight);
+    const nw = imageEl.naturalWidth  || imageEl.width  || imageEl.offsetWidth;
+    const nh = imageEl.naturalHeight || imageEl.height || imageEl.offsetHeight;
+    const sx = (bbox.x / 100) * nw;
+    const sy = (bbox.y / 100) * nh;
+    const sw = Math.max(1, (bbox.w / 100) * nw);
+    const sh = Math.max(1, (bbox.h / 100) * nh);
     const cw = Math.min(sw, 120), ch = Math.min(sh, 120);
     const canvas = document.createElement('canvas');
     canvas.width = cw; canvas.height = ch;
@@ -2142,32 +2148,20 @@ class BomtoonAdapter {
   }
 
   getImages() {
-    // Bomtoon renders panels as <canvas> inside panel-container divs.
-    // Return those container divs as pseudo-"images" for FixedOverlayLayer.
-    // We attach a .src property from __NEXT_DATA__ URLs for hashing.
+    // Bomtoon renders panels as <canvas> elements (scrambled WebP tiles).
+    // Return the canvas elements directly so drawImage() works for OCR/cropping.
+    // We attach a .src property (JS-only) from __NEXT_DATA__ URLs for hashing.
     const urls = this._getImageUrls();
 
-    // Prefer the known stable class; fall back to width-attribute containers
-    let containers = [...document.querySelectorAll('div[width][height][class]')]
-      .filter(el => {
-        const w = parseInt(el.getAttribute('width') || '0', 10);
-        return w >= 200;
-      });
+    const canvases = [...document.querySelectorAll('canvas')]
+      .filter(c => (c.width || 0) >= 200 && (c.height || 0) >= 200);
 
-    // Fall back: any div that has a canvas child with large dimensions
-    if (containers.length === 0) {
-      containers = [...document.querySelectorAll('canvas')]
-        .filter(c => (c.width || 0) >= 200)
-        .map(c => c.parentElement)
-        .filter(Boolean);
-    }
-
-    // Annotate each container with a stable .src for hashImage
-    containers.forEach((el, i) => {
+    // Annotate each canvas with a stable .src for hashImage
+    canvases.forEach((el, i) => {
       if (!el.src) el.src = urls[i] || `bomtoon-panel-${i}`;
     });
 
-    return containers;
+    return canvases;
   }
 
   watchNewImages(callback) {
