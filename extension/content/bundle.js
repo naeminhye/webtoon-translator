@@ -14,6 +14,7 @@ const MSG    = {
   CLEAR_CHAPTER:     'CLEAR_CHAPTER',
   OCR_REGION:        'OCR_REGION',
   OCR_STITCH:        'OCR_STITCH',
+  OCR_DETECT:        'OCR_DETECT',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
 };
 
@@ -2309,6 +2310,101 @@ function bootForPage() {
   scanBtn.innerHTML = SCAN_ICON;
   document.body.appendChild(scanBtn);
 
+  // ── Auto-detect text indicators ───────────────────────────────────────
+
+  const indicatorsByImg = new Map(); // img -> [dotEl, ...]
+
+  function clearIndicators(img) {
+    const dots = indicatorsByImg.get(img) || [];
+    dots.forEach(d => d.remove());
+    indicatorsByImg.delete(img);
+  }
+
+  function clearAllIndicators() {
+    indicatorsByImg.forEach((dots) => dots.forEach(d => d.remove()));
+    indicatorsByImg.clear();
+  }
+
+  async function detectAndShowIndicators(img) {
+    clearIndicators(img);
+
+    // Try client-side canvas first (same-origin / blob URLs)
+    let dataUrl = null;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width  = img.naturalWidth  || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      dataUrl = canvas.toDataURL('image/png');
+    } catch (_) { /* cross-origin — fall back to background fetch */ }
+
+    const res = await sendToBackground({
+      type: MSG.OCR_DETECT,
+      payload: { dataUrl, imageUrl: dataUrl ? null : img.src },
+    });
+    if (!res?.ok || !res.blocks?.length) return;
+
+    const imgRect    = img.getBoundingClientRect();
+    const natW       = img.naturalWidth  || imgRect.width;
+    const natH       = img.naturalHeight || imgRect.height;
+    const dots       = [];
+
+    for (const block of res.blocks) {
+      const { x0, y0, x1, y1 } = block.bbox;
+      // Convert pixel bbox → % of image
+      const bboxPct = {
+        x: (x0 / natW) * 100,
+        y: (y0 / natH) * 100,
+        w: ((x1 - x0) / natW) * 100,
+        h: ((y1 - y0) / natH) * 100,
+      };
+
+      const dot = document.createElement('button');
+      dot.className = 'wt-text-indicator';
+      dot.title     = block.text.slice(0, 60);
+
+      // Position: top-left corner of the block, relative to viewport
+      const posX = imgRect.left + window.scrollX + (bboxPct.x / 100) * imgRect.width;
+      const posY = imgRect.top  + window.scrollY + (bboxPct.y / 100) * imgRect.height;
+      dot.style.cssText = `left:${posX}px; top:${posY}px;`;
+      document.body.appendChild(dot);
+      dots.push(dot);
+
+      dot.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (dot.classList.contains('wt-indicator-done')) return;
+        dot.classList.add('wt-indicator-loading');
+
+        try {
+          const ocrText   = await ocrRegion(img, bboxPct);
+          if (!ocrText) { dot.classList.remove('wt-indicator-loading'); return; }
+          const translated = await autoTranslate(ocrText);
+          const imageHash  = await hashImage(img);
+          const imageIndex = images.indexOf(img);
+          const annotation = {
+            imageHash, imageIndex, bbox: bboxPct,
+            originalText:   ocrText,
+            translatedText: translated || ocrText,
+            style: { fontSize: 20, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' },
+            language: 'vi', createdAt: new Date().toISOString(),
+          };
+          await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
+          _upsertAnnotation(annotation);
+          if (isKakao) fixedLayer.upsertBubble(img, annotation);
+          else renderer.upsertBubble(img, annotation);
+          updateProgressBar();
+          dot.classList.remove('wt-indicator-loading');
+          dot.classList.add('wt-indicator-done');
+        } catch (err) {
+          dot.classList.remove('wt-indicator-loading');
+          console.warn('[WebtoonTranslate] indicator OCR failed', err);
+        }
+      });
+    }
+
+    indicatorsByImg.set(img, dots);
+  }
+
   function setReadScan(on) {
     readScanEnabled = on;
     scanBtn.classList.toggle('wt-scan-active', on);
@@ -2316,9 +2412,11 @@ function bootForPage() {
     if (on) {
       if (isKakao) fixedLayer.enable(images);
       else selector.enable(images);
+      images.forEach(img => detectAndShowIndicators(img));
     } else {
       if (isKakao) fixedLayer.disable();
       else selector.disable();
+      clearAllIndicators();
     }
   }
   scanBtn.addEventListener('click', () => setReadScan(!readScanEnabled));
@@ -2899,6 +2997,7 @@ function bootForPage() {
     bubbleEditor.detach();
     toggleBtn.remove();
     scanBtn.remove();
+    clearAllIndicators();
     panel.hide();
     document.getElementById('wt-progress-bar')?.remove();
     document.body.classList.remove('wt-annotate-mode');

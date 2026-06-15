@@ -18,6 +18,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(sendResponse)
         .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
       return true;
+    case 'OCR_DETECT':
+      handleOcrDetect(message.payload)
+        .then(sendResponse)
+        .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
+      return true;
     case 'OCR_STITCH':
       handleOcrStitch(message.payload)
         .then(sendResponse)
@@ -275,6 +280,43 @@ async function handleOcrStitch({ clips }) {
   });
 
   return handleOcr({ dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } });
+}
+
+// ── OCR Detect: full-image block detection for auto-indicators ────────────────
+
+async function handleOcrDetect({ dataUrl, imageUrl }) {
+  if (!chrome.offscreen?.createDocument) {
+    return { ok: false, error: 'Offscreen API unavailable' };
+  }
+  await ensureOffscreen();
+
+  let finalDataUrl = dataUrl;
+  if (!finalDataUrl && imageUrl) {
+    // Fetch cross-origin image and encode as full-size dataUrl
+    const res    = await fetch(imageUrl, { credentials: 'omit' });
+    const blob   = await res.blob();
+    const bitmap = await createImageBitmap(blob);
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx    = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const outBlob = await canvas.convertToBlob({ type: 'image/png' });
+    finalDataUrl  = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('encode failed'));
+      reader.readAsDataURL(outBlob);
+    });
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'OCR_DETECT', payload: { dataUrl: finalDataUrl } });
+      if (res) return res;
+    } catch (_) {}
+    await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+  }
+  return { ok: false, error: 'OCR detect worker did not respond' };
 }
 
 // ── OCR.space ─────────────────────────────────────────────────────────────────
