@@ -332,7 +332,6 @@ class FixedOverlayLayer {
       if (s.textAlign) {
         b.style.textAlign      = s.textAlign;
         b.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
-        b.style.alignItems     = 'flex-start';
       }
     }
     const span = document.createElement('span');
@@ -603,7 +602,6 @@ class OverlayRenderer {
       if (s.textAlign) {
         b.style.textAlign      = s.textAlign;
         b.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
-        b.style.alignItems     = 'flex-start';
       }
     }
     const span = document.createElement('span');
