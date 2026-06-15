@@ -18,11 +18,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(sendResponse)
         .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
       return true;
-    case 'OCR_DETECT':
-      handleOcrDetect(message.payload)
-        .then(sendResponse)
-        .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
-      return true;
     case 'OCR_STITCH':
       handleOcrStitch(message.payload)
         .then(sendResponse)
@@ -283,70 +278,6 @@ async function handleOcrStitch({ clips }) {
 }
 
 // ── OCR Detect: full-image block detection for auto-indicators ────────────────
-
-// Max width for detect pass — keeps message size small and Tesseract fast
-const DETECT_MAX_W = 1200;
-
-async function handleOcrDetect({ dataUrl, imageUrl }) {
-  if (!chrome.offscreen?.createDocument) {
-    return { ok: false, error: 'Offscreen API unavailable' };
-  }
-  await ensureOffscreen();
-
-  // Decode image into bitmap (cross-origin via fetch, same-origin via dataUrl)
-  let bitmap;
-  if (imageUrl) {
-    const res  = await fetch(imageUrl, { credentials: 'omit' });
-    const blob = await res.blob();
-    bitmap     = await createImageBitmap(blob);
-  } else {
-    const res  = await fetch(dataUrl);
-    const blob = await res.blob();
-    bitmap     = await createImageBitmap(blob);
-  }
-
-  // Downscale to DETECT_MAX_W so the encoded dataUrl stays under ~1MB
-  const scale  = bitmap.width > DETECT_MAX_W ? DETECT_MAX_W / bitmap.width : 1;
-  const outW   = Math.round(bitmap.width  * scale);
-  const outH   = Math.round(bitmap.height * scale);
-  const canvas = new OffscreenCanvas(outW, outH);
-  const ctx    = canvas.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(bitmap, 0, 0, outW, outH);
-  bitmap.close();
-
-  const outBlob      = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
-  const finalDataUrl = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload  = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('encode failed'));
-    reader.readAsDataURL(outBlob);
-  });
-
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const res = await chrome.runtime.sendMessage({ type: 'OCR_DETECT', payload: { dataUrl: finalDataUrl } });
-      if (res?.ok) {
-        // Scale block bboxes back to original image pixel coordinates
-        if (scale < 1) {
-          res.blocks = (res.blocks || []).map(b => ({
-            ...b,
-            bbox: {
-              x0: Math.round(b.bbox.x0 / scale),
-              y0: Math.round(b.bbox.y0 / scale),
-              x1: Math.round(b.bbox.x1 / scale),
-              y1: Math.round(b.bbox.y1 / scale),
-            },
-          }));
-        }
-        return res;
-      }
-    } catch (_) {}
-    await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
-  }
-  return { ok: false, error: 'OCR detect worker did not respond' };
-}
 
 // ── OCR.space ─────────────────────────────────────────────────────────────────
 

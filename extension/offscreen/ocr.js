@@ -51,47 +51,20 @@ function getWorker() {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type === 'OCR_RUN') {
-    (async () => {
-      try {
-        const worker = await getWorker();
-        const { data } = await worker.recognize(message.payload.dataUrl);
-        broadcast('ready');
-        const text = (data.text || '').replace(/\s+/g, ' ').trim();
-        const confidence = typeof data.confidence === 'number' ? data.confidence : 0;
-        sendResponse({ ok: true, text, confidence });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message || String(err) });
-      }
-    })();
-    return true;
-  }
-
-  if (message.type === 'OCR_DETECT') {
-    (async () => {
-      try {
-        const worker = await getWorker();
-        const { data } = await worker.recognize(message.payload.dataUrl);
-        broadcast('ready');
-        // Use paragraph-level granularity (blocks are too coarse)
-        const paragraphs = [];
-        for (const block of (data.blocks || [])) {
-          for (const para of (block.paragraphs || [])) {
-            const text = (para.text || '').replace(/\s+/g, ' ').trim();
-            if (para.confidence > 25 && text.length > 0) {
-              paragraphs.push({
-                text,
-                confidence: para.confidence,
-                bbox: { x0: para.bbox.x0, y0: para.bbox.y0, x1: para.bbox.x1, y1: para.bbox.y1 },
-              });
-            }
-          }
-        }
-        sendResponse({ ok: true, blocks: paragraphs });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message || String(err) });
-      }
-    })();
-    return true;
-  }
+  if (message.type !== 'OCR_RUN') return;
+  (async () => {
+    try {
+      const worker = await getWorker();
+      const { data } = await worker.recognize(message.payload.dataUrl);
+      broadcast('ready');
+      // Webtoon bubbles wrap lines arbitrarily — collapse to one line
+      const text = (data.text || '').replace(/\s+/g, ' ').trim();
+      // confidence: 0-100 average across all recognised words
+      const confidence = typeof data.confidence === 'number' ? data.confidence : 0;
+      sendResponse({ ok: true, text, confidence });
+    } catch (err) {
+      sendResponse({ ok: false, error: err.message || String(err) });
+    }
+  })();
+  return true; // keep the message port open for the async response
 });
