@@ -289,6 +289,10 @@ body:not(.wt-annotate-mode) .wt-fixed-bubble {
 
 .wt-style-italic { font-style: italic; }
 
+.wt-style-align[data-align="left"]   { font-size: 11px; letter-spacing: -1px; }
+.wt-style-align[data-align="center"] { font-size: 11px; letter-spacing: -1px; }
+.wt-style-align[data-align="right"]  { font-size: 11px; letter-spacing: -1px; }
+
 .wt-swatch-wrap {
   position: relative;
   cursor: pointer;
@@ -478,6 +482,20 @@ body:not(.wt-annotate-mode) .wt-fixed-bubble {
 }
 
 .wt-btn-delete:hover { background: #fee2e2; }
+
+.wt-btn-reset {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #64748b;
+  margin-right: auto;
+  transition: background 0.15s;
+}
+.wt-btn-reset:hover { background: #f1f5f9; color: #334155; }
 
 /* ── Bubble drag/resize handles ───────────────────────────────────────── */
 
@@ -954,3 +972,18 @@ body.wt-panel-open #wt-toggle-btn {
   pointer-events: auto;
   cursor: pointer;
 }
+
+/* ── Preview box ───────────────────────────────────────────────────────── */
+
+
+/* ── Rotate row ────────────────────────────────────────────────────────── */
+
+.wt-rotate-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 8px;
+  border-top: 1px solid #f1f5f9;
+}
+.wt-style-rotate { flex: 1; cursor: pointer; accent-color: #6366f1; }
+.wt-rotate-val { font-size: 11px; color: #64748b; width: 30px; text-align: right; flex-shrink: 0; }
