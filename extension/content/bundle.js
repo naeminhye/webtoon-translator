@@ -329,6 +329,11 @@ class FixedOverlayLayer {
         b.style.textShadow = 'none';
       }
       if (s.fontFamily) b.style.fontFamily = `'${s.fontFamily}', system-ui, sans-serif`;
+      if (s.textAlign) {
+        b.style.textAlign      = s.textAlign;
+        b.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
+        b.style.alignItems     = 'flex-start';
+      }
     }
     const span = document.createElement('span');
     span.textContent = ann.translatedText;
@@ -595,6 +600,11 @@ class OverlayRenderer {
         b.style.fontFamily = `'${s.fontFamily}', system-ui, sans-serif`;
         loadGoogleFont(s.fontFamily);
       }
+      if (s.textAlign) {
+        b.style.textAlign      = s.textAlign;
+        b.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
+        b.style.alignItems     = 'flex-start';
+      }
     }
     const span = document.createElement('span');
     span.textContent = ann.translatedText;
@@ -647,7 +657,7 @@ class InputDialog {
       fontSize: 20, bold: false, italic: false,
       color: '#1a1a2e', bg: '#ffffff', noBg: false,
       stroke: false, strokeColor: '#ffffff', strokeWidth: 1,
-      fontFamily: '',
+      fontFamily: '', textAlign: 'center',
       ...(InputDialog._lastStyle || {}),
     };
     this._build();
@@ -671,7 +681,7 @@ class InputDialog {
       this._style = {
         fontSize: 20, bold: false, italic: false,
         color: '#1a1a2e', bg: '#ffffff', noBg: false,
-        stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '',
+        stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '', textAlign: 'center',
         ...(InputDialog._lastStyle || {}),
         ...(prefill.style || {}),
       };
@@ -797,6 +807,10 @@ class InputDialog {
           <input class="wt-style-stroke-color" type="color" value="#ffffff" />
         </label>
         <input class="wt-style-stroke-width" type="number" min="1" max="6" value="1" title="Stroke px" style="width:36px" />
+        <div class="wt-style-divider"></div>
+        <button class="wt-style-btn wt-style-align" data-align="left"   title="Align left"><svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor"><rect x="0" y="1" width="13" height="2"/><rect x="0" y="5" width="9"  height="2"/><rect x="0" y="9" width="11" height="2"/></svg></button>
+        <button class="wt-style-btn wt-style-align" data-align="center" title="Align center"><svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor"><rect x="0" y="1" width="13" height="2"/><rect x="2" y="5" width="9"  height="2"/><rect x="1" y="9" width="11" height="2"/></svg></button>
+        <button class="wt-style-btn wt-style-align" data-align="right"  title="Align right"><svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor"><rect x="0" y="1" width="13" height="2"/><rect x="4" y="5" width="9"  height="2"/><rect x="2" y="9" width="11" height="2"/></svg></button>
       </div>
       <div class="wt-font-row">
         <label class="wt-dialog-label" style="margin:0;flex-shrink:0">Font</label>
@@ -898,6 +912,12 @@ class InputDialog {
       this._style.fontFamily = e.target.value;
       if (e.target.value) loadGoogleFont(e.target.value);
     });
+    this._el.querySelectorAll('.wt-style-align').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._style.textAlign = btn.dataset.align;
+        this._el.querySelectorAll('.wt-style-align').forEach(b => b.classList.toggle('active', b === btn));
+      });
+    });
 
     const translateBtn = this._el.querySelector('.wt-btn-gtranslate');
 
@@ -946,6 +966,8 @@ class InputDialog {
     this._el.querySelector('#wt-dot-stroke').style.background = this._style.strokeColor || '#ffffff';
     this._el.querySelector('.wt-style-stroke-width').value = this._style.strokeWidth || 1;
     this._el.querySelector('.wt-style-font').value = this._style.fontFamily || '';
+    const align = this._style.textAlign || 'center';
+    this._el.querySelectorAll('.wt-style-align').forEach(b => b.classList.toggle('active', b.dataset.align === align));
   }
 
   _makeDraggable(handle) {

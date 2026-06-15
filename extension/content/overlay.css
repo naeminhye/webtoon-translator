@@ -289,6 +289,10 @@ body:not(.wt-annotate-mode) .wt-fixed-bubble {
 
 .wt-style-italic { font-style: italic; }
 
+.wt-style-align[data-align="left"]   { font-size: 11px; letter-spacing: -1px; }
+.wt-style-align[data-align="center"] { font-size: 11px; letter-spacing: -1px; }
+.wt-style-align[data-align="right"]  { font-size: 11px; letter-spacing: -1px; }
+
 .wt-swatch-wrap {
   position: relative;
   cursor: pointer;
