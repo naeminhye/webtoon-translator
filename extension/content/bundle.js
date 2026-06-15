@@ -23,6 +23,12 @@ const CHUNK_SIZE = 64 * 1024;
 
 async function hashImage(img) {
   if (img.__wtHash) return img.__wtHash;
+  // Non-img elements (e.g., Bomtoon canvas containers) carry .src set by the adapter
+  const src = img.src || img.dataset.src || '';
+  if (!src.startsWith('http') && !src.startsWith('blob:') && src) {
+    img.__wtHash = `bomtoon:${src}`;
+    return img.__wtHash;
+  }
 
   // Kakao CDN uses signed URLs with short-lived tokens — the `kid` param
   // is stable per image, so extract it as the hash instead of fetching bytes.
@@ -40,7 +46,7 @@ async function hashImage(img) {
   // fallback anyway. Go straight there: same key format (compatible with
   // existing saved annotations), no console CORS spam, no wasted fetches.
   // Naver image URLs are stable per chapter so this stays a reliable identity.
-  if (img.src.includes('pstatic.net')) {
+  if (img.src.includes('pstatic.net') || img.src.includes('balcony.studio') || img.src.includes('bomtoon')) {
     const urlHash = img.src.split('?')[0].split('/').slice(-2).join('/');
     img.__wtHash  = `url:${urlHash}`;
     return img.__wtHash;
@@ -2111,6 +2117,8 @@ function showToast(text, color = '#22c55e', duration = 3000) {
 // https://www.bomtoon.com/viewer/{titleId}/{chapterId}
 
 class BomtoonAdapter {
+  get usesFixedOverlay() { return true; }
+
   detect() {
     return location.hostname === 'www.bomtoon.com' &&
            location.pathname.startsWith('/viewer/');
@@ -2124,37 +2132,55 @@ class BomtoonAdapter {
     return { site: 'bomtoon', titleId, chapterId };
   }
 
+  // Extract image URLs from __NEXT_DATA__ so we can identify panels by URL.
+  _getImageUrls() {
+    try {
+      const data = JSON.parse(document.getElementById('__NEXT_DATA__')?.textContent || '{}');
+      const images = data?.props?.pageProps?.episodeData?.result?.images || [];
+      return images.map(i => i.imagePath || i.url || '').filter(Boolean);
+    } catch { return []; }
+  }
+
   getImages() {
-    // Bomtoon renders panel images vertically; pick large images inside the viewer
-    const MIN_W = 200;
-    const viewer = document.querySelector('.viewer_wrap')
-                || document.querySelector('.view_content')
-                || document.querySelector('[class*="viewer"]')
-                || document.querySelector('[class*="view"]')
-                || document.body;
-    return [...viewer.querySelectorAll('img')].filter(img => {
-      const w = img.naturalWidth || img.offsetWidth || img.width;
-      if (w < MIN_W) return false;
-      const src = img.src || '';
-      if (!src || src.startsWith('data:') || src.includes('logo') || src.includes('icon')) return false;
-      return true;
+    // Bomtoon renders panels as <canvas> inside panel-container divs.
+    // Return those container divs as pseudo-"images" for FixedOverlayLayer.
+    // We attach a .src property from __NEXT_DATA__ URLs for hashing.
+    const urls = this._getImageUrls();
+
+    // Prefer the known stable class; fall back to width-attribute containers
+    let containers = [...document.querySelectorAll('div[width][height][class]')]
+      .filter(el => {
+        const w = parseInt(el.getAttribute('width') || '0', 10);
+        return w >= 200;
+      });
+
+    // Fall back: any div that has a canvas child with large dimensions
+    if (containers.length === 0) {
+      containers = [...document.querySelectorAll('canvas')]
+        .filter(c => (c.width || 0) >= 200)
+        .map(c => c.parentElement)
+        .filter(Boolean);
+    }
+
+    // Annotate each container with a stable .src for hashImage
+    containers.forEach((el, i) => {
+      if (!el.src) el.src = urls[i] || `bomtoon-panel-${i}`;
     });
+
+    return containers;
   }
 
   watchNewImages(callback) {
-    const root = document.querySelector('.viewer_wrap')
-              || document.querySelector('.view_content')
-              || document.querySelector('[class*="viewer"]')
-              || document.body;
+    const root = document.body;
     let debounce = null;
     const observer = new MutationObserver(() => {
       clearTimeout(debounce);
       debounce = setTimeout(() => {
         const imgs = this.getImages();
         if (imgs.length) callback(imgs);
-      }, 150);
+      }, 300);
     });
-    observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
+    observer.observe(root, { childList: true, subtree: true });
     return () => observer.disconnect();
   }
 }
