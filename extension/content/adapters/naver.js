@@ -1,15 +1,20 @@
 /**
  * content/adapters/naver.js
- * Adapter for Naver Webtoon: https://comic.naver.com/webtoon/detail?titleId=X&no=Y
+ * Adapter for Naver Webtoon:
+ *   https://comic.naver.com/webtoon/detail?titleId=X&no=Y
+ *   https://comic.naver.com/challenge/detail?titleId=X&no=Y
+ *   https://comic.naver.com/bestChallenge/detail?titleId=X&no=Y
  */
 
 import { SiteAdapter } from './base.js';
 import { SITES } from '../types.js';
 
+const NAVER_PATHS = ['/webtoon/detail', '/challenge/detail', '/bestChallenge/detail'];
+
 export class NaverAdapter extends SiteAdapter {
   detect() {
     return location.hostname === 'comic.naver.com' &&
-           location.pathname.startsWith('/webtoon/detail');
+           NAVER_PATHS.some(p => location.pathname.startsWith(p));
   }
 
   getChapterMeta() {
