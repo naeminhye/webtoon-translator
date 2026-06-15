@@ -33,7 +33,11 @@
     {
       "matches": [
         "https://comic.naver.com/webtoon/detail*",
+        "https://comic.naver.com/challenge/detail*",
+        "https://comic.naver.com/bestChallenge/detail*",
         "https://m.comic.naver.com/webtoon/detail*",
+        "https://m.comic.naver.com/challenge/detail*",
+        "https://m.comic.naver.com/bestChallenge/detail*",
         "https://ridibooks.com/books/*/view",
         "https://page.kakao.com/content/*",
         "https://www.bomtoon.com/viewer/*"
