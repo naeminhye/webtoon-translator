@@ -23,6 +23,12 @@ const CHUNK_SIZE = 64 * 1024;
 
 async function hashImage(img) {
   if (img.__wtHash) return img.__wtHash;
+  // Non-img elements (e.g., Bomtoon canvas containers) carry .src set by the adapter
+  const src = img.src || img.dataset.src || '';
+  if (!src.startsWith('http') && !src.startsWith('blob:') && src) {
+    img.__wtHash = `bomtoon:${src}`;
+    return img.__wtHash;
+  }
 
   // Kakao CDN uses signed URLs with short-lived tokens — the `kid` param
   // is stable per image, so extract it as the hash instead of fetching bytes.
@@ -40,7 +46,7 @@ async function hashImage(img) {
   // fallback anyway. Go straight there: same key format (compatible with
   // existing saved annotations), no console CORS spam, no wasted fetches.
   // Naver image URLs are stable per chapter so this stays a reliable identity.
-  if (img.src.includes('pstatic.net')) {
+  if (img.src.includes('pstatic.net') || img.src.includes('balcony.studio') || img.src.includes('bomtoon')) {
     const urlHash = img.src.split('?')[0].split('/').slice(-2).join('/');
     img.__wtHash  = `url:${urlHash}`;
     return img.__wtHash;
@@ -159,12 +165,18 @@ class FixedOverlayLayer {
     this._el.style.display = 'none';
     document.body.appendChild(this._el);
 
-    // Forward wheel events to the element underneath so the page can still scroll.
-    // pointer-events:auto on the overlay swallows them otherwise.
-    // Guard against re-dispatched (non-trusted) events to prevent infinite recursion
-    // when a bubble child is inside the overlay and the bubbling event re-triggers this listener.
+    // Forward wheel events so the page can still scroll while the overlay is active.
+    // Ridi uses simplebar — its custom scroll container doesn't respond to re-dispatched
+    // WheelEvents (isTrusted:false), so we scroll it directly. Other sites fall back to
+    // the re-dispatch trick. Guard against non-trusted events to avoid infinite recursion.
     this._el.addEventListener('wheel', (e) => {
       if (!e.isTrusted) return;
+      const simplebarWrapper = document.querySelector('.simplebar-content-wrapper');
+      if (simplebarWrapper) {
+        simplebarWrapper.scrollTop  += e.deltaY;
+        simplebarWrapper.scrollLeft += e.deltaX;
+        return;
+      }
       this._el.style.pointerEvents = 'none';
       const target = document.elementFromPoint(e.clientX, e.clientY);
       this._el.style.pointerEvents = 'auto';
@@ -1011,6 +1023,8 @@ class InputDialog {
   _firePreview() {
     if (!this._onPreview) return;
     const text = this._el.querySelector('.wt-input-translated').value;
+    // Only show preview when the user has actually typed something
+    if (!text.trim()) { this._onCancel?.(); return; }
     this._onPreview(text, { ...this._style });
   }
 
@@ -1927,10 +1941,12 @@ async function ocrClips(clips) {
 function stitchClips(clips) {
   try {
     const items = clips.map(({ img, x, y, w, h, dispW }) => {
-      const px = (x / 100) * img.naturalWidth;
-      const py = (y / 100) * img.naturalHeight;
-      const pw = Math.max(1, (w / 100) * img.naturalWidth);
-      const ph = Math.max(1, (h / 100) * img.naturalHeight);
+      const nw = img.naturalWidth  || img.width  || img.offsetWidth;
+      const nh = img.naturalHeight || img.height || img.offsetHeight;
+      const px = (x / 100) * nw;
+      const py = (y / 100) * nh;
+      const pw = Math.max(1, (w / 100) * nw);
+      const ph = Math.max(1, (h / 100) * nh);
       // dispW is the display-pixel width; use it to normalize scale
       const dw = dispW || pw;
       return { img, px, py, pw, ph, dw };
@@ -2002,10 +2018,12 @@ async function autoTranslate(text) {
 }
 
 function _cropCanvas(img, bbox) {
-  const sx = (bbox.x / 100) * img.naturalWidth;
-  const sy = (bbox.y / 100) * img.naturalHeight;
-  const sw = Math.max(1, (bbox.w / 100) * img.naturalWidth);
-  const sh = Math.max(1, (bbox.h / 100) * img.naturalHeight);
+  const nw = img.naturalWidth  || img.width  || img.offsetWidth;
+  const nh = img.naturalHeight || img.height || img.offsetHeight;
+  const sx = (bbox.x / 100) * nw;
+  const sy = (bbox.y / 100) * nh;
+  const sw = Math.max(1, (bbox.w / 100) * nw);
+  const sh = Math.max(1, (bbox.h / 100) * nh);
   const scale = sw < 400 ? Math.min(3, 400 / sw) : 1;
   const canvas = document.createElement('canvas');
   canvas.width  = Math.round(sw * scale);
@@ -2031,10 +2049,12 @@ function strokeTextShadow(color, width) {
 
 function detectBboxColors(imageEl, bbox) {
   try {
-    const sx = (bbox.x / 100) * imageEl.naturalWidth;
-    const sy = (bbox.y / 100) * imageEl.naturalHeight;
-    const sw = Math.max(1, (bbox.w / 100) * imageEl.naturalWidth);
-    const sh = Math.max(1, (bbox.h / 100) * imageEl.naturalHeight);
+    const nw = imageEl.naturalWidth  || imageEl.width  || imageEl.offsetWidth;
+    const nh = imageEl.naturalHeight || imageEl.height || imageEl.offsetHeight;
+    const sx = (bbox.x / 100) * nw;
+    const sy = (bbox.y / 100) * nh;
+    const sw = Math.max(1, (bbox.w / 100) * nw);
+    const sh = Math.max(1, (bbox.h / 100) * nh);
     const cw = Math.min(sw, 120), ch = Math.min(sh, 120);
     const canvas = document.createElement('canvas');
     canvas.width = cw; canvas.height = ch;
@@ -2101,9 +2121,69 @@ function showToast(text, color = '#22c55e', duration = 3000) {
   setTimeout(() => t.remove(), duration);
 }
 
+// ── BomtoonAdapter ────────────────────────────────────────────────────────────
+// https://www.bomtoon.com/viewer/{titleId}/{chapterId}
+
+class BomtoonAdapter {
+  get usesFixedOverlay() { return true; }
+
+  detect() {
+    return location.hostname === 'www.bomtoon.com' &&
+           location.pathname.startsWith('/viewer/');
+  }
+
+  getChapterMeta() {
+    const parts = location.pathname.split('/').filter(Boolean);
+    // /viewer/{titleId}/{chapterId}
+    const titleId   = parts[1] || 'unknown';
+    const chapterId = parts[2] || 'unknown';
+    return { site: 'bomtoon', titleId, chapterId };
+  }
+
+  // Extract image URLs from __NEXT_DATA__ so we can identify panels by URL.
+  _getImageUrls() {
+    try {
+      const data = JSON.parse(document.getElementById('__NEXT_DATA__')?.textContent || '{}');
+      const images = data?.props?.pageProps?.episodeData?.result?.images || [];
+      return images.map(i => i.imagePath || i.url || '').filter(Boolean);
+    } catch { return []; }
+  }
+
+  getImages() {
+    // Bomtoon renders panels as <canvas> elements (scrambled WebP tiles).
+    // Return the canvas elements directly so drawImage() works for OCR/cropping.
+    // We attach a .src property (JS-only) from __NEXT_DATA__ URLs for hashing.
+    const urls = this._getImageUrls();
+
+    const canvases = [...document.querySelectorAll('canvas')]
+      .filter(c => (c.width || 0) >= 200 && (c.height || 0) >= 200);
+
+    // Annotate each canvas with a stable .src for hashImage
+    canvases.forEach((el, i) => {
+      if (!el.src) el.src = urls[i] || `bomtoon-panel-${i}`;
+    });
+
+    return canvases;
+  }
+
+  watchNewImages(callback) {
+    const root = document.body;
+    let debounce = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        const imgs = this.getImages();
+        if (imgs.length) callback(imgs);
+      }, 300);
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter()];
+const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter(), new BomtoonAdapter()];
 
 function findAdapter() { return ADAPTERS.find(a => a.detect()); }
 

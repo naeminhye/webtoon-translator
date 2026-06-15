@@ -11,6 +11,7 @@
     "https://m.comic.naver.com/*",
     "https://ridibooks.com/*",
     "https://page.kakao.com/*",
+    "https://www.bomtoon.com/*",
     "https://*.pstatic.net/*",
     "https://api.ocr.space/*",
     "https://*.supabase.co/*",
@@ -34,7 +35,8 @@
         "https://comic.naver.com/webtoon/detail*",
         "https://m.comic.naver.com/webtoon/detail*",
         "https://ridibooks.com/books/*/view",
-        "https://page.kakao.com/content/*"
+        "https://page.kakao.com/content/*",
+        "https://www.bomtoon.com/viewer/*"
       ],
       "js": ["content/bundle.js"],
       "css": ["content/overlay.css"],
