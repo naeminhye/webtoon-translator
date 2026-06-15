@@ -958,3 +958,41 @@ body.wt-panel-open #wt-toggle-btn {
   pointer-events: auto;
   cursor: pointer;
 }
+
+/* ── Preview box ───────────────────────────────────────────────────────── */
+
+.wt-preview-wrap { margin-bottom: 10px; }
+.wt-preview-box {
+  min-height: 80px;
+  border: 1.5px dashed #e2e8f0;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 8px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.95);
+  box-sizing: border-box;
+  transition: background 0.15s;
+}
+.wt-preview-text {
+  word-break: break-word;
+  white-space: pre-wrap;
+  line-height: 1.45;
+  display: block;
+  width: 100%;
+  transform-origin: center center;
+  transition: transform 0.1s ease;
+}
+
+/* ── Rotate row ────────────────────────────────────────────────────────── */
+
+.wt-rotate-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 8px;
+  border-top: 1px solid #f1f5f9;
+}
+.wt-style-rotate { flex: 1; cursor: pointer; accent-color: #6366f1; }
+.wt-rotate-val { font-size: 11px; color: #64748b; width: 30px; text-align: right; flex-shrink: 0; }

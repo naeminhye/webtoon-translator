@@ -333,6 +333,7 @@ class FixedOverlayLayer {
         b.style.textAlign      = s.textAlign;
         b.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
       }
+      if (s.rotate) b.style.transform = `rotate(${s.rotate}deg)`;
     }
     const span = document.createElement('span');
     span.textContent = ann.translatedText;
@@ -603,6 +604,7 @@ class OverlayRenderer {
         b.style.textAlign      = s.textAlign;
         b.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
       }
+      if (s.rotate) b.style.transform = `rotate(${s.rotate}deg)`;
     }
     const span = document.createElement('span');
     span.textContent = ann.translatedText;
@@ -655,7 +657,7 @@ class InputDialog {
       fontSize: 20, bold: false, italic: false,
       color: '#1a1a2e', bg: '#ffffff', noBg: false,
       stroke: false, strokeColor: '#ffffff', strokeWidth: 1,
-      fontFamily: '', textAlign: 'center',
+      fontFamily: '', textAlign: 'center', rotate: 0,
       ...(InputDialog._lastStyle || {}),
     };
     this._build();
@@ -679,7 +681,7 @@ class InputDialog {
       this._style = {
         fontSize: 20, bold: false, italic: false,
         color: '#1a1a2e', bg: '#ffffff', noBg: false,
-        stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '', textAlign: 'center',
+        stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '', textAlign: 'center', rotate: 0,
         ...(InputDialog._lastStyle || {}),
         ...(prefill.style || {}),
       };
@@ -843,7 +845,18 @@ class InputDialog {
           </optgroup>
         </select>
       </div>
-      
+      <div class="wt-rotate-row">
+        <label class="wt-dialog-label" style="margin:0;flex-shrink:0">Rotate</label>
+        <input class="wt-style-rotate" type="range" min="-180" max="180" value="0" step="1" />
+        <span class="wt-rotate-val">0°</span>
+      </div>
+      <div class="wt-preview-wrap">
+        <label class="wt-dialog-label">Preview</label>
+        <div class="wt-preview-box">
+          <span class="wt-preview-text"></span>
+        </div>
+      </div>
+
       <div class="wt-dialog-actions">
         <button class="wt-btn-delete" style="display:none">Delete</button>
         <button class="wt-btn-cancel">Cancel</button>
@@ -874,47 +887,69 @@ class InputDialog {
     // Style bar
     this._el.querySelector('.wt-style-fontsize').addEventListener('input', (e) => {
       this._style.fontSize = parseInt(e.target.value) || 13;
+      this._updatePreview();
     });
     this._el.querySelector('.wt-style-bold').addEventListener('click', () => {
       this._style.bold = !this._style.bold;
       this._el.querySelector('.wt-style-bold').classList.toggle('active', this._style.bold);
+      this._updatePreview();
     });
     this._el.querySelector('.wt-style-italic').addEventListener('click', () => {
       this._style.italic = !this._style.italic;
       this._el.querySelector('.wt-style-italic').classList.toggle('active', this._style.italic);
+      this._updatePreview();
     });
     this._el.querySelector('.wt-style-color').addEventListener('input', (e) => {
       this._style.color = e.target.value;
       this._el.querySelector('#wt-dot-color').style.background = e.target.value;
+      this._updatePreview();
     });
     this._el.querySelector('.wt-style-bg').addEventListener('input', (e) => {
       this._style.bg = e.target.value;
       this._el.querySelector('#wt-dot-bg').style.background = e.target.value;
       this._el.querySelector('.wt-style-nobg').checked = false;
       this._style.noBg = false;
+      this._updatePreview();
     });
     this._el.querySelector('.wt-style-nobg').addEventListener('change', (e) => {
       this._style.noBg = e.target.checked;
+      this._updatePreview();
     });
     this._el.querySelector('.wt-style-stroke-on').addEventListener('change', (e) => {
       this._style.stroke = e.target.checked;
+      this._updatePreview();
     });
     this._el.querySelector('.wt-style-stroke-color').addEventListener('input', (e) => {
       this._style.strokeColor = e.target.value;
       this._el.querySelector('#wt-dot-stroke').style.background = e.target.value;
+      this._updatePreview();
     });
     this._el.querySelector('.wt-style-stroke-width').addEventListener('input', (e) => {
       this._style.strokeWidth = parseInt(e.target.value) || 1;
+      this._updatePreview();
     });
     this._el.querySelector('.wt-style-font').addEventListener('change', (e) => {
       this._style.fontFamily = e.target.value;
       if (e.target.value) loadGoogleFont(e.target.value);
+      this._updatePreview();
     });
     this._el.querySelectorAll('.wt-style-align').forEach(btn => {
       btn.addEventListener('click', () => {
         this._style.textAlign = btn.dataset.align;
         this._el.querySelectorAll('.wt-style-align').forEach(b => b.classList.toggle('active', b === btn));
+        this._updatePreview();
       });
+    });
+    this._el.querySelector('.wt-style-rotate').addEventListener('input', (e) => {
+      this._style.rotate = parseInt(e.target.value) || 0;
+      this._el.querySelector('.wt-rotate-val').textContent = `${this._style.rotate}°`;
+      this._updatePreview();
+    });
+    this._el.querySelector('.wt-style-rotate').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); this._save(); }
+    });
+    this._el.querySelector('.wt-input-translated').addEventListener('input', () => {
+      this._updatePreview();
     });
 
     const translateBtn = this._el.querySelector('.wt-btn-gtranslate');
@@ -966,6 +1001,36 @@ class InputDialog {
     this._el.querySelector('.wt-style-font').value = this._style.fontFamily || '';
     const align = this._style.textAlign || 'center';
     this._el.querySelectorAll('.wt-style-align').forEach(b => b.classList.toggle('active', b.dataset.align === align));
+    const rotate = this._style.rotate || 0;
+    this._el.querySelector('.wt-style-rotate').value = rotate;
+    this._el.querySelector('.wt-rotate-val').textContent = `${rotate}°`;
+    this._updatePreview();
+  }
+
+  _updatePreview() {
+    const s = this._style;
+    const box = this._el.querySelector('.wt-preview-box');
+    const text = this._el.querySelector('.wt-preview-text');
+    const val = this._el.querySelector('.wt-input-translated').value || 'Preview text';
+    text.textContent = val;
+    box.style.fontSize   = `${s.fontSize || 20}px`;
+    box.style.fontWeight = s.bold   ? 'bold'   : 'normal';
+    box.style.fontStyle  = s.italic ? 'italic' : 'normal';
+    box.style.color      = s.color  || '#1a1a2e';
+    box.style.background = s.noBg   ? 'transparent' : (s.bg || 'rgba(255,255,255,0.95)');
+    if (s.stroke && s.strokeColor) {
+      text.style.textShadow = strokeTextShadow(s.strokeColor, s.strokeWidth || 1);
+    } else {
+      text.style.textShadow = 'none';
+    }
+    if (s.fontFamily) {
+      box.style.fontFamily = `'${s.fontFamily}', system-ui, sans-serif`;
+    } else {
+      box.style.fontFamily = '';
+    }
+    box.style.textAlign      = s.textAlign || 'center';
+    box.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
+    text.style.transform = s.rotate ? `rotate(${s.rotate}deg)` : '';
   }
 
   _makeDraggable(handle) {
