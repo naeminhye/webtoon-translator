@@ -483,6 +483,20 @@ body:not(.wt-annotate-mode) .wt-fixed-bubble {
 
 .wt-btn-delete:hover { background: #fee2e2; }
 
+.wt-btn-reset {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #64748b;
+  margin-right: auto;
+  transition: background 0.15s;
+}
+.wt-btn-reset:hover { background: #f1f5f9; color: #334155; }
+
 /* ── Bubble drag/resize handles ───────────────────────────────────────── */
 
 .wt-bubble-editing {
@@ -961,29 +975,6 @@ body.wt-panel-open #wt-toggle-btn {
 
 /* ── Preview box ───────────────────────────────────────────────────────── */
 
-.wt-preview-wrap { margin-bottom: 10px; }
-.wt-preview-box {
-  min-height: 80px;
-  border: 1.5px dashed #e2e8f0;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px 8px;
-  overflow: hidden;
-  background: rgba(255,255,255,0.95);
-  box-sizing: border-box;
-  transition: background 0.15s;
-}
-.wt-preview-text {
-  word-break: break-word;
-  white-space: pre-wrap;
-  line-height: 1.45;
-  display: block;
-  width: 100%;
-  transform-origin: center center;
-  transition: transform 0.1s ease;
-}
 
 /* ── Rotate row ────────────────────────────────────────────────────────── */
 

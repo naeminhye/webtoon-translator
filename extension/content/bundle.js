@@ -667,6 +667,8 @@ class InputDialog {
     // SPA sites (Kakao/Next.js) can wipe body children on re-render — re-attach
     if (!this._el.isConnected) document.body.appendChild(this._el);
     this._isEdit = !!prefill.translatedText;
+    this._onPreview = prefill.onPreview || null;
+    this._onCancel  = prefill.onCancel  || null;
     // Update title and show/hide delete button
     this._el.querySelector('.wt-dialog-title').textContent =
       this._isEdit ? 'Edit translation' : 'Add translation';
@@ -685,6 +687,9 @@ class InputDialog {
         ...(InputDialog._lastStyle || {}),
         ...(prefill.style || {}),
       };
+      // Snapshot for Reset button
+      this._initText  = prefill.translatedText || '';
+      this._initStyle = { ...this._style };
       this._syncStyleUI();
 
       // Store bbox for resize
@@ -850,15 +855,9 @@ class InputDialog {
         <input class="wt-style-rotate" type="range" min="-180" max="180" value="0" step="1" />
         <span class="wt-rotate-val">0°</span>
       </div>
-      <div class="wt-preview-wrap">
-        <label class="wt-dialog-label">Preview</label>
-        <div class="wt-preview-box">
-          <span class="wt-preview-text"></span>
-        </div>
-      </div>
-
       <div class="wt-dialog-actions">
         <button class="wt-btn-delete" style="display:none">Delete</button>
+        <button class="wt-btn-reset" style="display:none" title="Reset to state before opening">Reset</button>
         <button class="wt-btn-cancel">Cancel</button>
         <button class="wt-btn-save">Save</button>
       </div>`;
@@ -873,6 +872,7 @@ class InputDialog {
     this._el.querySelector('.wt-btn-cancel').addEventListener('click', () => this._cancel());
     this._el.querySelector('.wt-btn-save').addEventListener('click',   () => this._save());
     this._el.querySelector('.wt-btn-delete').addEventListener('click', () => this._delete());
+    this._el.querySelector('.wt-btn-reset').addEventListener('click',  () => this._reset());
     this._el.querySelector('.wt-input-translated').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this._save(); }
     });
@@ -887,69 +887,69 @@ class InputDialog {
     // Style bar
     this._el.querySelector('.wt-style-fontsize').addEventListener('input', (e) => {
       this._style.fontSize = parseInt(e.target.value) || 13;
-      this._updatePreview();
+      this._firePreview();
     });
     this._el.querySelector('.wt-style-bold').addEventListener('click', () => {
       this._style.bold = !this._style.bold;
       this._el.querySelector('.wt-style-bold').classList.toggle('active', this._style.bold);
-      this._updatePreview();
+      this._firePreview();
     });
     this._el.querySelector('.wt-style-italic').addEventListener('click', () => {
       this._style.italic = !this._style.italic;
       this._el.querySelector('.wt-style-italic').classList.toggle('active', this._style.italic);
-      this._updatePreview();
+      this._firePreview();
     });
     this._el.querySelector('.wt-style-color').addEventListener('input', (e) => {
       this._style.color = e.target.value;
       this._el.querySelector('#wt-dot-color').style.background = e.target.value;
-      this._updatePreview();
+      this._firePreview();
     });
     this._el.querySelector('.wt-style-bg').addEventListener('input', (e) => {
       this._style.bg = e.target.value;
       this._el.querySelector('#wt-dot-bg').style.background = e.target.value;
       this._el.querySelector('.wt-style-nobg').checked = false;
       this._style.noBg = false;
-      this._updatePreview();
+      this._firePreview();
     });
     this._el.querySelector('.wt-style-nobg').addEventListener('change', (e) => {
       this._style.noBg = e.target.checked;
-      this._updatePreview();
+      this._firePreview();
     });
     this._el.querySelector('.wt-style-stroke-on').addEventListener('change', (e) => {
       this._style.stroke = e.target.checked;
-      this._updatePreview();
+      this._firePreview();
     });
     this._el.querySelector('.wt-style-stroke-color').addEventListener('input', (e) => {
       this._style.strokeColor = e.target.value;
       this._el.querySelector('#wt-dot-stroke').style.background = e.target.value;
-      this._updatePreview();
+      this._firePreview();
     });
     this._el.querySelector('.wt-style-stroke-width').addEventListener('input', (e) => {
       this._style.strokeWidth = parseInt(e.target.value) || 1;
-      this._updatePreview();
+      this._firePreview();
     });
     this._el.querySelector('.wt-style-font').addEventListener('change', (e) => {
       this._style.fontFamily = e.target.value;
       if (e.target.value) loadGoogleFont(e.target.value);
-      this._updatePreview();
+      this._firePreview();
     });
     this._el.querySelectorAll('.wt-style-align').forEach(btn => {
       btn.addEventListener('click', () => {
         this._style.textAlign = btn.dataset.align;
         this._el.querySelectorAll('.wt-style-align').forEach(b => b.classList.toggle('active', b === btn));
-        this._updatePreview();
+        this._firePreview();
       });
     });
     this._el.querySelector('.wt-style-rotate').addEventListener('input', (e) => {
       this._style.rotate = parseInt(e.target.value) || 0;
       this._el.querySelector('.wt-rotate-val').textContent = `${this._style.rotate}°`;
-      this._updatePreview();
+      this._firePreview();
     });
     this._el.querySelector('.wt-style-rotate').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); this._save(); }
     });
     this._el.querySelector('.wt-input-translated').addEventListener('input', () => {
-      this._updatePreview();
+      this._firePreview();
     });
 
     const translateBtn = this._el.querySelector('.wt-btn-gtranslate');
@@ -1004,33 +1004,21 @@ class InputDialog {
     const rotate = this._style.rotate || 0;
     this._el.querySelector('.wt-style-rotate').value = rotate;
     this._el.querySelector('.wt-rotate-val').textContent = `${rotate}°`;
-    this._updatePreview();
+    this._el.querySelector('.wt-btn-reset').style.display = this._onPreview ? 'block' : 'none';
+    this._firePreview();
   }
 
-  _updatePreview() {
-    const s = this._style;
-    const box = this._el.querySelector('.wt-preview-box');
-    const text = this._el.querySelector('.wt-preview-text');
-    const val = this._el.querySelector('.wt-input-translated').value || 'Preview text';
-    text.textContent = val;
-    box.style.fontSize   = `${s.fontSize || 20}px`;
-    box.style.fontWeight = s.bold   ? 'bold'   : 'normal';
-    box.style.fontStyle  = s.italic ? 'italic' : 'normal';
-    box.style.color      = s.color  || '#1a1a2e';
-    box.style.background = s.noBg   ? 'transparent' : (s.bg || 'rgba(255,255,255,0.95)');
-    if (s.stroke && s.strokeColor) {
-      text.style.textShadow = strokeTextShadow(s.strokeColor, s.strokeWidth || 1);
-    } else {
-      text.style.textShadow = 'none';
-    }
-    if (s.fontFamily) {
-      box.style.fontFamily = `'${s.fontFamily}', system-ui, sans-serif`;
-    } else {
-      box.style.fontFamily = '';
-    }
-    box.style.textAlign      = s.textAlign || 'center';
-    box.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
-    text.style.transform = s.rotate ? `rotate(${s.rotate}deg)` : '';
+  _firePreview() {
+    if (!this._onPreview) return;
+    const text = this._el.querySelector('.wt-input-translated').value;
+    this._onPreview(text, { ...this._style });
+  }
+
+  _reset() {
+    this._el.querySelector('.wt-input-translated').value = this._initText;
+    this._style = { ...this._initStyle };
+    this._syncStyleUI();
+    this._firePreview();
   }
 
   _makeDraggable(handle) {
@@ -1063,6 +1051,8 @@ class InputDialog {
     const resizedBbox = this._isEdit ? this._getBboxFromResize() : null;
     InputDialog._lastStyle = { ...this._style };
     this.hide();
+    this._onPreview = null;
+    this._onCancel  = null;
     this._resolve?.({ originalText, translatedText, style: { ...this._style }, resizedBbox });
     this._resolve = null;
   }
@@ -1076,6 +1066,9 @@ class InputDialog {
 
   _cancel() {
     this.hide();
+    this._onCancel?.();
+    this._onPreview = null;
+    this._onCancel  = null;
     this._resolve?.(null);
     this._resolve = null;
   }
@@ -2438,17 +2431,33 @@ function bootForPage() {
       x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
       y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
     };
-    const colors = detectBboxColors(imageEl, bbox);
+    const colors    = detectBboxColors(imageEl, bbox);
     const colorStyle = colors ? { color: colors.textColor, bg: colors.bgColor, noBg: false } : {};
-    const resultPromise = dialog.show(screenPos, { style: colorStyle });
-    const ocrSession    = dialog.setOcrPending();
+    // Hash early so preview callback can use it immediately
+    const imageHash = await hashImage(imageEl);
+    let tmpAnnKey = null;
+    const resultPromise = dialog.show(screenPos, {
+      style: colorStyle,
+      onPreview: (text, style) => {
+        const tmpAnn = { imageHash, imageIndex, bbox, originalText: '', translatedText: text || ' ', style, language: 'vi', createdAt: new Date().toISOString() };
+        tmpAnnKey = `${imageHash}::${bbox.x.toFixed(1)}::${bbox.y.toFixed(1)}`;
+        if (isKakao) fixedLayer.upsertBubble(imageEl, tmpAnn);
+        else renderer.upsertBubble(imageEl, tmpAnn);
+      },
+      onCancel: () => {
+        if (tmpAnnKey) {
+          if (isKakao) fixedLayer.removeBubble(tmpAnnKey);
+          else renderer.removeBubble(imageEl, tmpAnnKey);
+        }
+      },
+    });
+    const ocrSession = dialog.setOcrPending();
     clips ? ocrClips(clips) : ocrRegionStitched(imageEl, bbox, images)
       .then(text => dialog.setOcrText(text, ocrSession))
       .catch(err => dialog.setOcrError(err.message, ocrSession));
     const result = await resultPromise;
     if (!result) return;
 
-    const imageHash  = await hashImage(imageEl);
     const annotation = {
       imageHash, imageIndex, bbox: result.resizedBbox || bbox,
       originalText: result.originalText, translatedText: result.translatedText,
@@ -2538,12 +2547,25 @@ function bootForPage() {
       updateProgressBar();
     };
 
+    const originalAnnotation = existing ? { ...existing } : null;
     const result = await dialog.show(screenPos, {
       originalText:   existing?.originalText   || '',
       translatedText: existing?.translatedText || bubble.querySelector('span')?.textContent || '',
       style:          existing?.style          || {},
       bbox:           existingBbox,
       img,
+      onPreview: (text, style) => {
+        const previewAnn = { ...(existing || {}), imageHash: imgHash, imageIndex: imgIndex, bbox: existingBbox, originalText: existing?.originalText || '', translatedText: text || ' ', style, language: 'vi', createdAt: existing?.createdAt || new Date().toISOString() };
+        if (isKakao) fixedLayer.upsertBubble(img, previewAnn);
+        else renderer.upsertBubble(img, previewAnn);
+      },
+      onCancel: () => {
+        // Restore original bubble
+        if (originalAnnotation) {
+          if (isKakao) fixedLayer.upsertBubble(img, originalAnnotation);
+          else renderer.upsertBubble(img, originalAnnotation);
+        }
+      },
     });
     // Restore overlay regardless of save/cancel
     if (selectorOverlay) selectorOverlay.style.visibility = '';
