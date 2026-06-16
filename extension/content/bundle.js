@@ -1093,11 +1093,25 @@ class InputDialog {
 // No style options — result is saved with sensible defaults.
 
 class QuickTranslateDialog {
-  constructor() {
+  constructor({ onRescan } = {}) {
     this._el       = null;
     this._resolve  = null;
     this._origText = '';
+    this._rotationDeg = 0;
+    this._onRescan  = onRescan || null;
     this._build();
+  }
+
+  getRotation() { return this._rotationDeg; }
+
+  setRotation(deg) {
+    this._rotationDeg = deg;
+    this._el.querySelector('.wt-quick-rotate').value = deg;
+    this._el.querySelector('.wt-quick-rotate-val').textContent = `${deg}°`;
+  }
+
+  setScanning(on) {
+    this._el.querySelector('.wt-quick-rescan').disabled = on;
   }
 
   show(screenPos, prefill = {}) {
@@ -1108,6 +1122,8 @@ class QuickTranslateDialog {
     origEl.textContent = this._origText;
     origEl.style.display = this._origText ? 'block' : 'none';
     this._setStatus('');
+    this.setRotation(0);
+    this._onRescan = prefill.onRescan || null;
     const isEdit = Boolean(prefill.translatedText);
     this._el.querySelector('.wt-quick-title').innerHTML = isEdit
       ? `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg> Edit Translation`
@@ -1172,6 +1188,12 @@ class QuickTranslateDialog {
       </div>
       <div class="wt-quick-status" style="display:none"></div>
       <div class="wt-quick-original" style="display:none"></div>
+      <div class="wt-rotate-row">
+        <span class="wt-dialog-label" style="margin-bottom:0">Text rotation</span>
+        <input class="wt-quick-rotate wt-style-rotate" type="range" min="-180" max="180" value="0" step="1" />
+        <span class="wt-rotate-val wt-quick-rotate-val">0°</span>
+        <button class="wt-quick-rescan" type="button" title="Re-scan with this rotation">↻</button>
+      </div>
       <textarea class="wt-quick-translated" rows="3" placeholder="Translation will appear here…"></textarea>
       <div class="wt-quick-actions">
         <button class="wt-quick-cancel">Cancel</button>
@@ -1186,6 +1208,12 @@ class QuickTranslateDialog {
     this._el.querySelector('.wt-quick-translated').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) this._save();
     });
+    this._el.querySelector('.wt-quick-rotate').addEventListener('input', (e) => {
+      this._rotationDeg = parseInt(e.target.value) || 0;
+      this._el.querySelector('.wt-quick-rotate-val').textContent = `${this._rotationDeg}°`;
+    });
+    this._el.querySelector('.wt-quick-rotate').addEventListener('keydown', (e) => e.stopPropagation());
+    this._el.querySelector('.wt-quick-rescan').addEventListener('click', () => this._onRescan?.(this._rotationDeg));
     document.body.appendChild(this._el);
   }
 
@@ -1833,7 +1861,7 @@ function sendToBackground(message, retries = 3) {
 
 // ── OCR ───────────────────────────────────────────────────────────────────────
 
-async function ocrRegion(img, bbox) {
+async function ocrRegion(img, bbox, rotationDeg = 0) {
   // Fast path: draw the already-loaded DOM image directly.
   // blob: URLs (Kakao) are same-origin → never tainted.
   // CDN images without crossOrigin attr may taint the canvas → SecurityError.
@@ -1841,20 +1869,41 @@ async function ocrRegion(img, bbox) {
   // fetch cross-origin freely and do the crop there.
   let dataUrl = null;
   try {
-    dataUrl = _cropCanvas(img, bbox);
+    dataUrl = _cropCanvas(img, bbox, rotationDeg);
   } catch (e) {
     if (!(e instanceof DOMException) || e.name !== 'SecurityError') throw e;
   }
 
   const res = await sendToBackground({
     type: MSG.OCR_REGION,
-    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox },
+    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox, rotationDeg },
   });
   if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-  return res.text;
+  return { text: res.text, confidence: res.confidence ?? 0 };
 }
 
-async function ocrRegionStitched(img, bbox, images) {
+// Try several candidate rotation angles and keep the best-confidence result.
+// Used as an automatic fallback when the unrotated scan returns low-confidence text.
+async function ocrRegionAutoRotate(img, bbox) {
+  const base = await ocrRegion(img, bbox, 0);
+  if (base.text && base.confidence >= 55) return { ...base, rotationDeg: 0 };
+
+  const CANDIDATES = [90, -90, 180, 15, -15, 30, -30, 45, -45, 60, -60];
+  let best = { ...base, rotationDeg: 0 };
+  for (const angle of CANDIDATES) {
+    let attempt;
+    try {
+      attempt = await ocrRegion(img, bbox, angle);
+    } catch (_) { continue; }
+    if (attempt.text && attempt.confidence > best.confidence) {
+      best = { ...attempt, rotationDeg: angle };
+      if (best.confidence >= 75) break; // good enough, stop searching
+    }
+  }
+  return best;
+}
+
+async function ocrRegionStitched(img, bbox, images, rotationDeg = 0) {
   const idx        = images.indexOf(img);
   const bottomEdge = bbox.y + bbox.h;  // may exceed 100 when user drags past image bottom
   const topEdge    = bbox.y;           // may be < 0 when user drags past image top
@@ -1888,7 +1937,7 @@ async function ocrRegionStitched(img, bbox, images) {
     }
   }
 
-  if (clips.length === 1) return ocrRegion(img, bbox);
+  if (clips.length === 1) return ocrRegion(img, bbox, rotationDeg);
 
   // Try client-side stitching (same-origin/blob images)
   const dataUrl = stitchClips(clips);
@@ -1898,14 +1947,14 @@ async function ocrRegionStitched(img, bbox, images) {
       payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return res.text;
+    return { text: res.text, confidence: res.confidence ?? 0 };
   }
 
   // Cross-origin: send to background for fetch+stitch
   const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src, bbox: { x, y, w, h }, dispW: dw }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return res.text;
+  return { text: res.text, confidence: res.confidence ?? 0 };
 }
 
 async function ocrClips(clips) {
@@ -1928,13 +1977,13 @@ async function ocrClips(clips) {
       payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return res.text;
+    return { text: res.text, confidence: res.confidence ?? 0 };
   }
   // Cross-origin: background fetch+stitch
   const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src, bbox: { x, y, w, h }, dispW }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return res.text;
+  return { text: res.text, confidence: res.confidence ?? 0 };
 }
 
 // Stitch multiple image clips vertically into one canvas.
@@ -2019,7 +2068,7 @@ async function autoTranslate(text) {
   return data[0].map(s => s[0]).join('');
 }
 
-function _cropCanvas(img, bbox) {
+function _cropCanvas(img, bbox, rotationDeg = 0) {
   const nw = img.naturalWidth  || img.width  || img.offsetWidth;
   const nh = img.naturalHeight || img.height || img.offsetHeight;
   const sx = (bbox.x / 100) * nw;
@@ -2027,14 +2076,38 @@ function _cropCanvas(img, bbox) {
   const sw = Math.max(1, (bbox.w / 100) * nw);
   const sh = Math.max(1, (bbox.h / 100) * nh);
   const scale = sw < 400 ? Math.min(3, 400 / sw) : 1;
+  const cw = Math.round(sw * scale);
+  const ch = Math.round(sh * scale);
+
+  // Crop the unrotated region first
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width  = cw;
+  cropCanvas.height = ch;
+  const cropCtx = cropCanvas.getContext('2d');
+  cropCtx.imageSmoothingEnabled = true;
+  cropCtx.imageSmoothingQuality = 'high';
+  cropCtx.drawImage(img, sx, sy, sw, sh, 0, 0, cw, ch);
+
+  if (!rotationDeg) return cropCanvas.toDataURL('image/png'); // throws SecurityError if canvas is tainted
+
+  // Rotate into a larger canvas sized to fit the rotated bounding box
+  const rad   = (rotationDeg * Math.PI) / 180;
+  const absCos = Math.abs(Math.cos(rad));
+  const absSin = Math.abs(Math.sin(rad));
+  const outW  = Math.ceil(cw * absCos + ch * absSin);
+  const outH  = Math.ceil(cw * absSin + ch * absCos);
   const canvas = document.createElement('canvas');
-  canvas.width  = Math.round(sw * scale);
-  canvas.height = Math.round(sh * scale);
+  canvas.width  = outW;
+  canvas.height = outH;
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/png'); // throws SecurityError if canvas is tainted
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, outW, outH);
+  ctx.translate(outW / 2, outH / 2);
+  ctx.rotate(rad);
+  ctx.drawImage(cropCanvas, -cw / 2, -ch / 2, cw, ch);
+  return canvas.toDataURL('image/png');
 }
 
 function strokeTextShadow(color, width) {
@@ -2459,32 +2532,73 @@ function bootForPage() {
       x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
       y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
     };
-    const resultPromise = quickDialog.show(screenPos);
 
-    quickDialog.setStatus('⏳ Scanning text…', '#6366f1');
-    let ocrText = '';
-    try {
-      ocrText = clips ? await ocrClips(clips) : await ocrRegionStitched(imageEl, bbox, images);
-      if (ocrText) {
-        quickDialog.setOriginalText(ocrText);
-        quickDialog.setStatus('⏳ Translating…', '#6366f1');
-        try {
-          const translated = await autoTranslate(ocrText);
-          if (translated) {
-            quickDialog.setTranslated(translated);
-          } else {
-            // Provider is "none" — just pre-fill with OCR text
-            quickDialog.setTranslated(ocrText);
-            quickDialog.setStatus('Translation disabled — edit if needed', '#94a3b8');
+    async function runScan(rotationDeg, { silent } = {}) {
+      if (!silent) quickDialog.setStatus('⏳ Scanning text…', '#6366f1');
+      quickDialog.setScanning(true);
+      try {
+        const { text, confidence } = clips
+          ? await ocrClips(clips)
+          : await ocrRegionStitched(imageEl, bbox, images, rotationDeg);
+        quickDialog.setScanning(false);
+        if (text) {
+          quickDialog.setOriginalText(text);
+          quickDialog.setStatus('⏳ Translating…', '#6366f1');
+          try {
+            const translated = await autoTranslate(text);
+            if (translated) {
+              quickDialog.setTranslated(translated);
+            } else {
+              quickDialog.setTranslated(text);
+              quickDialog.setStatus('Translation disabled — edit if needed', '#94a3b8');
+            }
+          } catch (err) {
+            quickDialog.setTranslated(text);
+            quickDialog.setStatus(`⚠ Translation failed: ${err.message}`, '#f59e0b');
           }
-        } catch (err) {
-          quickDialog.setTranslated(ocrText);
-          quickDialog.setStatus(`⚠ Translation failed: ${err.message}`, '#f59e0b');
+        } else {
+          quickDialog.setStatus(`No text found — try adjusting rotation (confidence ${Math.round(confidence || 0)}%)`, '#94a3b8');
+        }
+      } catch (err) {
+        quickDialog.setScanning(false);
+        quickDialog.setStatus(`✗ OCR failed: ${err.message}`, '#ef4444');
+      }
+    }
+
+    const resultPromise = quickDialog.show(screenPos, { onRescan: runScan });
+
+    // First pass: try unrotated, then auto-search common rotation angles if
+    // confidence is low (handles sideways/diagonal text in chat bubbles, etc.)
+    quickDialog.setStatus('⏳ Scanning text…', '#6366f1');
+    quickDialog.setScanning(true);
+    try {
+      if (!clips) {
+        const best = await ocrRegionAutoRotate(imageEl, bbox);
+        quickDialog.setScanning(false);
+        quickDialog.setRotation(best.rotationDeg);
+        if (best.text) {
+          quickDialog.setOriginalText(best.text);
+          quickDialog.setStatus('⏳ Translating…', '#6366f1');
+          try {
+            const translated = await autoTranslate(best.text);
+            if (translated) {
+              quickDialog.setTranslated(translated);
+            } else {
+              quickDialog.setTranslated(best.text);
+              quickDialog.setStatus('Translation disabled — edit if needed', '#94a3b8');
+            }
+          } catch (err) {
+            quickDialog.setTranslated(best.text);
+            quickDialog.setStatus(`⚠ Translation failed: ${err.message}`, '#f59e0b');
+          }
+        } else {
+          quickDialog.setStatus('No text found — try adjusting rotation manually', '#94a3b8');
         }
       } else {
-        quickDialog.setStatus('No text found in this region', '#94a3b8');
+        await runScan(0, { silent: true });
       }
     } catch (err) {
+      quickDialog.setScanning(false);
       quickDialog.setStatus(`✗ OCR failed: ${err.message}`, '#ef4444');
     }
 

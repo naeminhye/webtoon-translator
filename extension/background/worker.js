@@ -188,7 +188,7 @@ const DEV_OCR_SPACE_KEY = '';
 // when a key is available (complex backgrounds, small/stylised text).
 const TESSERACT_CONFIDENCE_THRESHOLD = 50;
 
-async function handleOcr({ dataUrl, imageUrl, bbox }) {
+async function handleOcr({ dataUrl, imageUrl, bbox, rotationDeg }) {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
     [OCR_SPACE_KEY_STR]: '',
@@ -199,7 +199,7 @@ async function handleOcr({ dataUrl, imageUrl, bbox }) {
   // Resolve dataUrl — crop here if content script was blocked by canvas taint
   let finalDataUrl = dataUrl;
   if (!finalDataUrl && imageUrl) {
-    finalDataUrl = await fetchAndCrop(imageUrl, bbox);
+    finalDataUrl = await fetchAndCrop(imageUrl, bbox, rotationDeg || 0);
   }
 
   if (provider === 'ocrspace') {
@@ -348,7 +348,7 @@ async function tesseractRun(dataUrl) {
 
 // ── Image fetch + crop (service-worker side, full cross-origin access) ────────
 
-async function fetchAndCrop(imageUrl, bbox) {
+async function fetchAndCrop(imageUrl, bbox, rotationDeg = 0) {
   const res    = await fetch(imageUrl, { credentials: 'omit' });
   const blob   = await res.blob();
   const bitmap = await createImageBitmap(blob);
@@ -358,15 +358,36 @@ async function fetchAndCrop(imageUrl, bbox) {
   const sw = Math.max(1, (bbox.w / 100) * bitmap.width);
   const sh = Math.max(1, (bbox.h / 100) * bitmap.height);
   const scale = sw < 400 ? Math.min(3, 400 / sw) : 1;
+  const cw = Math.round(sw * scale);
+  const ch = Math.round(sh * scale);
 
-  const canvas = new OffscreenCanvas(Math.round(sw * scale), Math.round(sh * scale));
-  const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  const cropCanvas = new OffscreenCanvas(cw, ch);
+  const cropCtx = cropCanvas.getContext('2d');
+  cropCtx.imageSmoothingEnabled = true;
+  cropCtx.imageSmoothingQuality = 'high';
+  cropCtx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, cw, ch);
   bitmap.close();
 
-  const cropBlob = await canvas.convertToBlob({ type: 'image/png' });
+  let outCanvas = cropCanvas;
+  if (rotationDeg) {
+    const rad    = (rotationDeg * Math.PI) / 180;
+    const absCos = Math.abs(Math.cos(rad));
+    const absSin = Math.abs(Math.sin(rad));
+    const outW   = Math.ceil(cw * absCos + ch * absSin);
+    const outH   = Math.ceil(cw * absSin + ch * absCos);
+    const rotCanvas = new OffscreenCanvas(outW, outH);
+    const ctx = rotCanvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, outW, outH);
+    ctx.translate(outW / 2, outH / 2);
+    ctx.rotate(rad);
+    ctx.drawImage(cropCanvas, -cw / 2, -ch / 2, cw, ch);
+    outCanvas = rotCanvas;
+  }
+
+  const cropBlob = await outCanvas.convertToBlob({ type: 'image/png' });
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload  = () => resolve(reader.result);

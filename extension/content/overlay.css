@@ -610,6 +610,27 @@ body:not(.wt-annotate-mode) .wt-fixed-bubble {
   display: none;
 }
 
+.wt-quick-dialog .wt-rotate-row {
+  margin-bottom: 8px;
+}
+
+.wt-quick-rescan {
+  width: 24px;
+  height: 24px;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  background: #f8fafc;
+  color: #475569;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.wt-quick-rescan:hover:not(:disabled) { background: #eef2ff; color: #4f46e5; }
+.wt-quick-rescan:disabled { opacity: 0.5; cursor: default; }
+
 .wt-quick-translated {
   width: 100%;
   border: 1px solid #e2e8f0;
