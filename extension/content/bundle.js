@@ -2648,8 +2648,8 @@ function bootForPage() {
       },
     });
     const ocrSession = dialog.setOcrPending();
-    clips ? ocrClips(clips) : ocrRegionStitched(imageEl, bbox, images)
-      .then(text => dialog.setOcrText(text, ocrSession))
+    (clips ? ocrClips(clips) : ocrRegionStitched(imageEl, bbox, images))
+      .then(({ text }) => dialog.setOcrText(text, ocrSession))
       .catch(err => dialog.setOcrError(err.message, ocrSession));
     const result = await resultPromise;
     if (!result) return;
