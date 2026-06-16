@@ -23,7 +23,7 @@
   height: calc(100% + 80px);
   cursor: crosshair !important;
   z-index: 100;
-  background: rgba(99, 102, 241, 0.04);
+  background: transparent;
   border: 1.5px dashed rgba(99, 102, 241, 0.4);
   border-bottom: none; /* no border in extension zone */
   box-sizing: border-box;
