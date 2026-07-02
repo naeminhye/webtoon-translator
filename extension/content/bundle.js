@@ -47,6 +47,12 @@ const COLOR_QUANTIZE_STEP    = 24;   // round each RGB channel to the nearest N 
 const COLOR_MIN_BUCKET_SHARE = 0.03; // ignore color buckets under this fraction of sampled pixels (noise)
 const COLOR_CONFIDENCE_GAP   = 0.18; // top bg bucket must beat the runner-up by at least this fraction of its own count, else "too close to call"
 const COLOR_MIN_TEXT_CONTRAST = 80;  // min Euclidean RGB distance a candidate text color needs vs. the detected background
+// bbox is a RECTANGLE bounding the (often oval/irregular) bubble shape, so its
+// corners can fall outside the bubble entirely, sampling whatever busy art
+// sits behind it there. Shrinking the sampled rect inward keeps the sample
+// concentrated on the bubble's interior instead — needs tuning against real
+// panels (rounder bubbles need a bigger inset than near-rectangular ones).
+const COLOR_SAMPLE_INSET_FRAC = 0.15;
 
 /**
  * Samples the bbox region of `img` and returns { bg, color } hex strings, or
@@ -56,10 +62,14 @@ const COLOR_MIN_TEXT_CONTRAST = 80;  // min Euclidean RGB distance a candidate t
 async function detectBubbleColors(img, bbox) {
   const nw = img.naturalWidth  || img.width  || img.offsetWidth  || 1;
   const nh = img.naturalHeight || img.height || img.offsetHeight || 1;
-  const sx = Math.max(0, (bbox.x / 100) * nw);
-  const sy = Math.max(0, (bbox.y / 100) * nh);
-  const sw = Math.max(1, Math.min((bbox.w / 100) * nw, nw - sx));
-  const sh = Math.max(1, Math.min((bbox.h / 100) * nh, nh - sy));
+  const fullX = (bbox.x / 100) * nw, fullY = (bbox.y / 100) * nh;
+  const fullW = (bbox.w / 100) * nw, fullH = (bbox.h / 100) * nh;
+  // Shrink the sample rect inward — see COLOR_SAMPLE_INSET_FRAC.
+  const insetW = fullW * COLOR_SAMPLE_INSET_FRAC, insetH = fullH * COLOR_SAMPLE_INSET_FRAC;
+  const sx = Math.max(0, fullX + insetW);
+  const sy = Math.max(0, fullY + insetH);
+  const sw = Math.max(1, Math.min(fullW - insetW * 2, nw - sx));
+  const sh = Math.max(1, Math.min(fullH - insetH * 2, nh - sy));
   // Coarse sample — this is a rough color estimate, not a pixel-perfect one.
   const cw = Math.min(sw, 160), ch = Math.min(sh, 160);
 
@@ -823,9 +833,11 @@ function floodFillBBox(imageData, startX, startY, tolerance) {
 // sides of it — unlike a single bubble's natural taper toward its own edges,
 // which only ever narrows on ONE side (going to zero at the boundary).
 
-const WAIST_SPLIT_RATIO      = 0.45; // width at the narrowest point vs. the weaker side's local max — below this, treat as two joined bubbles. Needs tuning against real touching-bubble screenshots.
+const WAIST_SPLIT_RATIO      = 0.35; // narrowest-run width vs. the weaker side's local max — below this, treat as two joined bubbles. Needs tuning against real touching-bubble screenshots.
 const WAIST_EDGE_MARGIN_FRAC = 0.15; // ignore narrowing within this fraction of the scan axis's own extent from either end (that's just normal bubble taper, not a junction)
 const WAIST_MIN_REGION_DIM   = 20;   // px — each split half must still span at least this far along the scan axis to be considered a real second bubble, not noise
+const WAIST_MIN_RUN_PX       = 6;    // the narrow point must persist for at least this many consecutive rows/cols — a real connector is physically several px wide; a single anomalous row/col (JPEG noise, a translucent bubble briefly failing color tolerance) isn't
+const WAIST_SMOOTH_WINDOW    = 5;    // moving-average window applied to the profile before scanning, for the same noise-vs-real-connector reason
 
 /**
  * If `region` (within a `w`x`h` `mask`) looks like two bubbles joined at a
@@ -838,22 +850,27 @@ const WAIST_MIN_REGION_DIM   = 20;   // px — each split half must still span a
 function findWaistSplit(mask, w, h, region) {
   const { minX, minY, maxX, maxY } = region;
 
+  // Profile is each row/column's SPAN (leftmost to rightmost filled pixel),
+  // not a raw filled-pixel count — text glyphs inside a bubble punch holes in
+  // the background match and would make text-dense rows look artificially
+  // narrow under a count, even though the background still reaches both
+  // edges on those rows. Span only shrinks when the shape itself narrows.
   const rowProfile = [];
   for (let y = minY; y <= maxY; y++) {
-    let count = 0;
+    let lo = -1, hi = -1;
     const base = y * w;
-    for (let x = minX; x <= maxX; x++) if (mask[base + x]) count++;
-    rowProfile.push(count);
+    for (let x = minX; x <= maxX; x++) if (mask[base + x]) { if (lo === -1) lo = x; hi = x; }
+    rowProfile.push(lo === -1 ? 0 : hi - lo + 1);
   }
-  const rowWaist = _scanForWaist(rowProfile, WAIST_SPLIT_RATIO, WAIST_EDGE_MARGIN_FRAC);
+  const rowWaist = _scanForWaist(rowProfile, WAIST_SPLIT_RATIO, WAIST_EDGE_MARGIN_FRAC, WAIST_MIN_RUN_PX);
 
   const colProfile = [];
   for (let x = minX; x <= maxX; x++) {
-    let count = 0;
-    for (let y = minY; y <= maxY; y++) if (mask[y * w + x]) count++;
-    colProfile.push(count);
+    let lo = -1, hi = -1;
+    for (let y = minY; y <= maxY; y++) if (mask[y * w + x]) { if (lo === -1) lo = y; hi = y; }
+    colProfile.push(lo === -1 ? 0 : hi - lo + 1);
   }
-  const colWaist = _scanForWaist(colProfile, WAIST_SPLIT_RATIO, WAIST_EDGE_MARGIN_FRAC);
+  const colWaist = _scanForWaist(colProfile, WAIST_SPLIT_RATIO, WAIST_EDGE_MARGIN_FRAC, WAIST_MIN_RUN_PX);
 
   let axis = null;
   if (rowWaist && (!colWaist || rowWaist.ratio <= colWaist.ratio)) axis = { type: 'row', ...rowWaist };
@@ -880,51 +897,67 @@ function findWaistSplit(mask, w, h, region) {
 }
 
 /**
- * Scans a 1-D width/height profile for a "waist": an index (away from both
- * ends, by `edgeMarginFrac`) whose value is under `ratioThreshold` of the
- * smaller of the local max before it and the local max after it. Returns the
- * strongest (lowest-ratio) candidate, or null.
+ * Scans a 1-D width/height profile for a "waist": a run of at least
+ * `minRunPx` consecutive indices (away from both ends, by `edgeMarginFrac`)
+ * whose (smoothed) value stays under `ratioThreshold` of the smaller of the
+ * local max before the run and the local max after it. Returns the run with
+ * the lowest minimum ratio, or null if none qualifies.
  *
- * A straight connector (the common case — a tail or two bubble edges just
- * touching) has constant width across several rows/columns, all tied for the
- * minimum ratio; picking the middle of that run lands the cut in the middle
- * of the connector instead of at whichever end the scan reaches first.
+ * The profile is smoothed first and the narrowing must hold over a run, not
+ * just a single point — single-row/col dips (JPEG noise, a translucent
+ * bubble briefly failing color tolerance where busy art shows through) are
+ * common and must NOT be mistaken for a real bubble-to-bubble connector,
+ * which is physically several pixels wide/tall at minimum.
  */
-function _scanForWaist(profile, ratioThreshold, edgeMarginFrac) {
+function _scanForWaist(profile, ratioThreshold, edgeMarginFrac, minRunPx) {
   const n = profile.length;
   if (n < 5) return null;
   const margin = Math.max(1, Math.round(n * edgeMarginFrac));
   if (margin * 2 >= n) return null;
 
+  const smoothed = _smoothProfile(profile, WAIST_SMOOTH_WINDOW);
+
   const prefixMax = new Array(n);
-  for (let i = 0, pm = 0; i < n; i++) { pm = Math.max(pm, profile[i]); prefixMax[i] = pm; }
+  for (let i = 0, pm = 0; i < n; i++) { pm = Math.max(pm, smoothed[i]); prefixMax[i] = pm; }
   const suffixMax = new Array(n);
-  for (let i = n - 1, sm = 0; i >= 0; i--) { sm = Math.max(sm, profile[i]); suffixMax[i] = sm; }
+  for (let i = n - 1, sm = 0; i >= 0; i--) { sm = Math.max(sm, smoothed[i]); suffixMax[i] = sm; }
 
-  let bestRatio = Infinity;
-  for (let k = margin; k < n - margin; k++) {
+  const ratioAt = (k) => {
     const before = prefixMax[k - 1] || 0;
     const after  = suffixMax[k + 1] || 0;
-    if (!before || !after) continue;
-    const ratio = profile[k] / Math.min(before, after);
-    if (ratio < bestRatio) bestRatio = ratio;
-  }
-  if (bestRatio >= ratioThreshold) return null;
+    if (!before || !after) return Infinity;
+    return smoothed[k] / Math.min(before, after);
+  };
 
-  let runStart = -1, runEnd = -1;
-  for (let k = margin; k < n - margin; k++) {
-    const before = prefixMax[k - 1] || 0;
-    const after  = suffixMax[k + 1] || 0;
-    if (!before || !after) continue;
-    const ratio = profile[k] / Math.min(before, after);
-    if (Math.abs(ratio - bestRatio) < 1e-9) {
-      if (runStart === -1) runStart = k;
-      runEnd = k;
+  let bestRun = null; // { start, end, minRatio }
+  let runStart = -1, runMin = Infinity;
+  for (let k = margin; k <= n - margin; k++) {
+    const ratio = k < n - margin ? ratioAt(k) : Infinity;
+    if (ratio < ratioThreshold) {
+      if (runStart === -1) { runStart = k; runMin = ratio; }
+      else runMin = Math.min(runMin, ratio);
     } else if (runStart !== -1) {
-      break; // first tied run ended
+      if (k - runStart >= minRunPx && (!bestRun || runMin < bestRun.minRatio)) {
+        bestRun = { start: runStart, end: k - 1, minRatio: runMin };
+      }
+      runStart = -1;
     }
   }
-  return { index: Math.round((runStart + runEnd) / 2), ratio: bestRatio };
+  if (!bestRun) return null;
+  return { index: Math.round((bestRun.start + bestRun.end) / 2), ratio: bestRun.minRatio };
+}
+
+/** Simple centered moving-average smoothing. */
+function _smoothProfile(profile, window) {
+  const n = profile.length;
+  const half = Math.floor(window / 2);
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    let sum = 0, count = 0;
+    for (let j = Math.max(0, i - half); j <= Math.min(n - 1, i + half); j++) { sum += profile[j]; count++; }
+    out[i] = sum / count;
+  }
+  return out;
 }
 
 /** bbox + filledPixels of the mask pixels within a clip rect — NOT a connected-component search, just a rectangular restriction of the original connected blob. */
