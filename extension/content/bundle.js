@@ -51,69 +51,92 @@ const COLOR_MIN_TEXT_CONTRAST = 80;  // min Euclidean RGB distance a candidate t
 /**
  * Samples the bbox region of `img` and returns { bg, color } hex strings, or
  * null if detection isn't confident enough (caller should fall back to the
- * default style). Never throws — returns null on any failure, including a
- * tainted (cross-origin) canvas.
+ * default style). Never throws.
  */
-function detectBubbleColors(img, bbox) {
+async function detectBubbleColors(img, bbox) {
+  const nw = img.naturalWidth  || img.width  || img.offsetWidth  || 1;
+  const nh = img.naturalHeight || img.height || img.offsetHeight || 1;
+  const sx = Math.max(0, (bbox.x / 100) * nw);
+  const sy = Math.max(0, (bbox.y / 100) * nh);
+  const sw = Math.max(1, Math.min((bbox.w / 100) * nw, nw - sx));
+  const sh = Math.max(1, Math.min((bbox.h / 100) * nh, nh - sy));
+  // Coarse sample — this is a rough color estimate, not a pixel-perfect one.
+  const cw = Math.min(sw, 160), ch = Math.min(sh, 160);
+
+  let data;
   try {
-    const nw = img.naturalWidth  || img.width  || img.offsetWidth  || 1;
-    const nh = img.naturalHeight || img.height || img.offsetHeight || 1;
-    const sx = Math.max(0, (bbox.x / 100) * nw);
-    const sy = Math.max(0, (bbox.y / 100) * nh);
-    const sw = Math.max(1, Math.min((bbox.w / 100) * nw, nw - sx));
-    const sh = Math.max(1, Math.min((bbox.h / 100) * nh, nh - sy));
-    // Coarse sample — this is a rough color estimate, not a pixel-perfect one.
-    const cw = Math.min(sw, 160), ch = Math.min(sh, 160);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = cw; canvas.height = ch;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cw, ch);
-    const data = ctx.getImageData(0, 0, cw, ch).data; // throws SecurityError if tainted
-
-    // Quantized-color histogram: bucket by rounded RGB, but keep the un-quantized
-    // sums so each bucket's reported color is the true average of its members.
-    const buckets = new Map();
-    let totalPixels = 0;
-    for (let i = 0; i < data.length; i += 4) {
-      const r = data[i], g = data[i + 1], b = data[i + 2];
-      const key = `${Math.round(r / COLOR_QUANTIZE_STEP)},${Math.round(g / COLOR_QUANTIZE_STEP)},${Math.round(b / COLOR_QUANTIZE_STEP)}`;
-      let bucket = buckets.get(key);
-      if (!bucket) { bucket = { r: 0, g: 0, b: 0, count: 0 }; buckets.set(key, bucket); }
-      bucket.r += r; bucket.g += g; bucket.b += b; bucket.count++;
-      totalPixels++;
-    }
-    if (!totalPixels) return null;
-
-    const sorted = [...buckets.values()]
-      .map(b => ({ r: Math.round(b.r / b.count), g: Math.round(b.g / b.count), b: Math.round(b.b / b.count), count: b.count }))
-      .filter(b => b.count / totalPixels >= COLOR_MIN_BUCKET_SHARE)
-      .sort((a, b) => b.count - a.count);
-    if (!sorted.length) return null;
-
-    const bg = sorted[0];
-    if (sorted.length > 1) {
-      const gap = (bg.count - sorted[1].count) / bg.count;
-      if (gap < COLOR_CONFIDENCE_GAP) return null; // ambiguous majority — likely textured/busy background
-    }
-
-    // Text color candidate: the most-contrasting remaining bucket against bg.
-    let textCandidate = null, bestDist = 0;
-    for (let i = 1; i < sorted.length; i++) {
-      const c = sorted[i];
-      const dist = Math.hypot(c.r - bg.r, c.g - bg.g, c.b - bg.b);
-      if (dist > bestDist) { bestDist = dist; textCandidate = c; }
-    }
-    if (!textCandidate || bestDist < COLOR_MIN_TEXT_CONTRAST) return null; // no confidently-contrasting text color
-
-    const toHex = (v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0');
-    return {
-      bg:    `#${toHex(bg.r)}${toHex(bg.g)}${toHex(bg.b)}`,
-      color: `#${toHex(textCandidate.r)}${toHex(textCandidate.g)}${toHex(textCandidate.b)}`,
-    };
+    data = _readColorSamplePixels(img, sx, sy, sw, sh, cw, ch);
   } catch (e) {
-    return null; // tainted canvas (cross-origin without CORS) — best-effort feature, just skip it
+    // Cross-origin image without CORS headers taints the canvas — same issue
+    // BubbleAutoDetector hits, same fix: fetch+crop via the background worker
+    // (no taint there) and sample from the returned same-origin data: image.
+    try {
+      const bboxPct = { x: (sx / nw) * 100, y: (sy / nh) * 100, w: (sw / nw) * 100, h: (sh / nh) * 100 };
+      const res = await sendToBackground({ type: MSG.CROP_IMAGE, payload: { imageUrl: img.src, bbox: bboxPct } });
+      if (!res?.ok || !res.dataUrl) throw new Error(res?.error || 'background crop failed');
+      const cropImg = await loadImage(res.dataUrl);
+      data = _readColorSamplePixels(cropImg, 0, 0, cw, ch, cw, ch);
+    } catch (e2) {
+      console.log('[WebtoonTranslate] ColorMatch fail: canvas-tainted', e2.message);
+      return null;
+    }
   }
+
+  const result = _analyzeColorHistogram(data);
+  console.log(result ? '[WebtoonTranslate] ColorMatch pass' : '[WebtoonTranslate] ColorMatch fail: low-confidence', result || '');
+  return result;
+}
+
+function _readColorSamplePixels(img, sx, sy, sw, sh, cw, ch) {
+  const canvas = document.createElement('canvas');
+  canvas.width = cw; canvas.height = ch;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cw, ch);
+  return ctx.getImageData(0, 0, cw, ch).data; // throws SecurityError if tainted
+}
+
+/** Quantized-color histogram -> { bg, color } hex, or null if not confident enough. */
+function _analyzeColorHistogram(data) {
+  // Bucket by rounded RGB, but keep the un-quantized sums so each bucket's
+  // reported color is the true average of its members (not the rounded key).
+  const buckets = new Map();
+  let totalPixels = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const key = `${Math.round(r / COLOR_QUANTIZE_STEP)},${Math.round(g / COLOR_QUANTIZE_STEP)},${Math.round(b / COLOR_QUANTIZE_STEP)}`;
+    let bucket = buckets.get(key);
+    if (!bucket) { bucket = { r: 0, g: 0, b: 0, count: 0 }; buckets.set(key, bucket); }
+    bucket.r += r; bucket.g += g; bucket.b += b; bucket.count++;
+    totalPixels++;
+  }
+  if (!totalPixels) return null;
+
+  const sorted = [...buckets.values()]
+    .map(b => ({ r: Math.round(b.r / b.count), g: Math.round(b.g / b.count), b: Math.round(b.b / b.count), count: b.count }))
+    .filter(b => b.count / totalPixels >= COLOR_MIN_BUCKET_SHARE)
+    .sort((a, b) => b.count - a.count);
+  if (!sorted.length) return null;
+
+  const bg = sorted[0];
+  if (sorted.length > 1) {
+    const gap = (bg.count - sorted[1].count) / bg.count;
+    if (gap < COLOR_CONFIDENCE_GAP) return null; // ambiguous majority — likely textured/busy background
+  }
+
+  // Text color candidate: the most-contrasting remaining bucket against bg.
+  let textCandidate = null, bestDist = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    const c = sorted[i];
+    const dist = Math.hypot(c.r - bg.r, c.g - bg.g, c.b - bg.b);
+    if (dist > bestDist) { bestDist = dist; textCandidate = c; }
+  }
+  if (!textCandidate || bestDist < COLOR_MIN_TEXT_CONTRAST) return null; // no confidently-contrasting text color
+
+  const toHex = (v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0');
+  return {
+    bg:    `#${toHex(bg.r)}${toHex(bg.g)}${toHex(bg.b)}`,
+    color: `#${toHex(textCandidate.r)}${toHex(textCandidate.g)}${toHex(textCandidate.b)}`,
+  };
 }
 
 // ── hasher ───────────────────────────────────────────────────────────────────
@@ -2604,7 +2627,7 @@ function bootForPage() {
       const existing  = job.existingAnnKey ? allAnnotations.find(a => annKeyOf(a) === job.existingAnnKey) : null;
       // Auto color-match only for brand-new translations — resize-triggered
       // re-runs keep whatever style the annotation already has.
-      const matched = !existing ? detectBubbleColors(job.imageEl, job.bbox) : null;
+      const matched = !existing ? await detectBubbleColors(job.imageEl, job.bbox) : null;
       const style = existing?.style || (matched ? { ...DEFAULT_STYLE, bg: matched.bg, color: matched.color } : DEFAULT_STYLE);
       const annotation = {
         imageHash, imageIndex: job.imageIndex, bbox: job.bbox,
