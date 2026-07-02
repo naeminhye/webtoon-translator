@@ -761,8 +761,24 @@ class DetectionPreview {
 const MAX_CONCURRENT_JOBS = 3;   // total active jobs (OCR+translate combined) — tune against real usage/API limits
 const OVERLAP_THRESHOLD   = 0.55; // intersection / min(areaA, areaB) — needs tuning against real screenshots
 
+// Minimum crop size Tesseract's WASM build will accept, measured in the IMAGE'S
+// OWN natural pixels (not CSS/display pixels of the on-screen <img>). Webtoon
+// panels are often served at a very different resolution than they're displayed
+// at, so a "10px" drag on the visible page can still crop down to just 1-2
+// natural pixels and crash OCR with "Image too small to scale!!". _cropCanvas/
+// fetchAndCrop upscale small crops up to 3x, so this floor is set well above
+// Tesseract's own ~3px minimum to leave margin after that upscale.
+const MIN_OCR_NATURAL_PX = 10;
+
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+/** bbox (%-of-image) -> {w, h} in the image's own natural pixels. */
+function bboxNaturalSize(bbox, imageEl) {
+  const nw = imageEl.naturalWidth  || imageEl.width  || imageEl.getBoundingClientRect().width  || 1;
+  const nh = imageEl.naturalHeight || imageEl.height || imageEl.getBoundingClientRect().height || 1;
+  return { w: (bbox.w / 100) * nw, h: (bbox.h / 100) * nh };
 }
 
 /** Overlap ratio of two %-of-image bboxes: intersection area / smaller box's area. */
@@ -784,14 +800,16 @@ class JobManager {
    * @param onDone          async (job) => void — persist + render the final bubble
    * @param findOverlap     (bbox, imageIndex, excludeAnnKey) => ratio (0-1) against existing jobs/annotations
    * @param confirmOverlap  async (screenPos) => boolean — "still create a new job here?"
+   * @param onTooSmall      (job) => void — bbox is below the OCR-viable natural-pixel floor
    */
-  constructor({ runOcr, runTranslate, onStatusChange, onDone, findOverlap, confirmOverlap }) {
+  constructor({ runOcr, runTranslate, onStatusChange, onDone, findOverlap, confirmOverlap, onTooSmall }) {
     this._runOcr         = runOcr;
     this._runTranslate    = runTranslate;
     this._onStatusChange  = onStatusChange;
     this._onDone          = onDone;
     this._findOverlap     = findOverlap;
     this._confirmOverlap  = confirmOverlap;
+    this._onTooSmall      = onTooSmall;
 
     this.jobs           = new Map(); // id -> job
     this._queue          = [];        // pending job ids (FIFO)
@@ -800,6 +818,11 @@ class JobManager {
   }
 
   async create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey = null }) {
+    const { w: natW, h: natH } = bboxNaturalSize(bbox, imageEl);
+    if (natW < MIN_OCR_NATURAL_PX || natH < MIN_OCR_NATURAL_PX) {
+      this._onTooSmall?.({ bbox, imageEl, imageIndex, natW, natH });
+      return null;
+    }
     const overlapRatio = this._findOverlap(bbox, imageIndex, existingAnnKey);
     if (overlapRatio >= OVERLAP_THRESHOLD) {
       const proceed = await this._confirmOverlap(screenPos);
@@ -1055,6 +1078,7 @@ class BBoxSelector {
       if (e.target.closest('.wt-translation-bubble')) return; // let bubble clicks through
       e.preventDefault();
       this.onDragStart?.();
+      overlay.classList.add('wt-dragging'); // pointer -> crosshair while an actual drag is happening
       const rect = overlay.getBoundingClientRect();
       startX = e.clientX - rect.left;
       startY = e.clientY - rect.top;
@@ -1081,6 +1105,7 @@ class BBoxSelector {
       const px = Math.min(startX, ex), py = Math.min(startY, ey);
       const pw = Math.abs(ex - startX), ph = Math.abs(ey - startY);
       selectionEl.remove();
+      overlay.classList.remove('wt-dragging');
       this._currentDrag = null;
 
       // Minimal pointer movement -> treat as a click and try auto-detect first;
@@ -2152,12 +2177,27 @@ function bootForPage() {
     if (on) {
       if (isKakao) fixedLayer.enable(images);
       else selector.enable(images);
+      maybeShowScanHint();
     } else {
       if (isKakao) fixedLayer.disable();
       else selector.disable();
     }
   }
   scanBtn.addEventListener('click', () => setReadScan(!readScanEnabled));
+
+  // One-time hint (persisted across sessions) explaining click-to-auto-detect,
+  // since the overlay cursor alone doesn't make that obvious. Kakao only
+  // supports drag-select (no auto-detect), so its crosshair cursor already
+  // matches the interaction and needs no extra explanation.
+  const SCAN_HINT_KEY = 'wt:seen-scan-hint';
+  function maybeShowScanHint() {
+    if (isKakao) return;
+    chrome.storage.local.get({ [SCAN_HINT_KEY]: false }).then((stored) => {
+      if (stored[SCAN_HINT_KEY]) return;
+      showToast('💡 Click để tự động nhận diện bubble, hoặc kéo để chọn vùng thủ công', '#6366f1', 4500);
+      chrome.storage.local.set({ [SCAN_HINT_KEY]: true });
+    });
+  }
 
   // Keyboard shortcut: T to toggle
   const keyHandler = (e) => {
@@ -2346,6 +2386,7 @@ function bootForPage() {
     runTranslate:  (job) => autoTranslate(job.originalText),
     findOverlap:   findOverlapForBbox,
     confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'Vùng này có vẻ trùng với bản dịch đã có. Vẫn tạo bản dịch mới ở đây?'),
+    onTooSmall: () => showToast('Vùng chọn quá nhỏ để nhận diện chữ — hãy kéo/chọn một vùng lớn hơn', '#f59e0b'),
     onStatusChange: (job) => { jobOverlayRenderer.render(job); updateJobBadge(); },
     onDone: async (job) => {
       const imageHash = await hashImage(job.imageEl);
@@ -2569,12 +2610,6 @@ function bootForPage() {
     if (message.type === 'TRIGGER_EXPORT') triggerExport(meta);
     if (message.type === 'TRIGGER_IMPORT') triggerImport();
     if (message.type === 'TRIGGER_CLEAR')  triggerClear();
-    if (message.type === 'SYNC_STATUS') {
-      if (message.status === 'saved')    showToast('☁ Synced', '#6366f1', 2000);
-      else if (message.status === 'imported') showToast(`☁ Synced ${message.error || ''} translations`, '#6366f1', 3000);
-      else if (message.status === 'deleted') { /* silent */ }
-      else if (message.status === 'error')   showToast(`⚠ Sync failed: ${message.error || 'unknown error'}`, '#f59e0b', 5000);
-    }
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 

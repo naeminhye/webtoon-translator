@@ -21,7 +21,10 @@
   width: 100%;
   /* Extend 80px below image so user can drag past the panel boundary */
   height: calc(100% + 80px);
-  cursor: crosshair !important;
+  /* pointer, not crosshair: a click here auto-detects a bubble — crosshair
+     reads as "draw a rectangle" and hides that affordance. Switched to
+     crosshair only while an actual drag is in progress (.wt-dragging). */
+  cursor: pointer !important;
   z-index: 100;
   background: rgba(99, 102, 241, 0.04);
   border: 1.5px dashed rgba(99, 102, 241, 0.4);
@@ -29,6 +32,8 @@
   box-sizing: border-box;
   pointer-events: auto !important;
 }
+
+.wt-selector-overlay.wt-dragging { cursor: crosshair !important; }
 
 .wt-selection-rect {
   position: absolute;
