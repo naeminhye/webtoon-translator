@@ -62,9 +62,7 @@ const AUTO_FIT_MAX_FONT_SIZE   = 20;   // search seed — the app's prior fixed 
 const AUTO_FIT_ABSOLUTE_MAX_FONT_SIZE = 48; // sane ceiling so a short line in a huge bubble can't blow up to an absurd size; needs visual tuning
 const AUTO_FIT_MIN_FONT_SIZE   = 13;   // absolute floor — readability wins over fitting; needs visual tuning against real panels
 const AUTO_FIT_COMFORT_FONT_SIZE = 16; // below this, prefer a taller box over a cramped font — see fitAndExpand
-const AUTO_FIT_LINE_HEIGHT     = 1.45; // matches .wt-bubble-text's CSS line-height
-const AUTO_FIT_PAD_X           = 16;   // .wt-bubble-text CSS padding: 4px 8px -> 8*2 horizontal
-const AUTO_FIT_PAD_Y           = 8;    // 4*2 vertical
+const AUTO_FIT_LINE_HEIGHT     = 1.45; // matches .wt-bubble-text's CSS line-height — kept for reference/docs only; measurement below reads it from real CSS, doesn't assume it
 const AUTO_FIT_MAX_EXPAND_RATIO         = 2.5; // height fallback never grows the box past this multiple of its original bbox height
 const AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC = 0.5; // ...or this fraction of the viewport height, whichever is smaller
 // The OCR bbox is the RECTANGLE circumscribing an (often oval/round) bubble —
@@ -76,94 +74,78 @@ const AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC = 0.5; // ...or this fraction of the vie
 const AUTO_FIT_WIDTH_MARGIN  = 0.82;
 const AUTO_FIT_HEIGHT_MARGIN = 0.92;
 
-let _autoFitCtx = null;
-function _getAutoFitCtx() {
-  if (!_autoFitCtx) _autoFitCtx = document.createElement('canvas').getContext('2d');
-  return _autoFitCtx;
-}
-
-function _autoFitFontString(fontSizePx, fontFamily, bold, italic) {
-  const family = fontFamily ? `'${fontFamily}', system-ui, sans-serif` : `'Noto Sans', 'Be Vietnam Pro', system-ui, sans-serif`;
-  return `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${fontSizePx}px ${family}`;
-}
-
-/** Breaks a single word that's wider than maxWidthPx into char-level chunks (mirrors CSS word-break: break-word). */
-function _breakLongWord(ctx, word, maxWidthPx) {
-  const chunks = [];
-  let chunk = '';
-  for (const ch of word) {
-    const next = chunk + ch;
-    if (ctx.measureText(next).width > maxWidthPx && chunk) {
-      chunks.push(chunk);
-      chunk = ch;
-    } else {
-      chunk = next;
-    }
+// Fitting is measured with a hidden, off-screen element carrying the EXACT
+// same class (.wt-bubble-text) and CSS (padding, line-height, word-break,
+// white-space, box-sizing) the real bubble text renders with — not canvas
+// measureText(). A canvas approximation can silently diverge from the real
+// render (an unavailable font in the stack falling back differently, CSS
+// letter/word-spacing canvas doesn't know about, etc.), which showed up as
+// translated text visibly overflowing its box even though the fit search
+// "passed" — using the actual browser layout engine for both the search and
+// the final render eliminates that class of mismatch by construction.
+let _autoFitMeasureEl = null;
+function _getAutoFitMeasureEl() {
+  if (!_autoFitMeasureEl) {
+    // .wt-bubble-text itself declares no font-family/line-height — it
+    // inherits both from its real parent, .wt-translation-bubble. Nesting
+    // the measurement element the same way (instead of a bare .wt-bubble-text
+    // with no ancestor) is required for accurate measurement — a bare one
+    // would silently fall back to the page's own default font/line-height,
+    // which is exactly the kind of measurement-vs-render mismatch this
+    // whole DOM-based approach exists to eliminate.
+    const wrap = document.createElement('div');
+    wrap.className = 'wt-translation-bubble';
+    wrap.style.cssText = 'position:fixed; left:-99999px; top:0; visibility:hidden; display:block; width:auto; height:auto; animation:none;';
+    _autoFitMeasureEl = document.createElement('span');
+    _autoFitMeasureEl.className = 'wt-bubble-text';
+    _autoFitMeasureEl.style.height   = 'auto';
+    _autoFitMeasureEl.style.maxWidth = 'none'; // override .wt-bubble-text's max-width:100% — no real bbox-sized parent here
+    wrap.appendChild(_autoFitMeasureEl);
+    document.body.appendChild(wrap);
   }
-  chunks.push(chunk);
-  return chunks;
+  return _autoFitMeasureEl;
 }
 
-/** Greedy word-wrap of `text` to maxWidthPx using canvas measureText; \n starts a new paragraph. */
-function wrapTextToWidth(ctx, text, maxWidthPx) {
-  const outLines = [];
-  for (const para of text.split('\n')) {
-    if (para === '') { outLines.push(''); continue; }
-    let line = '';
-    for (const word of para.split(' ')) {
-      const candidate = line ? `${line} ${word}` : word;
-      if (ctx.measureText(candidate).width <= maxWidthPx) {
-        line = candidate;
-        continue;
-      }
-      if (line) outLines.push(line);
-      if (ctx.measureText(word).width > maxWidthPx) {
-        const broken = _breakLongWord(ctx, word, maxWidthPx);
-        outLines.push(...broken.slice(0, -1));
-        line = broken[broken.length - 1];
-      } else {
-        line = word;
-      }
-    }
-    outLines.push(line);
-  }
-  return outLines;
+/** Real wrapped outer height (border-box, padding included) of `text` at `fontSizePx` constrained to `boxWidthPx`. */
+function measureBubbleTextHeight(text, boxWidthPx, fontSizePx, { fontFamily, bold, italic } = {}) {
+  const el = _getAutoFitMeasureEl();
+  el.style.width      = `${boxWidthPx}px`;
+  el.style.fontSize   = `${fontSizePx}px`;
+  el.style.fontWeight = bold   ? 'bold'   : 'normal';
+  el.style.fontStyle  = italic ? 'italic' : 'normal';
+  el.style.fontFamily = fontFamily ? `'${fontFamily}', system-ui, sans-serif` : '';
+  el.textContent = text;
+  return el.scrollHeight;
 }
 
 /**
  * Binary-searches the largest font size for which `text`, wrapped to
- * (boxWidthPx - padding), fits within (boxHeightPx - padding). The search's
- * upper bound scales with the box's own height (see dynamicMax below)
- * instead of being hard-capped at AUTO_FIT_MAX_FONT_SIZE — a large bubble
- * with short text should be able to render well past the app's old fixed
- * default. AUTO_FIT_MAX_FONT_SIZE is used only as a search-efficiency seed.
- * Returns { fontSize, lines, totalTextHeight, overflow } — overflow is true
- * when even AUTO_FIT_MIN_FONT_SIZE doesn't fit (caller applies the
- * height-expansion / clip fallback).
+ * boxWidthPx (real DOM layout, not an approximation), fits within
+ * boxHeightPx. The search's upper bound scales with the box's own height
+ * (see dynamicMax below) instead of being hard-capped at
+ * AUTO_FIT_MAX_FONT_SIZE — a large bubble with short text should be able to
+ * render well past the app's old fixed default. AUTO_FIT_MAX_FONT_SIZE is
+ * used only as a search-efficiency seed. Returns { fontSize, totalTextHeight,
+ * overflow } — overflow is true when even AUTO_FIT_MIN_FONT_SIZE doesn't fit
+ * (caller applies the height-expansion / clip fallback).
  */
-function fitTextToBox(text, boxWidthPx, boxHeightPx, { fontFamily, bold, italic } = {}) {
-  const ctx    = _getAutoFitCtx();
-  const availW = Math.max(1, boxWidthPx - AUTO_FIT_PAD_X);
-  const availH = Math.max(1, boxHeightPx - AUTO_FIT_PAD_Y);
-
+function fitTextToBox(text, boxWidthPx, boxHeightPx, styleOpts = {}) {
   const measureAt = (fontSizePx) => {
-    ctx.font = _autoFitFontString(fontSizePx, fontFamily, bold, italic);
-    const lines = wrapTextToWidth(ctx, text, availW);
-    const totalTextHeight = lines.length * fontSizePx * AUTO_FIT_LINE_HEIGHT;
-    return { fontSize: fontSizePx, lines, totalTextHeight, fits: totalTextHeight <= availH };
+    const totalTextHeight = measureBubbleTextHeight(text, boxWidthPx, fontSizePx, styleOpts);
+    return { fontSize: fontSizePx, totalTextHeight, fits: totalTextHeight <= boxHeightPx };
   };
 
   const atFloor = measureAt(AUTO_FIT_MIN_FONT_SIZE);
   if (!atFloor.fits) return { ...atFloor, overflow: true };
 
-  // availH / line-height is the biggest a single line could be and still fit
-  // vertically — a cheap proxy for "how large could this box's text
+  // boxHeightPx / line-height is the biggest a single line could be and still
+  // fit vertically — a cheap proxy for "how large could this box's text
   // plausibly get", clamped so it never shrinks below the old fixed default
   // (small/normal boxes behave exactly as before) and never exceeds the
   // absolute sanity ceiling (huge boxes don't blow up unreasonably).
   const dynamicMax = Math.min(
     AUTO_FIT_ABSOLUTE_MAX_FONT_SIZE,
-    Math.max(AUTO_FIT_MAX_FONT_SIZE, Math.floor(availH / AUTO_FIT_LINE_HEIGHT))
+    Math.max(AUTO_FIT_MAX_FONT_SIZE, Math.floor(boxHeightPx / AUTO_FIT_LINE_HEIGHT))
   );
 
   const seedSize = Math.min(AUTO_FIT_MAX_FONT_SIZE, dynamicMax);
@@ -221,7 +203,9 @@ function fitAndExpand(text, boxWidthPx, boxHeightPx, styleOpts) {
   const expandedIsBetter = !expanded.overflow && (primary.overflow || expanded.fontSize > primary.fontSize);
   if (expandedIsBetter) {
     // Grow only as much as this font size actually needs, not the full cap.
-    const neededH = Math.max(boxHeightPx, expanded.totalTextHeight + AUTO_FIT_PAD_Y);
+    // totalTextHeight is already the full border-box height (real DOM
+    // measurement, padding included) — no manual padding add-back needed.
+    const neededH = Math.max(boxHeightPx, expanded.totalTextHeight);
     return { fontSize: expanded.fontSize, boxHeightPx: Math.min(neededH, maxExpandedH), clipped: false };
   }
   if (primary.overflow) {
@@ -258,7 +242,10 @@ function applyAutoFit(b, span, ann, boxWidthPx, boxHeightPx) {
   span.style.overflow  = '';
 
   if (fit.clipped) {
-    const capPx = fit.boxHeightPx - AUTO_FIT_PAD_Y;
+    // span has box-sizing:border-box, so max-height applies to the same
+    // border-box (padding-included) height fit.boxHeightPx already is —
+    // no manual padding subtraction needed.
+    const capPx = fit.boxHeightPx;
     b.classList.add('wt-bubble-clipped');
     span.style.maxHeight = `${capPx}px`;
     span.style.overflow  = 'hidden';
@@ -3380,14 +3367,21 @@ function bootForPage() {
       queued > 0 ? `${active} đang dịch · ${queued} chờ` : `${active} đang dịch`;
   }
 
+  let _storyContextRequestedThisPageLoad = false; // only fetch/log once per page load, not on every OCR request
+
   const jobManager = new JobManager({
     runOcr:        (job) => {
-      // Lazy trigger point: first OCR/translation request for this title.
+      // Lazy trigger point: first OCR/translation request for this title,
+      // once per page load (repeat scans on the same page don't re-trigger
+      // it — cached reads are silent past the first one now, by request).
       // Fire-and-forget — nothing consumes the result yet (no LLM prompt step
       // exists in this codebase), but it fetches + caches it now so a future
       // Mode B/C implementation can read it back instantly. No-ops for any
       // adapter without fetchStoryContext (i.e. every non-Naver site today).
-      getStoryContext(adapter, meta.site, meta.titleId);
+      if (!_storyContextRequestedThisPageLoad) {
+        _storyContextRequestedThisPageLoad = true;
+        getStoryContext(adapter, meta.site, meta.titleId);
+      }
       return job.clips ? ocrClips(job.clips) : ocrRegionStitched(job.imageEl, job.bbox, images);
     },
     runTranslate:  (job) => autoTranslate(job.originalText),
