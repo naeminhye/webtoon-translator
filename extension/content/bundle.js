@@ -2024,6 +2024,11 @@ const EYE_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" st
 const EYE_OFF_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-7 0-11-7-11-7a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 const SCAN_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>`;
 
+// Bubble action toolbar icons — same Feather-style outline language as SCAN_ICON/EYE_ICON above.
+const BT_EDIT_ICON   = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
+const BT_RESIZE_ICON = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`;
+const BT_DELETE_ICON = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`;
+
 function buildToggleButton() {
   const btn = document.createElement('button');
   btn.id = 'wt-toggle-btn';
@@ -2597,9 +2602,9 @@ function bootForPage() {
     const toolbar = document.createElement('div');
     toolbar.className = 'wt-bubble-toolbar';
     toolbar.innerHTML = `
-      <button type="button" class="wt-bt-edit" title="Sửa văn bản">&#9998;</button>
-      ${isKakao ? '' : '<button type="button" class="wt-bt-resize" title="Chỉnh khung">&#10530;</button>'}
-      <button type="button" class="wt-bt-delete" title="Xoá">&#128465;</button>
+      <button type="button" class="wt-bt-edit" title="Sửa văn bản">${BT_EDIT_ICON}</button>
+      ${isKakao ? '' : `<button type="button" class="wt-bt-resize" title="Chỉnh khung">${BT_RESIZE_ICON}</button>`}
+      <button type="button" class="wt-bt-delete" title="Xoá">${BT_DELETE_ICON}</button>
     `;
     toolbar.style.left = bubble.style.left;
     toolbar.style.top  = `${parseFloat(bubble.style.top) - 32}px`;

@@ -208,20 +208,24 @@
   position: absolute; /* left/top set inline — positioned relative to the bubble's parent, not the bubble itself */
   z-index: 310; /* above .wt-resize-handle (300) */
   display: flex;
-  gap: 4px;
+  gap: 5px;
 }
 .wt-bubble-toolbar button {
   width: 26px;
   height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: none;
   border-radius: 6px;
-  font-size: 12px;
   cursor: pointer;
   background: #fff;
   color: #475569;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  transition: background 0.12s ease, color 0.12s ease, transform 0.08s ease;
 }
-.wt-bubble-toolbar button:hover { background: #eef2ff; color: #4338ca; }
+.wt-bubble-toolbar button:hover  { background: #eef2ff; color: #4338ca; }
+.wt-bubble-toolbar button:active { transform: scale(0.92); }
 .wt-bubble-toolbar .wt-bt-delete:hover { background: #fef2f2; color: #b91c1c; }
 
 .wt-bubble-edit-textarea {
