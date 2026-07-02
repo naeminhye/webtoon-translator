@@ -2384,27 +2384,42 @@ function showStorageWarning(usedBytes, quotaBytes) {
 
 const STORY_CONTEXT_KEY_PREFIX = 'wt:story-context:';
 const _storyContextInFlight = new Map(); // "site:titleId" -> Promise, dedupes concurrent lazy-fetch triggers
+// Bump this whenever fetchStoryContext's extraction logic changes in a way
+// that could change the resulting data (new field, fixed selector, switched
+// data source entirely, etc.) — a cached entry stamped with an older version
+// is treated as a miss and re-fetched. Without this, "no expiry in v1" means
+// a title cached under an old, since-fixed bug (e.g. empty tags from the
+// broken HTML-scraping approach) would silently keep serving that stale,
+// wrong data forever with no way to tell short of manually clearing storage.
+const STORY_CONTEXT_SCHEMA_VERSION = 2;
 
 /**
  * Lazily fetches + caches Story Context for a title, keyed by site+titleId.
- * Never re-fetches once cached (no expiry in v1 — synopsis/tags/author rarely
- * change after a title publishes). Concurrent calls for the same title (e.g.
- * several jobs starting near-simultaneously) share one in-flight fetch.
- * Resolves to null (never rejects) if the adapter has no fetchStoryContext
- * implementation, or if the fetch/parse fails — logged as a console warning,
- * never surfaced to the user or allowed to block translation.
+ * Doesn't re-fetch a cache hit stamped with the current
+ * STORY_CONTEXT_SCHEMA_VERSION (synopsis/tags/author rarely change after a
+ * title publishes) — but a hit from an older schema version is treated as a
+ * miss and re-fetched, so a fix to the extraction logic actually takes
+ * effect instead of being masked by stale cached data indefinitely.
+ * Concurrent calls for the same title (e.g. several jobs starting near-
+ * simultaneously) share one in-flight fetch. Resolves to null (never
+ * rejects) if the adapter has no fetchStoryContext implementation, or if the
+ * fetch/parse fails — logged as a console warning, never surfaced to the
+ * user or allowed to block translation.
  */
 async function getStoryContext(adapter, site, titleId) {
   if (typeof adapter.fetchStoryContext !== 'function') return null;
   const key = `${STORY_CONTEXT_KEY_PREFIX}${site}:${titleId}`;
 
   const stored = await chrome.storage.local.get(key);
-  if (stored[key]) {
+  if (stored[key] && stored[key].schemaVersion === STORY_CONTEXT_SCHEMA_VERSION) {
     // Cache-hit path never used to log anything, which reads as "nothing
     // happened" on every run after the first — log every time so it's
     // always visible, not just on a fresh fetch.
     console.log(`[WebtoonTranslate] StoryContext(${site}) cache hit:`, stored[key]);
     return stored[key];
+  }
+  if (stored[key]) {
+    console.log(`[WebtoonTranslate] StoryContext(${site}) cache stale (schema v${stored[key].schemaVersion ?? 'none'} -> v${STORY_CONTEXT_SCHEMA_VERSION}), re-fetching`);
   }
 
   if (_storyContextInFlight.has(key)) return _storyContextInFlight.get(key);
@@ -2412,7 +2427,10 @@ async function getStoryContext(adapter, site, titleId) {
   const promise = (async () => {
     try {
       const ctx = await adapter.fetchStoryContext(titleId);
-      if (ctx) await chrome.storage.local.set({ [key]: ctx });
+      if (ctx) {
+        ctx.schemaVersion = STORY_CONTEXT_SCHEMA_VERSION;
+        await chrome.storage.local.set({ [key]: ctx });
+      }
       return ctx || null;
     } catch (err) {
       console.warn('[WebtoonTranslate] StoryContext fetch failed for', site, titleId, err);
