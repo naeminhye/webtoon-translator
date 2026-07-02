@@ -1,17 +1,12 @@
 /**
- * background/worker.js — Phase 2: chrome.storage.local + Supabase cloud sync
+ * background/worker.js — chrome.storage.local persistence + OCR/translation pipeline
  */
 
-import * as sb from './supabase.js';
-
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const tabId = sender?.tab?.id ?? null;
   switch (message.type) {
-    case 'SAVE_TRANSLATIONS':   handleSave(message.payload, tabId).then(sendResponse);   return true;
-    case 'LOAD_TRANSLATIONS':   handleLoad(message.payload).then(sendResponse);          return true;
-    case 'DELETE_ANNOTATION':   handleDelete(message.payload, tabId).then(sendResponse); return true;
-    case 'EXPORT_CHAPTER':      handleExport(message.payload).then(sendResponse); return true;
-    case 'IMPORT_FILE':         handleImport(message.payload).then(sendResponse); return true;
+    case 'SAVE_TRANSLATIONS':   handleSave(message.payload).then(sendResponse);   return true;
+    case 'LOAD_TRANSLATIONS':   handleLoad(message.payload).then(sendResponse);   return true;
+    case 'DELETE_ANNOTATION':   handleDelete(message.payload).then(sendResponse); return true;
     case 'CLEAR_CHAPTER':       handleClear(message.payload).then(sendResponse);  return true;
     case 'OCR_REGION':
       handleOcr(message.payload)
@@ -20,6 +15,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     case 'OCR_STITCH':
       handleOcrStitch(message.payload)
+        .then(sendResponse)
+        .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
+      return true;
+    case 'CROP_IMAGE':
+      handleCropImage(message.payload)
         .then(sendResponse)
         .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
       return true;
@@ -39,26 +39,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       });
       return false;
-    case 'SB_GET_STATUS':  sbGetStatus().then(sendResponse);                          return true;
-    case 'SB_SAVE_CONFIG': sb.saveConfig(message.payload).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e.message })); return true;
-    case 'SB_SIGN_IN':     sbSignIn(message.payload).then(sendResponse);        return true;
-    case 'SB_SIGN_OUT':    sb.signOut().then(() => sendResponse({ ok: true })); return true;
-    case 'SB_SET_SYNC_ENABLED':
-      chrome.storage.local.set({ [SYNC_ENABLED_KEY]: Boolean(message.enabled) })
-        .then(() => sendResponse({ ok: true }));
-      return true;
   }
 });
 
-const SYNC_ENABLED_KEY = 'wt:sync-enabled';
-
-async function isSyncActive() {
-  if (!(await sb.isConfigured()) || !(await sb.getSession())) return false;
-  const s = await chrome.storage.local.get({ [SYNC_ENABLED_KEY]: false });
-  return Boolean(s[SYNC_ENABLED_KEY]);
-}
-
-async function handleSave({ site, titleId, chapterId, annotations }, tabId) {
+async function handleSave({ site, titleId, chapterId, annotations }) {
   const key      = storageKey(site, titleId, chapterId);
   const existing = await getLocal(key) || { site, titleId, chapterId, annotations: [] };
 
@@ -70,15 +54,7 @@ async function handleSave({ site, titleId, chapterId, annotations }, tabId) {
   }
 
   await chrome.storage.local.set({ [key]: existing });
-  // Async push — returns immediately so UI isn't blocked, then notifies tab
-  _syncSave(annotations, { site, titleId, chapterId }, tabId);
   return { ok: true };
-}
-
-async function _syncSave(annotations, meta, tabId) {
-  if (!(await isSyncActive())) return;
-  const result = await sb.saveAnnotations(annotations, meta).catch(e => ({ ok: false, error: e.message }));
-  _sendSyncStatus(tabId, result?.ok ? 'saved' : 'error', result?.error);
 }
 
 async function handleLoad({ site, titleId, chapterId }) {
@@ -86,7 +62,7 @@ async function handleLoad({ site, titleId, chapterId }) {
   const data = await getLocal(key);
   const raw  = data?.annotations || [];
 
-  // Dedupe local
+  // Dedupe
   const seen = new Map();
   for (const ann of raw) {
     const k = annKey(ann);
@@ -94,82 +70,22 @@ async function handleLoad({ site, titleId, chapterId }) {
     if (!existing || new Date(ann.createdAt) >= new Date(existing.createdAt)) seen.set(k, ann);
   }
 
-  // Merge with Supabase — server wins for same key (other translators' edits)
-  // Always pull from server when logged in, regardless of write-sync toggle
-  const canRead = (await sb.isConfigured()) && Boolean(await sb.getSession());
-  const serverAnns = canRead ? await sb.loadChapter({ site, titleId, chapterId }).catch(() => null) : null;
-  if (serverAnns) {
-    for (const ann of serverAnns) seen.set(annKey(ann), ann); // server overwrites local for same key
-    // Persist merged result so offline reads reflect latest server state
-    const merged = { site, titleId, chapterId, annotations: [...seen.values()] };
-    await chrome.storage.local.set({ [key]: merged });
-  }
-
-  const deduped = [...seen.values()];
-  return { annotations: deduped };
+  return { annotations: [...seen.values()] };
 }
 
-async function handleDelete({ site, titleId, chapterId, annKey: keyToDelete }, tabId) {
+async function handleDelete({ site, titleId, chapterId, annKey: keyToDelete }) {
   const key  = storageKey(site, titleId, chapterId);
   const data = await getLocal(key);
   if (data) {
-    const before = data.annotations.length;
     data.annotations = data.annotations.filter(a => annKey(a) !== keyToDelete);
     await chrome.storage.local.set({ [key]: data });
   }
-  _syncDelete({ site, titleId, chapterId, annKey: keyToDelete }, tabId);
-  return { ok: true, removed: data ? (data.annotations.length) : 0 };
-}
-
-async function _syncDelete(payload, tabId) {
-  if (!(await isSyncActive())) return;
-  const ok = await sb.deleteAnnotation(payload).catch(() => false);
-  _sendSyncStatus(tabId, ok ? 'deleted' : 'error');
-}
-
-function _sendSyncStatus(tabId, status, error) {
-  if (tabId == null) return;
-  chrome.tabs.sendMessage(tabId, { type: 'SYNC_STATUS', status, error }, () => void chrome.runtime.lastError);
-}
-
-async function handleExport({ site, titleId }) {
-  const allKeys = await getAllKeysForTitle(site, titleId);
-  const chapters = {};
-  for (const key of allKeys) {
-    const data = await getLocal(key);
-    if (data) chapters[data.chapterId] = data.annotations;
-  }
-  return {
-    exportData: {
-      version: 1, site, titleId, language: 'vi',
-      exportedAt: new Date().toISOString(), chapters,
-    },
-  };
+  return { ok: true, removed: data ? data.annotations.length : 0 };
 }
 
 async function handleClear({ site, titleId, chapterId }) {
   await chrome.storage.local.remove(storageKey(site, titleId, chapterId));
-  // Also remove from Supabase if signed in
-  if (await sb.isConfigured() && await sb.getSession()) {
-    await sb.clearChapter({ site, titleId, chapterId }).catch(() => {});
-  }
   return { ok: true };
-}
-
-async function handleImport({ jsonString }) {
-  let parsed;
-  try { parsed = JSON.parse(jsonString); }
-  catch { return { ok: false, error: 'Invalid JSON' }; }
-
-  if (parsed.version !== 1) return { ok: false, error: `Unsupported version: ${parsed.version}` };
-
-  const { site, titleId, chapters } = parsed;
-  let count = 0;
-  for (const [chapterId, annotations] of Object.entries(chapters)) {
-    await handleSave({ site, titleId, chapterId, annotations }, null);
-    count += annotations.length;
-  }
-  return { ok: true, imported: count };
 }
 
 // ── OCR ───────────────────────────────────────────────────────────────────────
@@ -375,6 +291,41 @@ async function fetchAndCrop(imageUrl, bbox) {
   });
 }
 
+/**
+ * Fetches imageUrl (service-worker side, so no cross-origin canvas taint) and
+ * crops it to `bbox` (% of natural image size) at 1:1 pixel scale — no OCR
+ * upscaling, so the caller's pixel-space math (e.g. flood-fill detection)
+ * still lines up with the returned image.
+ */
+async function fetchAndCropRaw(imageUrl, bbox) {
+  const res    = await fetch(imageUrl, { credentials: 'omit' });
+  const blob   = await res.blob();
+  const bitmap = await createImageBitmap(blob);
+
+  const sx = Math.round((bbox.x / 100) * bitmap.width);
+  const sy = Math.round((bbox.y / 100) * bitmap.height);
+  const sw = Math.max(1, Math.round((bbox.w / 100) * bitmap.width));
+  const sh = Math.max(1, Math.round((bbox.h / 100) * bitmap.height));
+
+  const canvas = new OffscreenCanvas(sw, sh);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+  bitmap.close();
+
+  const cropBlob = await canvas.convertToBlob({ type: 'image/png' });
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to encode cropped image'));
+    reader.readAsDataURL(cropBlob);
+  });
+}
+
+async function handleCropImage({ imageUrl, bbox }) {
+  const dataUrl = await fetchAndCropRaw(imageUrl, bbox);
+  return { ok: true, dataUrl };
+}
+
 // ── extension on/off badge ────────────────────────────────────────────────────
 // `wt:enabled` (default true) is the global switch toggled from the popup.
 // Reflect it on the toolbar icon so the state is visible without opening the popup.
@@ -396,25 +347,6 @@ chrome.runtime.onInstalled.addListener(updateBadge);
 chrome.runtime.onStartup.addListener(updateBadge);
 updateBadge();
 
-// ── Supabase auth handlers ────────────────────────────────────────────────────
-
-async function sbGetStatus() {
-  const configured = await sb.isConfigured();
-  if (!configured) return { configured: false, user: null, syncEnabled: false };
-  const session = await sb.getSession();
-  const stored  = await chrome.storage.local.get({ [SYNC_ENABLED_KEY]: false });
-  return { configured: true, user: session?.user ?? null, syncEnabled: Boolean(stored[SYNC_ENABLED_KEY]) };
-}
-
-async function sbSignIn({ email, password }) {
-  try {
-    const session = await sb.signIn(email, password);
-    return { ok: true, user: session.user };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-}
-
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /** Stable unique key for an annotation — survives round-trips */
@@ -426,11 +358,4 @@ function storageKey(site, titleId, chapterId) { return `wt:${site}:${titleId}:${
 
 function getLocal(key) {
   return new Promise(resolve => chrome.storage.local.get(key, r => resolve(r[key])));
-}
-
-async function getAllKeysForTitle(site, titleId) {
-  const prefix = `wt:${site}:${titleId}:`;
-  return new Promise(resolve =>
-    chrome.storage.local.get(null, all => resolve(Object.keys(all).filter(k => k.startsWith(prefix))))
-  );
 }
