@@ -59,7 +59,8 @@ function hexToRgba(hex, alpha) {
 // the span exists in the document.
 
 const AUTO_FIT_MAX_FONT_SIZE   = 20;   // ceiling — matches DEFAULT_STYLE.fontSize, the app's prior fixed default
-const AUTO_FIT_MIN_FONT_SIZE   = 13;   // floor — readability wins over fitting; needs visual tuning against real panels
+const AUTO_FIT_MIN_FONT_SIZE   = 13;   // absolute floor — readability wins over fitting; needs visual tuning against real panels
+const AUTO_FIT_COMFORT_FONT_SIZE = 16; // below this, prefer a taller box over a cramped font — see fitAndExpand
 const AUTO_FIT_LINE_HEIGHT     = 1.45; // matches .wt-bubble-text's CSS line-height
 const AUTO_FIT_PAD_X           = 16;   // .wt-bubble-text CSS padding: 4px 8px -> 8*2 horizontal
 const AUTO_FIT_PAD_Y           = 8;    // 4*2 vertical
@@ -159,22 +160,44 @@ function fitTextToBox(text, boxWidthPx, boxHeightPx, { fontFamily, bold, italic 
  * webtoons read vertically, so vertical growth is less disruptive) up to a
  * cap. If even the capped height isn't enough, returns clipped: true so the
  * caller can render a "show more" affordance instead of silently cutting text.
+ *
+ * Also treats "only fits by shrinking below AUTO_FIT_COMFORT_FONT_SIZE" as
+ * worth trying to expand for, not just outright overflow — the OCR bbox is
+ * sized to the (often short) original text, so a longer Vietnamese
+ * translation can legitimately fit at a cramped size on a tight box while
+ * the speech bubble around it still has plenty of unused room below.
+ * Preferring a taller box over a maxed-out-small font reads better even
+ * when nothing technically "overflowed". Only takes the expanded result if
+ * it actually buys a bigger font — a purely width-limited fit won't improve
+ * from extra height, so there's no point growing the box for nothing.
  */
 function fitAndExpand(text, boxWidthPx, boxHeightPx, styleOpts) {
-  const fit = fitTextToBox(text, boxWidthPx, boxHeightPx, styleOpts);
-  if (!fit.overflow) {
-    return { fontSize: fit.fontSize, boxHeightPx, clipped: false };
+  const primary = fitTextToBox(text, boxWidthPx, boxHeightPx, styleOpts);
+  if (!primary.overflow && primary.fontSize >= AUTO_FIT_COMFORT_FONT_SIZE) {
+    return { fontSize: primary.fontSize, boxHeightPx, clipped: false };
   }
 
   const maxExpandedH = Math.min(
     boxHeightPx * AUTO_FIT_MAX_EXPAND_RATIO,
     window.innerHeight * AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC
   );
-  const neededH = fit.totalTextHeight + AUTO_FIT_PAD_Y;
-  if (neededH <= maxExpandedH) {
-    return { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx: neededH, clipped: false };
+  if (maxExpandedH <= boxHeightPx) {
+    return primary.overflow
+      ? { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx, clipped: true }
+      : { fontSize: primary.fontSize, boxHeightPx, clipped: false };
   }
-  return { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx: maxExpandedH, clipped: true };
+
+  const expanded = fitTextToBox(text, boxWidthPx, maxExpandedH, styleOpts);
+  const expandedIsBetter = !expanded.overflow && (primary.overflow || expanded.fontSize > primary.fontSize);
+  if (expandedIsBetter) {
+    // Grow only as much as this font size actually needs, not the full cap.
+    const neededH = Math.max(boxHeightPx, expanded.totalTextHeight + AUTO_FIT_PAD_Y);
+    return { fontSize: expanded.fontSize, boxHeightPx: Math.min(neededH, maxExpandedH), clipped: false };
+  }
+  if (primary.overflow) {
+    return { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx: maxExpandedH, clipped: true };
+  }
+  return { fontSize: primary.fontSize, boxHeightPx, clipped: false };
 }
 
 /**
