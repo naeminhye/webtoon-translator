@@ -2455,7 +2455,13 @@ async function getStoryContext(adapter, site, titleId) {
   const key = `${STORY_CONTEXT_KEY_PREFIX}${site}:${titleId}`;
 
   const stored = await chrome.storage.local.get(key);
-  if (stored[key]) return stored[key];
+  if (stored[key]) {
+    // Cache-hit path never used to log anything, which reads as "nothing
+    // happened" on every run after the first — log every time so it's
+    // always visible, not just on a fresh fetch.
+    console.log(`[WebtoonTranslate] StoryContext(${site}) cache hit:`, stored[key]);
+    return stored[key];
+  }
 
   if (_storyContextInFlight.has(key)) return _storyContextInFlight.get(key);
 
