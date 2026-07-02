@@ -406,7 +406,9 @@ function fixPointerEvents(img) {
 // for this MVP and simply fails validity, letting the caller fall back to
 // manual drag-to-select.
 
-const AUTO_DETECT_CROP_RADIUS    = 250; // px around click, in natural-image pixels
+const AUTO_DETECT_CROP_RADIUS    = 250; // px around click, in natural-image pixels — starting radius
+const AUTO_DETECT_MAX_RADIUS     = 700; // px — cap for the expand-and-retry loop when the fill hits the crop edge
+const AUTO_DETECT_MAX_ATTEMPTS   = 3;   // expand-and-retry attempts before giving up
 const AUTO_DETECT_TOLERANCE      = 25;  // flood-fill color-distance tolerance — needs tuning against real screenshots
 const AUTO_DETECT_PADDING        = 8;   // px padding added to the final bbox
 const AUTO_DETECT_MIN_W          = 20;  // px — reject narrower regions
@@ -419,96 +421,104 @@ class BubbleAutoDetector {
   /**
    * Attempts to detect a speech-bubble region around a click point using a
    * local flood fill. `clickX`/`clickY` and `imgRect` are in the same CSS-px
-   * space as img.getBoundingClientRect(). Returns { bbox, debug }: `bbox` is
-   * a %-of-natural-image box matching BBoxSelector's onSelect contract, or
-   * null if the region failed the validity check (caller should fall back
-   * to manual drag-to-select).
+   * space as img.getBoundingClientRect(). `images`/`imageIndex` (optional) let
+   * the crop pull in pixels from the previous/next panel image — webtoon
+   * panels stack vertically, so a bubble can visually span two separate <img>
+   * elements; without this, flood fill could never "see" past the edge of
+   * whichever single image was clicked.
+   *
+   * If the filled region touches the edge of the crop (a strong sign it got
+   * clipped — e.g. the click landed off-center in a large bubble), the crop
+   * is re-centered on the click with a bigger radius and retried, up to
+   * AUTO_DETECT_MAX_ATTEMPTS times.
+   *
+   * Returns { bbox, debug }: `bbox` is a %-of-natural-image box relative to
+   * `img` matching BBoxSelector's onSelect contract — y may be negative or
+   * y+h may exceed 100 when the bubble spans into a neighboring panel;
+   * ocrRegionStitched already knows how to grab that overflow. `bbox` is
+   * null if detection failed (caller should fall back to manual drag).
    */
-  async detect(img, clickX, clickY, imgRect) {
+  async detect(img, clickX, clickY, imgRect, images, imageIndex) {
     const nw = img.naturalWidth  || img.width  || imgRect.width;
     const nh = img.naturalHeight || img.height || imgRect.height;
     const scaleX = nw / imgRect.width, scaleY = nh / imgRect.height;
-    const cx = clickX * scaleX, cy = clickY * scaleY; // click point in natural-image px
+    const cx = clickX * scaleX, cy = clickY * scaleY; // click point in current image's natural px
 
-    const sx = Math.max(0, Math.round(cx - AUTO_DETECT_CROP_RADIUS));
-    const sy = Math.max(0, Math.round(cy - AUTO_DETECT_CROP_RADIUS));
-    const ex = Math.min(nw, Math.round(cx + AUTO_DETECT_CROP_RADIUS));
-    const ey = Math.min(nh, Math.round(cy + AUTO_DETECT_CROP_RADIUS));
-    const cw = ex - sx, ch = ey - sy;
+    let radius = AUTO_DETECT_CROP_RADIUS;
+    let debug = { click: { x: clickX, y: clickY }, clickNatural: { x: Math.round(cx), y: Math.round(cy) } };
 
-    const debug = {
-      click: { x: clickX, y: clickY },
-      clickNatural: { x: Math.round(cx), y: Math.round(cy) },
-      crop: { sx, sy, w: cw, h: ch },
-      tolerance: AUTO_DETECT_TOLERANCE,
-    };
+    for (let attempt = 0; attempt < AUTO_DETECT_MAX_ATTEMPTS; attempt++) {
+      const syRaw = cy - radius, eyRaw = cy + radius;
+      const sx = Math.max(0, Math.round(cx - radius));
+      const ex = Math.min(nw, Math.round(cx + radius));
+      const cw = ex - sx;
 
-    if (cw < 2 || ch < 2) {
-      return this._fail(debug, 'crop-too-small');
-    }
+      debug = { ...debug, attempt, radius, tolerance: AUTO_DETECT_TOLERANCE };
 
-    let imageData;
-    try {
-      imageData = this._readCropPixels(img, sx, sy, cw, ch);
-    } catch (e) {
-      // Cross-origin image without CORS headers taints the canvas — getImageData
-      // throws SecurityError. Fall back to a background-worker fetch+crop (no
-      // taint there, since it's not loaded through a same-page <img> element),
-      // then read pixels from the returned (same-origin data:) URL instead.
+      if (cw < 2) return this._fail(debug, 'crop-too-small');
+
+      const segments = this._buildVerticalSegments(img, images, imageIndex, Math.round(syRaw), Math.round(eyRaw), nh);
+      const ch = segments.totalHeight;
+      if (ch < 2) return this._fail(debug, 'crop-too-small');
+      debug.crop = { sx, sy: segments.canvasTopFrameY, w: cw, h: ch, segments: segments.list.length };
+
+      let imageData;
       try {
-        imageData = await this._readCropPixelsViaBackground(img, nw, nh, sx, sy, cw, ch);
-      } catch (e2) {
+        imageData = await this._composeSegments(segments.list, sx, cw, ch);
+      } catch (e) {
         return this._fail(debug, 'canvas-tainted');
       }
+      if (!imageData) return this._fail(debug, 'canvas-tainted');
+
+      boxBlur3x3(imageData);
+
+      const localX = Math.round(cx - sx);
+      const localY = Math.round(cy - segments.canvasTopFrameY);
+      const region = floodFillBBox(imageData, localX, localY, AUTO_DETECT_TOLERANCE);
+      if (!region) return this._fail(debug, 'seed-out-of-bounds');
+
+      const { minX, minY, maxX, maxY, filledPixels } = region;
+      const rw = maxX - minX + 1, rh = maxY - minY + 1;
+      const touchesEdge = minX === 0 || minY === 0 || maxX === cw - 1 || maxY === ch - 1;
+
+      debug.region = { x: minX, y: minY, w: rw, h: rh, filledPixels, aspect: +(rw / rh).toFixed(2), touchesEdge };
+
+      if (touchesEdge && radius < AUTO_DETECT_MAX_RADIUS) {
+        // Likely clipped by the crop (off-center click, or a bubble bigger than
+        // the current radius) — grow the crop around the same click point and retry.
+        radius = Math.min(AUTO_DETECT_MAX_RADIUS, Math.round(radius * 1.8));
+        continue;
+      }
+
+      const areaRatio = (rw * rh) / (cw * ch);
+      const aspect = rw / rh;
+      debug.region.areaRatio = +areaRatio.toFixed(3);
+
+      if (rw < AUTO_DETECT_MIN_W || rh < AUTO_DETECT_MIN_H) return this._fail(debug, 'too-small');
+      if (areaRatio > AUTO_DETECT_MAX_AREA_RATIO) return this._fail(debug, 'leaked-into-background');
+      if (aspect > AUTO_DETECT_MAX_ASPECT || aspect < AUTO_DETECT_MIN_ASPECT) return this._fail(debug, 'bad-aspect-ratio');
+
+      // Crop-local region -> bbox relative to the CURRENT image's natural size,
+      // padded. x stays clamped to this image's width (no horizontal neighbor
+      // concept); y is intentionally left unclamped — see method doc above.
+      const px0 = Math.max(0,  sx + minX - AUTO_DETECT_PADDING);
+      const py0 = segments.canvasTopFrameY + minY - AUTO_DETECT_PADDING;
+      const px1 = Math.min(nw, sx + maxX + 1 + AUTO_DETECT_PADDING);
+      const py1 = segments.canvasTopFrameY + maxY + 1 + AUTO_DETECT_PADDING;
+
+      const bbox = {
+        x: (px0 / nw) * 100,
+        y: (py0 / nh) * 100,
+        w: ((px1 - px0) / nw) * 100,
+        h: ((py1 - py0) / nh) * 100,
+      };
+      debug.bbox = bbox;
+      debug.pass = true;
+      console.log('[WebtoonTranslate] AutoDetect pass', debug);
+      return { bbox, debug };
     }
-    if (!imageData) {
-      return this._fail(debug, 'canvas-tainted');
-    }
 
-    boxBlur3x3(imageData);
-
-    const localX = Math.round(cx - sx), localY = Math.round(cy - sy);
-    const region = floodFillBBox(imageData, localX, localY, AUTO_DETECT_TOLERANCE);
-    if (!region) {
-      return this._fail(debug, 'seed-out-of-bounds');
-    }
-
-    const { minX, minY, maxX, maxY, filledPixels } = region;
-    const rw = maxX - minX + 1, rh = maxY - minY + 1;
-    const areaRatio = (rw * rh) / (cw * ch);
-    const aspect = rw / rh;
-
-    debug.region = {
-      x: minX, y: minY, w: rw, h: rh,
-      filledPixels, areaRatio: +areaRatio.toFixed(3), aspect: +aspect.toFixed(2),
-    };
-
-    if (rw < AUTO_DETECT_MIN_W || rh < AUTO_DETECT_MIN_H) {
-      return this._fail(debug, 'too-small');
-    }
-    if (areaRatio > AUTO_DETECT_MAX_AREA_RATIO) {
-      return this._fail(debug, 'leaked-into-background');
-    }
-    if (aspect > AUTO_DETECT_MAX_ASPECT || aspect < AUTO_DETECT_MIN_ASPECT) {
-      return this._fail(debug, 'bad-aspect-ratio');
-    }
-
-    // Crop-local region -> natural-image px, padded and clamped to image bounds.
-    const px0 = Math.max(0,  sx + minX - AUTO_DETECT_PADDING);
-    const py0 = Math.max(0,  sy + minY - AUTO_DETECT_PADDING);
-    const px1 = Math.min(nw, sx + maxX + 1 + AUTO_DETECT_PADDING);
-    const py1 = Math.min(nh, sy + maxY + 1 + AUTO_DETECT_PADDING);
-
-    const bbox = {
-      x: (px0 / nw) * 100,
-      y: (py0 / nh) * 100,
-      w: ((px1 - px0) / nw) * 100,
-      h: ((py1 - py0) / nh) * 100,
-    };
-    debug.bbox = bbox;
-    debug.pass = true;
-    console.log('[WebtoonTranslate] AutoDetect pass', debug);
-    return { bbox, debug };
+    return this._fail(debug, 'exceeded-max-attempts');
   }
 
   _fail(debug, reason) {
@@ -518,22 +528,80 @@ class BubbleAutoDetector {
     return { bbox: null, debug };
   }
 
-  _readCropPixels(img, sx, sy, cw, ch) {
+  /**
+   * Splits the vertical span [syRaw, eyRaw) — in the CURRENT image's own
+   * natural-px coordinate space, may extend past [0, nh) — into up to 3
+   * segments: a slice of the previous image (if syRaw<0 and one exists), the
+   * current image's own portion, and a slice of the next image (if
+   * eyRaw>nh and one exists). Each segment records its source element,
+   * source-y range, and where it lands in the composed canvas (destY).
+   * `canvasTopFrameY` is the current-image-space y that ends up at destY=0
+   * (equal to syRaw unless a neighbor didn't have enough height to cover the
+   * full requested overflow, in which case it's clamped inward).
+   */
+  _buildVerticalSegments(img, images, imageIndex, syRaw, eyRaw, nh) {
+    const list = [];
+    let canvasTopFrameY = syRaw;
+
+    if (syRaw < 0) {
+      const prevImg = (images && imageIndex > 0) ? images[imageIndex - 1] : null;
+      const pnh = prevImg ? (prevImg.naturalHeight || prevImg.height || 0) : 0;
+      const want = prevImg ? Math.min(-syRaw, pnh) : 0;
+      canvasTopFrameY = -want;
+      if (want > 0) list.push({ source: prevImg, sy: pnh - want, sh: want, destY: 0 });
+    }
+
+    const curSegStart = Math.max(0, syRaw);
+    const curSegEnd   = Math.min(nh, eyRaw);
+    const curH = curSegEnd - curSegStart;
+    if (curH > 0) list.push({ source: img, sy: curSegStart, sh: curH, destY: curSegStart - canvasTopFrameY });
+
+    if (eyRaw > nh) {
+      const nextImg = (images && imageIndex < images.length - 1) ? images[imageIndex + 1] : null;
+      if (nextImg) {
+        const nnh = nextImg.naturalHeight || nextImg.height || 0;
+        const want = Math.min(eyRaw - nh, nnh);
+        if (want > 0) list.push({ source: nextImg, sy: 0, sh: want, destY: nh - canvasTopFrameY });
+      }
+    }
+
+    const totalHeight = list.reduce((max, s) => Math.max(max, s.destY + s.sh), 0);
+    return { list, totalHeight, canvasTopFrameY };
+  }
+
+  /**
+   * Draws 1-3 vertical segments (possibly from different <img> elements) into
+   * one canvas and reads back the composed pixels. Falls back to fetching
+   * each segment via the background worker (same taint-avoidance as the
+   * single-image case) if any source is a cross-origin image without CORS
+   * headers — getImageData taints the WHOLE canvas if even one drawn source
+   * was tainted, so the fallback re-draws every segment from a background-
+   * fetched (same-origin data:) image rather than trying to patch just one.
+   */
+  async _composeSegments(segments, sx, cw, ch) {
     const canvas = document.createElement('canvas');
     canvas.width = cw; canvas.height = ch;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(img, sx, sy, cw, ch, 0, 0, cw, ch);
-    return ctx.getImageData(0, 0, cw, ch); // throws SecurityError if tainted
-  }
-
-  async _readCropPixelsViaBackground(img, nw, nh, sx, sy, cw, ch) {
-    const bbox = { x: (sx / nw) * 100, y: (sy / nh) * 100, w: (cw / nw) * 100, h: (ch / nh) * 100 };
-    const res = await sendToBackground({ type: MSG.CROP_IMAGE, payload: { imageUrl: img.src, bbox } });
-    if (!res?.ok || !res.dataUrl) throw new Error(res?.error || 'background crop failed');
-    const cropImg = await loadImage(res.dataUrl);
-    // fetchAndCropRaw returns a 1:1 pixel crop (no OCR upscaling), so this reads
-    // back at the same cw x ch dimensions our natural-pixel math already assumes.
-    return this._readCropPixels(cropImg, 0, 0, cw, ch);
+    for (const seg of segments) {
+      ctx.drawImage(seg.source, sx, seg.sy, cw, seg.sh, 0, seg.destY, cw, seg.sh);
+    }
+    try {
+      return ctx.getImageData(0, 0, cw, ch);
+    } catch (e) {
+      const canvas2 = document.createElement('canvas');
+      canvas2.width = cw; canvas2.height = ch;
+      const ctx2 = canvas2.getContext('2d', { willReadFrequently: true });
+      for (const seg of segments) {
+        const snw = seg.source.naturalWidth || seg.source.width || cw;
+        const snh = seg.source.naturalHeight || seg.source.height || seg.sh;
+        const bbox = { x: (sx / snw) * 100, y: (seg.sy / snh) * 100, w: (cw / snw) * 100, h: (seg.sh / snh) * 100 };
+        const res = await sendToBackground({ type: MSG.CROP_IMAGE, payload: { imageUrl: seg.source.src, bbox } });
+        if (!res?.ok || !res.dataUrl) throw new Error(res?.error || 'background crop failed');
+        const segImg = await loadImage(res.dataUrl);
+        ctx2.drawImage(segImg, 0, 0, cw, seg.sh, 0, seg.destY, cw, seg.sh);
+      }
+      return ctx2.getImageData(0, 0, cw, ch);
+    }
   }
 }
 
@@ -2468,7 +2536,7 @@ function bootForPage() {
     onSelect: createJobFromSelection,
     onDragStart: () => { detectPreview.dismiss(); dismissBubbleToolbar(); },
     onClick: async ({ img, clickX, clickY, imgRect, imageIndex }) => {
-      const { bbox } = await autoDetector.detect(img, clickX, clickY, imgRect);
+      const { bbox } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
       if (!bbox) return; // validity check failed — fall back to manual drag-to-select
       await createJobFromSelection({ bbox, imageEl: img, imageIndex });
     },
