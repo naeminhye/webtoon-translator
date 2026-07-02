@@ -904,23 +904,27 @@ class BubbleAutoDetector {
       // case keep only the valid half(s) instead of falling back to the
       // full (still-contaminated) merged region. Only fall back to the
       // merged region if NEITHER half is independently valid.
-      let regions = [region];
-      const split = findWaistSplit(region.mask, cw, ch, region);
-      if (split) {
-        const validHalves = split.filter(r => this._isValidRegion(r, cw, ch).valid);
-        if (validHalves.length > 0) {
-          regions = validHalves;
-          debug.split = validHalves.length === split.length ? 'both' : 'partial';
+      let { bboxes, firstFailReason } = this._extractBboxes(region, cw, ch, sx, segments, nw, nh, debug);
+
+      // Last-resort retry for bubbles with a literal gap in their border
+      // (dashed/dotted outlines), which a color-only fill leaks straight
+      // through regardless of tolerance tuning — see computeEdgeBarrierMask's
+      // doc. Only attempted when the plain fill actually leaked into the
+      // background (not other failure reasons, and never when the plain fill
+      // already succeeded), so solid-border bubbles — the vast majority — are
+      // completely unaffected by this and take zero extra work.
+      if (!bboxes.length && firstFailReason === 'leaked-into-background') {
+        const barrier    = computeEdgeBarrierMask(imageData);
+        const edgeRegion = floodFillBBox(imageData, localX, localY, AUTO_DETECT_TOLERANCE, barrier);
+        if (edgeRegion) {
+          const retry = this._extractBboxes(edgeRegion, cw, ch, sx, segments, nw, nh, debug);
+          if (retry.bboxes.length) {
+            bboxes = retry.bboxes;
+            debug.edgeBarrierRetry = true;
+          }
         }
       }
 
-      const bboxes = [];
-      let firstFailReason = null;
-      for (const r of regions) {
-        const v = this._isValidRegion(r, cw, ch);
-        if (!v.valid) { firstFailReason = firstFailReason || v.reason; continue; }
-        bboxes.push(this._regionToBbox(r, sx, segments.canvasTopFrameY, nw, nh));
-      }
       if (!bboxes.length) return this._fail(debug, firstFailReason || 'too-small');
 
       debug.bboxes = bboxes;
@@ -930,6 +934,28 @@ class BubbleAutoDetector {
     }
 
     return this._fail(debug, 'exceeded-max-attempts');
+  }
+
+  /** Waist-split + per-region validity check + bbox conversion — shared by the plain flood fill and the edge-barrier dashed-border retry. */
+  _extractBboxes(region, cw, ch, sx, segments, nw, nh, debug) {
+    let regions = [region];
+    const split = findWaistSplit(region.mask, cw, ch, region);
+    if (split) {
+      const validHalves = split.filter(r => this._isValidRegion(r, cw, ch).valid);
+      if (validHalves.length > 0) {
+        regions = validHalves;
+        debug.split = validHalves.length === split.length ? 'both' : 'partial';
+      }
+    }
+
+    const bboxes = [];
+    let firstFailReason = null;
+    for (const r of regions) {
+      const v = this._isValidRegion(r, cw, ch);
+      if (!v.valid) { firstFailReason = firstFailReason || v.reason; continue; }
+      bboxes.push(this._regionToBbox(r, sx, segments.canvasTopFrameY, nw, nh));
+    }
+    return { bboxes, firstFailReason };
   }
 
   /** Size/area/aspect validity check shared by the merged region and each waist-split half. */
@@ -1077,8 +1103,8 @@ function boxBlur3x3(imageData) {
   }
 }
 
-/** Iterative 4-connected flood fill by color distance to the seed pixel. Returns the bbox + pixel count + the fill mask, or null if the seed is out of bounds. */
-function floodFillBBox(imageData, startX, startY, tolerance) {
+/** Iterative 4-connected flood fill by color distance to the seed pixel. `barrierMask` (optional, from computeEdgeBarrierMask), when given, blocks traversal into any marked pixel regardless of color tolerance — used as a last-resort retry for bubbles whose border has literal gaps (dashed/dotted outlines) that a color-only fill leaks straight through. Returns the bbox + pixel count + the fill mask, or null if the seed is out of bounds. */
+function floodFillBBox(imageData, startX, startY, tolerance, barrierMask) {
   const { data, width: w, height: h } = imageData;
   if (startX < 0 || startY < 0 || startX >= w || startY >= h) return null;
 
@@ -1094,6 +1120,7 @@ function floodFillBBox(imageData, startX, startY, tolerance) {
 
   const tryVisit = (nIdx) => {
     if (visited[nIdx]) return;
+    if (barrierMask && barrierMask[nIdx]) return;
     const i = nIdx * 4;
     const dr = data[i] - sr, dg = data[i + 1] - sg, db = data[i + 2] - sb;
     if (dr * dr + dg * dg + db * db <= tolSq) {
@@ -1116,6 +1143,73 @@ function floodFillBBox(imageData, startX, startY, tolerance) {
   }
 
   return { minX, minY, maxX, maxY, filledPixels, mask: visited };
+}
+
+// ── Edge barrier (dashed/dotted bubble border fallback) ────────────────────────
+// A color-tolerance flood fill treats a dashed border as a series of walls with
+// literal gaps between them — the fill leaks straight through those gaps into
+// whatever's outside the bubble. This computes a simple gradient-magnitude edge
+// map (cheap central-difference approximation, not a full Sobel convolution)
+// and dilates it by a few px, so nearby dash segments' edges merge into a
+// mostly-continuous barrier that bridges small gaps. Deliberately NOT wired
+// into the main detection path — see AUTO_DETECT_EDGE_* below and detect()'s
+// last-resort retry — a real border (dashed or solid) is a strong edge either
+// way, so this mainly matters for closing dash gaps, not for solid borders
+// (which the plain color-tolerance fill already handles).
+
+const AUTO_DETECT_EDGE_THRESHOLD   = 40; // luminance gradient magnitude above this counts as an edge; needs tuning against real dashed-bubble screenshots
+const AUTO_DETECT_EDGE_DILATE_PX   = 2;  // how far to grow each edge pixel — must be >= half the typical gap between dashes to bridge them
+
+/** Grayscale gradient magnitude (central differences) thresholded into a binary edge mask. */
+function computeEdgeMask(imageData, threshold) {
+  const { data, width: w, height: h } = imageData;
+  const lum = new Float32Array(w * h);
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    lum[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  }
+  const edges = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      const gx = lum[p + (x < w - 1 ? 1 : 0)] - lum[p - (x > 0 ? 1 : 0)];
+      const gy = lum[p + (y < h - 1 ? w : 0)] - lum[p - (y > 0 ? w : 0)];
+      if (Math.sqrt(gx * gx + gy * gy) > threshold) edges[p] = 1;
+    }
+  }
+  return edges;
+}
+
+/** Separable square dilation (grows every set pixel by `radius` in both axes) — O(w*h*radius), not O(w*h*radius²). */
+function dilateMask(mask, w, h, radius) {
+  const tmp = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let on = 0;
+      for (let dx = -radius; dx <= radius && !on; dx++) {
+        const nx = x + dx;
+        if (nx >= 0 && nx < w && mask[y * w + nx]) on = 1;
+      }
+      tmp[y * w + x] = on;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let on = 0;
+      for (let dy = -radius; dy <= radius && !on; dy++) {
+        const ny = y + dy;
+        if (ny >= 0 && ny < h && tmp[ny * w + x]) on = 1;
+      }
+      out[y * w + x] = on;
+    }
+  }
+  return out;
+}
+
+/** computeEdgeMask + dilateMask in one call, for detect()'s dashed-border retry. */
+function computeEdgeBarrierMask(imageData) {
+  const edges = computeEdgeMask(imageData, AUTO_DETECT_EDGE_THRESHOLD);
+  return dilateMask(edges, imageData.width, imageData.height, AUTO_DETECT_EDGE_DILATE_PX);
 }
 
 // ── Waist-split (separates two bubbles merged by flood fill at a touching point) ─
