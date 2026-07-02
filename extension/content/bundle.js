@@ -58,7 +58,8 @@ function hexToRgba(hex, alpha) {
 // render is DOM) so the wrap/fit math has a real width to work from before
 // the span exists in the document.
 
-const AUTO_FIT_MAX_FONT_SIZE   = 20;   // ceiling — matches DEFAULT_STYLE.fontSize, the app's prior fixed default
+const AUTO_FIT_MAX_FONT_SIZE   = 20;   // search seed — the app's prior fixed default; NOT a hard ceiling, see fitTextToBox's dynamicMax
+const AUTO_FIT_ABSOLUTE_MAX_FONT_SIZE = 48; // sane ceiling so a short line in a huge bubble can't blow up to an absurd size; needs visual tuning
 const AUTO_FIT_MIN_FONT_SIZE   = 13;   // absolute floor — readability wins over fitting; needs visual tuning against real panels
 const AUTO_FIT_COMFORT_FONT_SIZE = 16; // below this, prefer a taller box over a cramped font — see fitAndExpand
 const AUTO_FIT_LINE_HEIGHT     = 1.45; // matches .wt-bubble-text's CSS line-height
@@ -66,6 +67,14 @@ const AUTO_FIT_PAD_X           = 16;   // .wt-bubble-text CSS padding: 4px 8px -
 const AUTO_FIT_PAD_Y           = 8;    // 4*2 vertical
 const AUTO_FIT_MAX_EXPAND_RATIO         = 2.5; // height fallback never grows the box past this multiple of its original bbox height
 const AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC = 0.5; // ...or this fraction of the viewport height, whichever is smaller
+// The OCR bbox is the RECTANGLE circumscribing an (often oval/round) bubble —
+// an oval only touches its bounding rect at each edge's midpoint, not at the
+// corners, so fitting text to the raw bbox pushes the visible caption box out
+// toward those corners, past the bubble's real edge. These margins are a
+// pragmatic width/height shrink applied before fitting, not real ellipse
+// geometry — both need visual tuning against a range of real bubble shapes.
+const AUTO_FIT_WIDTH_MARGIN  = 0.82;
+const AUTO_FIT_HEIGHT_MARGIN = 0.92;
 
 let _autoFitCtx = null;
 function _getAutoFitCtx() {
@@ -122,10 +131,15 @@ function wrapTextToWidth(ctx, text, maxWidthPx) {
 }
 
 /**
- * Binary-searches the largest font size in [AUTO_FIT_MIN_FONT_SIZE, AUTO_FIT_MAX_FONT_SIZE]
- * for which `text`, wrapped to (boxWidthPx - padding), fits within (boxHeightPx - padding).
- * Returns { fontSize, lines, totalTextHeight, overflow } — overflow is true when even the
- * floor size doesn't fit (caller applies the height-expansion / clip fallback).
+ * Binary-searches the largest font size for which `text`, wrapped to
+ * (boxWidthPx - padding), fits within (boxHeightPx - padding). The search's
+ * upper bound scales with the box's own height (see dynamicMax below)
+ * instead of being hard-capped at AUTO_FIT_MAX_FONT_SIZE — a large bubble
+ * with short text should be able to render well past the app's old fixed
+ * default. AUTO_FIT_MAX_FONT_SIZE is used only as a search-efficiency seed.
+ * Returns { fontSize, lines, totalTextHeight, overflow } — overflow is true
+ * when even AUTO_FIT_MIN_FONT_SIZE doesn't fit (caller applies the
+ * height-expansion / clip fallback).
  */
 function fitTextToBox(text, boxWidthPx, boxHeightPx, { fontFamily, bold, italic } = {}) {
   const ctx    = _getAutoFitCtx();
@@ -139,13 +153,29 @@ function fitTextToBox(text, boxWidthPx, boxHeightPx, { fontFamily, bold, italic 
     return { fontSize: fontSizePx, lines, totalTextHeight, fits: totalTextHeight <= availH };
   };
 
-  const atMax = measureAt(AUTO_FIT_MAX_FONT_SIZE);
-  if (atMax.fits) return { ...atMax, overflow: false };
+  const atFloor = measureAt(AUTO_FIT_MIN_FONT_SIZE);
+  if (!atFloor.fits) return { ...atFloor, overflow: true };
 
-  const atMin = measureAt(AUTO_FIT_MIN_FONT_SIZE);
-  if (!atMin.fits) return { ...atMin, overflow: true };
+  // availH / line-height is the biggest a single line could be and still fit
+  // vertically — a cheap proxy for "how large could this box's text
+  // plausibly get", clamped so it never shrinks below the old fixed default
+  // (small/normal boxes behave exactly as before) and never exceeds the
+  // absolute sanity ceiling (huge boxes don't blow up unreasonably).
+  const dynamicMax = Math.min(
+    AUTO_FIT_ABSOLUTE_MAX_FONT_SIZE,
+    Math.max(AUTO_FIT_MAX_FONT_SIZE, Math.floor(availH / AUTO_FIT_LINE_HEIGHT))
+  );
 
-  let lo = AUTO_FIT_MIN_FONT_SIZE, hi = AUTO_FIT_MAX_FONT_SIZE, best = atMin;
+  const seedSize = Math.min(AUTO_FIT_MAX_FONT_SIZE, dynamicMax);
+  const atSeed = seedSize === AUTO_FIT_MIN_FONT_SIZE ? atFloor : measureAt(seedSize);
+
+  let lo, hi, best;
+  if (atSeed.fits) {
+    lo = atSeed.fontSize; hi = dynamicMax; best = atSeed;
+  } else {
+    lo = AUTO_FIT_MIN_FONT_SIZE; hi = atSeed.fontSize - 1; best = atFloor;
+  }
+
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
     const r = measureAt(mid);
@@ -202,18 +232,24 @@ function fitAndExpand(text, boxWidthPx, boxHeightPx, styleOpts) {
 
 /**
  * Runs fitAndExpand() for a bubble's translated text against its pixel box
- * size, applies the resulting font-size to the outer bubble `b`, and — when
- * even the capped height-expansion fallback isn't enough — clips the inner
- * text span and adds a small toggle button so the full translation is still
- * reachable (secondary fallback from the auto-fit spec; no special
- * animation, just visibility on demand). Returns the (possibly expanded)
- * box height in px for the caller's _positionBubble to use as its height.
+ * size (shrunk by AUTO_FIT_WIDTH_MARGIN/AUTO_FIT_HEIGHT_MARGIN first, since
+ * the raw box is the OCR bbox's circumscribing rectangle, not the bubble's
+ * actual — often oval — outline), applies the resulting font-size to the
+ * outer bubble `b`, and — when even the capped height-expansion fallback
+ * isn't enough — clips the inner text span and adds a small toggle button so
+ * the full translation is still reachable (secondary fallback from the
+ * auto-fit spec; no special animation, just visibility on demand). Returns
+ * the (possibly expanded) box height in px for the caller's _positionBubble
+ * to use as its height.
  */
 function applyAutoFit(b, span, ann, boxWidthPx, boxHeightPx) {
   const s = ann.style || {};
-  const fit = fitAndExpand(ann.translatedText || '', boxWidthPx, boxHeightPx, {
-    fontFamily: s.fontFamily, bold: s.bold, italic: s.italic,
-  });
+  const fit = fitAndExpand(
+    ann.translatedText || '',
+    boxWidthPx  * AUTO_FIT_WIDTH_MARGIN,
+    boxHeightPx * AUTO_FIT_HEIGHT_MARGIN,
+    { fontFamily: s.fontFamily, bold: s.bold, italic: s.italic }
+  );
   b.style.fontSize = `${fit.fontSize}px`;
 
   b.querySelector('.wt-bubble-expand-toggle')?.remove();
