@@ -23,6 +23,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(sendResponse)
         .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
       return true;
+    case 'CROP_IMAGE':
+      handleCropImage(message.payload)
+        .then(sendResponse)
+        .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
+      return true;
     case 'OCR_STATUS':
       // Relay engine progress from the offscreen document to content scripts
       // (runtime.sendMessage never reaches content scripts directly)
@@ -373,6 +378,41 @@ async function fetchAndCrop(imageUrl, bbox) {
     reader.onerror = () => reject(new Error('Failed to encode cropped image'));
     reader.readAsDataURL(cropBlob);
   });
+}
+
+/**
+ * Fetches imageUrl (service-worker side, so no cross-origin canvas taint) and
+ * crops it to `bbox` (% of natural image size) at 1:1 pixel scale — no OCR
+ * upscaling, so the caller's pixel-space math (e.g. flood-fill detection)
+ * still lines up with the returned image.
+ */
+async function fetchAndCropRaw(imageUrl, bbox) {
+  const res    = await fetch(imageUrl, { credentials: 'omit' });
+  const blob   = await res.blob();
+  const bitmap = await createImageBitmap(blob);
+
+  const sx = Math.round((bbox.x / 100) * bitmap.width);
+  const sy = Math.round((bbox.y / 100) * bitmap.height);
+  const sw = Math.max(1, Math.round((bbox.w / 100) * bitmap.width));
+  const sh = Math.max(1, Math.round((bbox.h / 100) * bitmap.height));
+
+  const canvas = new OffscreenCanvas(sw, sh);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+  bitmap.close();
+
+  const cropBlob = await canvas.convertToBlob({ type: 'image/png' });
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to encode cropped image'));
+    reader.readAsDataURL(cropBlob);
+  });
+}
+
+async function handleCropImage({ imageUrl, bbox }) {
+  const dataUrl = await fetchAndCropRaw(imageUrl, bbox);
+  return { ok: true, dataUrl };
 }
 
 // ── extension on/off badge ────────────────────────────────────────────────────

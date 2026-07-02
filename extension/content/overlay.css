@@ -94,7 +94,7 @@
   justify-content: center;
   text-align: center;
   overflow: hidden;
-  pointer-events: none;  /* read mode: unclickable */
+  pointer-events: none;  /* overridden to auto below so bubbles stay double-click-editable */
   cursor: default;
   word-break: break-word;
   white-space: pre-wrap;
@@ -108,23 +108,11 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Read mode: bubbles show double-click cursor to hint editability */
-body:not(.wt-annotate-mode) .wt-translation-bubble,
-body:not(.wt-annotate-mode) .wt-fixed-bubble {
+/* Bubbles show double-click cursor to hint editability */
+.wt-translation-bubble,
+.wt-fixed-bubble {
   pointer-events: auto;
   cursor: text;
-}
-
-/* Annotation mode: bubbles are clickable for editing */
-.wt-annotate-mode .wt-translation-bubble {
-  pointer-events: auto;
-  cursor: pointer;
-  border: 1.5px dashed rgba(99, 102, 241, 0.5);
-}
-
-.wt-annotate-mode .wt-translation-bubble:hover {
-  background: rgba(255, 255, 255, 0.98);
-  border-color: rgba(99, 102, 241, 0.9);
 }
 
 /* ── Input dialog ─────────────────────────────────────────────────────── */
@@ -672,6 +660,23 @@ body:not(.wt-annotate-mode) .wt-fixed-bubble {
   justify-content: flex-end;
 }
 
+.wt-quick-actions-spacer { flex: 1; }
+
+.wt-quick-delete {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: #fef2f2;
+  color: #ef4444;
+  border: 1px solid #fecaca;
+  transition: background 0.15s;
+}
+
+.wt-quick-delete:hover { background: #fee2e2; }
+.wt-quick-delete.hidden { display: none; }
+
 .wt-quick-cancel {
   padding: 6px 14px;
   border-radius: 6px;
@@ -1003,12 +1008,6 @@ body.wt-panel-open #wt-toggle-btn {
 .wt-fixed-bubble {
   position: absolute;
   z-index: 200;
-  pointer-events: none;
-}
-
-.wt-annotate-mode .wt-fixed-bubble {
-  pointer-events: auto;
-  cursor: pointer;
 }
 
 /* ── Preview box ───────────────────────────────────────────────────────── */

@@ -4,7 +4,6 @@
 // ── constants ────────────────────────────────────────────────────────────────
 
 const SITES = { NAVER: 'naver', RIDI: 'ridi', KAKAO: 'kakao' };
-const MODES  = { READ: 'read', ANNOTATE: 'annotate' };
 const MSG    = {
   SAVE_TRANSLATIONS: 'SAVE_TRANSLATIONS',
   LOAD_TRANSLATIONS: 'LOAD_TRANSLATIONS',
@@ -15,6 +14,7 @@ const MSG    = {
   OCR_REGION:        'OCR_REGION',
   OCR_STITCH:        'OCR_STITCH',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
+  CROP_IMAGE:        'CROP_IMAGE',
 };
 
 // ── hasher ───────────────────────────────────────────────────────────────────
@@ -402,7 +402,7 @@ class BubbleAutoDetector {
    * null if the region failed the validity check (caller should fall back
    * to manual drag-to-select).
    */
-  detect(img, clickX, clickY, imgRect) {
+  async detect(img, clickX, clickY, imgRect) {
     const nw = img.naturalWidth  || img.width  || imgRect.width;
     const nh = img.naturalHeight || img.height || imgRect.height;
     const scaleX = nw / imgRect.width, scaleY = nh / imgRect.height;
@@ -427,12 +427,19 @@ class BubbleAutoDetector {
 
     let imageData;
     try {
-      const canvas = document.createElement('canvas');
-      canvas.width = cw; canvas.height = ch;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(img, sx, sy, cw, ch, 0, 0, cw, ch);
-      imageData = ctx.getImageData(0, 0, cw, ch);
+      imageData = this._readCropPixels(img, sx, sy, cw, ch);
     } catch (e) {
+      // Cross-origin image without CORS headers taints the canvas — getImageData
+      // throws SecurityError. Fall back to a background-worker fetch+crop (no
+      // taint there, since it's not loaded through a same-page <img> element),
+      // then read pixels from the returned (same-origin data:) URL instead.
+      try {
+        imageData = await this._readCropPixelsViaBackground(img, nw, nh, sx, sy, cw, ch);
+      } catch (e2) {
+        return this._fail(debug, 'canvas-tainted');
+      }
+    }
+    if (!imageData) {
       return this._fail(debug, 'canvas-tainted');
     }
 
@@ -488,6 +495,34 @@ class BubbleAutoDetector {
     console.log('[WebtoonTranslate] AutoDetect fail', debug);
     return { bbox: null, debug };
   }
+
+  _readCropPixels(img, sx, sy, cw, ch) {
+    const canvas = document.createElement('canvas');
+    canvas.width = cw; canvas.height = ch;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, sx, sy, cw, ch, 0, 0, cw, ch);
+    return ctx.getImageData(0, 0, cw, ch); // throws SecurityError if tainted
+  }
+
+  async _readCropPixelsViaBackground(img, nw, nh, sx, sy, cw, ch) {
+    const bbox = { x: (sx / nw) * 100, y: (sy / nh) * 100, w: (cw / nw) * 100, h: (ch / nh) * 100 };
+    const res = await sendToBackground({ type: MSG.CROP_IMAGE, payload: { imageUrl: img.src, bbox } });
+    if (!res?.ok || !res.dataUrl) throw new Error(res?.error || 'background crop failed');
+    const cropImg = await loadImage(res.dataUrl);
+    // fetchAndCropRaw returns a 1:1 pixel crop (no OCR upscaling), so this reads
+    // back at the same cw x ch dimensions our natural-pixel math already assumes.
+    return this._readCropPixels(cropImg, 0, 0, cw, ch);
+  }
+}
+
+/** Loads a data: URL into an <img>, resolving once it's decoded. */
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload  = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to load cropped image'));
+    img.src = dataUrl;
+  });
 }
 
 /** In-place 3x3 box blur (radius 1) — smooths JPEG ringing artifacts around bubble edges. */
@@ -1012,437 +1047,6 @@ class OverlayRenderer {
   }
 }
 
-// ── InputDialog ───────────────────────────────────────────────────────────────
-
-class InputDialog {
-  constructor({ onDelete } = {}) {
-    this._el       = null;
-    this._resolve  = null;
-    this._onDelete = onDelete;
-    this._isEdit   = false;
-    this._style    = {
-      fontSize: 20, bold: false, italic: false,
-      color: '#1a1a2e', bg: '#ffffff', noBg: false,
-      stroke: false, strokeColor: '#ffffff', strokeWidth: 1,
-      fontFamily: '', textAlign: 'center', rotate: 0,
-      ...(InputDialog._lastStyle || {}),
-    };
-    this._build();
-  }
-
-  show(screenPos, prefill = {}) {
-    // SPA sites (Kakao/Next.js) can wipe body children on re-render — re-attach
-    if (!this._el.isConnected) document.body.appendChild(this._el);
-    this._isEdit = !!prefill.translatedText;
-    this._onPreview = prefill.onPreview || null;
-    this._onCancel  = prefill.onCancel  || null;
-    // Update title and show/hide delete button
-    this._el.querySelector('.wt-dialog-title').textContent =
-      this._isEdit ? 'Edit translation' : 'Add translation';
-    this._el.querySelector('.wt-btn-delete').style.display =
-      this._isEdit ? 'block' : 'none';
-
-    return new Promise(resolve => {
-      this._resolve = resolve;
-      this._el.querySelector('.wt-input-original').value   = prefill.originalText   || '';
-      this._el.querySelector('.wt-input-translated').value = prefill.translatedText || '';
-      // Merge: defaults → last saved style → prefill.style (prefill wins)
-      this._style = {
-        fontSize: 20, bold: false, italic: false,
-        color: '#1a1a2e', bg: '#ffffff', noBg: false,
-        stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '', textAlign: 'center', rotate: 0,
-        ...(InputDialog._lastStyle || {}),
-        ...(prefill.style || {}),
-      };
-      // Snapshot for Reset button
-      this._initText  = prefill.translatedText || '';
-      this._initStyle = { ...this._style };
-      this._syncStyleUI();
-
-      // Store bbox for resize
-      this._currentBbox = prefill.bbox || null;
-      this._currentImg  = prefill.img  || null;
-
-      const { innerWidth, innerHeight } = window;
-      const w = this._el.offsetWidth || 300, h = this._el.offsetHeight || 320;
-      let top  = screenPos.y + 10, left = screenPos.x;
-      if (left + w > scrollX + innerWidth  - 20) left = scrollX + innerWidth  - w - 20;
-      if (top  + h > scrollY + innerHeight - 20) top  = screenPos.y - h - 20;
-      if (left < scrollX + 10) left = scrollX + 10;
-      if (top  < scrollY + 10) top  = scrollY + 10;
-      this._el.style.top     = `${top}px`;
-      this._el.style.left    = `${left}px`;
-      this._el.style.display = 'block';
-
-      this._escHandler = (e) => { if (e.key === 'Escape') this._cancel(); };
-      document.addEventListener('keydown', this._escHandler);
-      setTimeout(() => this._el.querySelector('.wt-input-translated').focus(), 50);
-    });
-  }
-
-  hide() {
-    this._el.style.display = 'none';
-    this._el.querySelector('.wt-ocr-status').style.display = 'none';
-    clearTimeout(this._ocrStatusTimer);
-    document.removeEventListener('keydown', this._escHandler);
-  }
-
-  // ── OCR prefill ──────────────────────────────────────────────────────────
-  // Background OCR fills the "Original text" field while the dialog is open.
-  // Never overwrites anything the user already typed.
-
-  setOcrPending() {
-    // Session token guards against a slow OCR result landing in a dialog
-    // that was since reopened for a different bbox
-    this._ocrSession = (this._ocrSession || 0) + 1;
-    this._showOcrStatus('⏳ Starting OCR…', '#6366f1');
-    return this._ocrSession;
-  }
-
-  setOcrText(text, session) {
-    if (session !== this._ocrSession) return;
-    const inp = this._el.querySelector('.wt-input-original');
-    if (this._el.style.display !== 'none' && !inp.value && text) inp.value = text;
-    if (text) this._showOcrStatus('✓ OCR done — edit if needed', '#16a34a', 4000);
-    else      this._showOcrStatus('OCR found no text in this region', '#94a3b8', 4000);
-  }
-
-  setOcrError(message, session) {
-    if (session !== undefined && session !== this._ocrSession) return;
-    this._showOcrStatus(`✗ OCR failed: ${message || 'unknown error'}`, '#ef4444');
-  }
-
-  /** Engine-level progress (model download, recognition) — not session-bound */
-  setOcrStatus({ status, progress, message }) {
-    const pct = progress !== undefined ? ` ${Math.round(progress * 100)}%` : '';
-    if (status === 'downloading-model') {
-      this._showOcrStatus(`⏳ Loading Korean OCR model…${pct}`, '#6366f1');
-    } else if (status === 'initializing') {
-      this._showOcrStatus('⏳ Preparing OCR engine…', '#6366f1');
-    } else if (status === 'recognizing') {
-      this._showOcrStatus(`🔍 Scanning text…${pct}`, '#6366f1');
-    } else if (status === 'error') {
-      this._showOcrStatus(`✗ OCR engine failed to start: ${message || 'unknown error'}`, '#ef4444');
-    }
-    // 'ready' is not shown by itself — setOcrText handles the success message
-  }
-
-  _showOcrStatus(text, color, autoHideMs) {
-    const el = this._el.querySelector('.wt-ocr-status');
-    el.textContent    = text;
-    el.style.color    = color;
-    el.style.display  = 'block';
-    clearTimeout(this._ocrStatusTimer);
-    if (autoHideMs) {
-      this._ocrStatusTimer = setTimeout(() => { el.style.display = 'none'; }, autoHideMs);
-    }
-  }
-
-  _build() {
-    this._el = document.createElement('div');
-    this._el.className = 'wt-input-dialog';
-    this._el.innerHTML = `
-      <div class="wt-dialog-header">
-        <span class="wt-dialog-title">Add translation</span>
-        <button class="wt-btn-close" aria-label="Cancel">&#x2715;</button>
-      </div>
-      <div class="wt-original-label-row">
-        <label class="wt-dialog-label">Original text (optional)</label>
-        <button class="wt-btn-gtranslate" type="button" title="Translate with Google Translate">Translate ↗</button>
-      </div>
-      <input class="wt-input-original" type="text" placeholder="Source text..." />
-      <div class="wt-ocr-status" style="display:none"></div>
-      <label class="wt-dialog-label">Translation</label>
-      <textarea class="wt-input-translated" rows="3" placeholder="Enter translation..."></textarea>
-      <div class="wt-style-bar">
-        <input class="wt-style-fontsize" type="number" min="8" max="48" value="20" title="Font size (px)" />
-        <span class="wt-style-px">px</span>
-        <button class="wt-style-btn wt-style-bold"   title="Bold">B</button>
-        <button class="wt-style-btn wt-style-italic" title="Italic">I</button>
-        <label class="wt-swatch-wrap" title="Text color">
-          <span class="wt-swatch" id="wt-dot-color" style="background:#1a1a2e"></span>
-          <input class="wt-style-color" type="color" value="#1a1a2e" />
-        </label>
-        <label class="wt-swatch-wrap" title="Background color">
-          <span class="wt-swatch" id="wt-dot-bg" style="background:#ffffff;border:1px solid #ccc"></span>
-          <input class="wt-style-bg" type="color" value="#ffffff" />
-        </label>
-        <label class="wt-nobg-wrap" title="No background">
-          <input class="wt-style-nobg" type="checkbox" /><span>No BG</span>
-        </label>
-        <div class="wt-style-divider"></div>
-        <label class="wt-nobg-wrap" title="Stroke">
-          <input class="wt-style-stroke-on" type="checkbox" /><span>Stroke</span>
-        </label>
-        <label class="wt-swatch-wrap" title="Stroke color">
-          <span class="wt-swatch" id="wt-dot-stroke" style="background:#ffffff;border:1px solid #ccc"></span>
-          <input class="wt-style-stroke-color" type="color" value="#ffffff" />
-        </label>
-        <input class="wt-style-stroke-width" type="number" min="1" max="6" value="1" title="Stroke px" style="width:36px" />
-        <div class="wt-style-divider"></div>
-        <button class="wt-style-btn wt-style-align" data-align="left"   title="Align left"><svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor"><rect x="0" y="1" width="13" height="2"/><rect x="0" y="5" width="9"  height="2"/><rect x="0" y="9" width="11" height="2"/></svg></button>
-        <button class="wt-style-btn wt-style-align" data-align="center" title="Align center"><svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor"><rect x="0" y="1" width="13" height="2"/><rect x="2" y="5" width="9"  height="2"/><rect x="1" y="9" width="11" height="2"/></svg></button>
-        <button class="wt-style-btn wt-style-align" data-align="right"  title="Align right"><svg width="13" height="13" viewBox="0 0 13 13" fill="currentColor"><rect x="0" y="1" width="13" height="2"/><rect x="4" y="5" width="9"  height="2"/><rect x="2" y="9" width="11" height="2"/></svg></button>
-      </div>
-      <div class="wt-font-row">
-        <label class="wt-dialog-label" style="margin:0;flex-shrink:0">Font</label>
-        <select class="wt-style-font">
-          <option value="">System default</option>
-          <optgroup label="Vietnamese-friendly">
-            <option value="Fuzzy Bubbles">Fuzzy Bubbles</option>
-            <option value="Pangolin">Pangolin</option>
-            <option value="Mansalva">Mansalva</option>
-            <option value="Patrick Hand SC">Patrick Hand SC</option>
-            <option value="Baloo 2">Baloo 2</option>
-            <option value="Be Vietnam Pro">Be Vietnam Pro</option>
-            <option value="Nunito">Nunito</option>
-            <option value="Quicksand">Quicksand</option>
-            <option value="Signika">Signika</option>
-            <option value="Kanit">Kanit</option>
-          </optgroup>
-          <optgroup label="Comic / Display">
-            <option value="Bangers">Bangers</option>
-            <option value="Comic Neue">Comic Neue</option>
-            <option value="Permanent Marker">Permanent Marker</option>
-            <option value="Anton">Anton</option>
-            <option value="Lilita One">Lilita One</option>
-            <option value="Boogaloo">Boogaloo</option>
-          </optgroup>
-          <optgroup label="Clean / Readable">
-            <option value="Noto Sans">Noto Sans</option>
-            <option value="Roboto">Roboto</option>
-            <option value="Montserrat">Montserrat</option>
-            <option value="Oswald">Oswald</option>
-            <option value="Noto Serif">Noto Serif</option>
-          </optgroup>
-        </select>
-      </div>
-      <div class="wt-rotate-row">
-        <label class="wt-dialog-label" style="margin:0;flex-shrink:0">Rotate</label>
-        <input class="wt-style-rotate" type="range" min="-180" max="180" value="0" step="1" />
-        <span class="wt-rotate-val">0°</span>
-      </div>
-      <div class="wt-dialog-actions">
-        <button class="wt-btn-delete" style="display:none">Delete</button>
-        <button class="wt-btn-reset" style="display:none" title="Reset to state before opening">Reset</button>
-        <button class="wt-btn-cancel">Cancel</button>
-        <button class="wt-btn-save">Save</button>
-      </div>`;
-
-    this._makeDraggable(this._el.querySelector('.wt-dialog-header'));
-
-    // Stop keyboard events from bubbling to the site — prevents Ridi/Kakao viewer
-    // shortcuts (arrow-key navigation, etc.) from firing while user is typing.
-    this._el.addEventListener('keydown', e => e.stopPropagation());
-
-    this._el.querySelector('.wt-btn-close').addEventListener('click',  () => this._cancel());
-    this._el.querySelector('.wt-btn-cancel').addEventListener('click', () => this._cancel());
-    this._el.querySelector('.wt-btn-save').addEventListener('click',   () => this._save());
-    this._el.querySelector('.wt-btn-delete').addEventListener('click', () => this._delete());
-    this._el.querySelector('.wt-btn-reset').addEventListener('click',  () => this._reset());
-    this._el.querySelector('.wt-input-translated').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this._save(); }
-    });
-    this._el.querySelector('.wt-input-original').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); this._el.querySelector('.wt-input-translated').focus(); }
-    });
-    // Enter in any number/style input also saves
-    this._el.querySelectorAll('.wt-style-fontsize, .wt-style-stroke-width').forEach(inp => {
-      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); this._save(); } });
-    });
-
-    // Style bar
-    this._el.querySelector('.wt-style-fontsize').addEventListener('input', (e) => {
-      this._style.fontSize = parseInt(e.target.value) || 13;
-      this._firePreview();
-    });
-    this._el.querySelector('.wt-style-bold').addEventListener('click', () => {
-      this._style.bold = !this._style.bold;
-      this._el.querySelector('.wt-style-bold').classList.toggle('active', this._style.bold);
-      this._firePreview();
-    });
-    this._el.querySelector('.wt-style-italic').addEventListener('click', () => {
-      this._style.italic = !this._style.italic;
-      this._el.querySelector('.wt-style-italic').classList.toggle('active', this._style.italic);
-      this._firePreview();
-    });
-    this._el.querySelector('.wt-style-color').addEventListener('input', (e) => {
-      this._style.color = e.target.value;
-      this._el.querySelector('#wt-dot-color').style.background = e.target.value;
-      this._firePreview();
-    });
-    this._el.querySelector('.wt-style-bg').addEventListener('input', (e) => {
-      this._style.bg = e.target.value;
-      this._el.querySelector('#wt-dot-bg').style.background = e.target.value;
-      this._el.querySelector('.wt-style-nobg').checked = false;
-      this._style.noBg = false;
-      this._firePreview();
-    });
-    this._el.querySelector('.wt-style-nobg').addEventListener('change', (e) => {
-      this._style.noBg = e.target.checked;
-      this._firePreview();
-    });
-    this._el.querySelector('.wt-style-stroke-on').addEventListener('change', (e) => {
-      this._style.stroke = e.target.checked;
-      this._firePreview();
-    });
-    this._el.querySelector('.wt-style-stroke-color').addEventListener('input', (e) => {
-      this._style.strokeColor = e.target.value;
-      this._el.querySelector('#wt-dot-stroke').style.background = e.target.value;
-      this._firePreview();
-    });
-    this._el.querySelector('.wt-style-stroke-width').addEventListener('input', (e) => {
-      this._style.strokeWidth = parseInt(e.target.value) || 1;
-      this._firePreview();
-    });
-    this._el.querySelector('.wt-style-font').addEventListener('change', (e) => {
-      this._style.fontFamily = e.target.value;
-      if (e.target.value) loadGoogleFont(e.target.value);
-      this._firePreview();
-    });
-    this._el.querySelectorAll('.wt-style-align').forEach(btn => {
-      btn.addEventListener('click', () => {
-        this._style.textAlign = btn.dataset.align;
-        this._el.querySelectorAll('.wt-style-align').forEach(b => b.classList.toggle('active', b === btn));
-        this._firePreview();
-      });
-    });
-    this._el.querySelector('.wt-style-rotate').addEventListener('input', (e) => {
-      this._style.rotate = parseInt(e.target.value) || 0;
-      this._el.querySelector('.wt-rotate-val').textContent = `${this._style.rotate}°`;
-      this._firePreview();
-    });
-    this._el.querySelector('.wt-style-rotate').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); this._save(); }
-    });
-    this._el.querySelector('.wt-input-translated').addEventListener('input', () => {
-      this._firePreview();
-    });
-
-    const translateBtn = this._el.querySelector('.wt-btn-gtranslate');
-
-    // Show/hide translate button based on provider setting
-    chrome.storage.local.get({ 'wt:translate-provider': 'google' }, (s) => {
-      translateBtn.style.display = s['wt:translate-provider'] === 'none' ? 'none' : '';
-    });
-
-    translateBtn.addEventListener('click', async () => {
-      const originalInput   = this._el.querySelector('.wt-input-original');
-      const translatedInput = this._el.querySelector('.wt-input-translated');
-      const text = originalInput.value.trim();
-      if (!text) { originalInput.focus(); return; }
-      translateBtn.disabled = true;
-      translateBtn.textContent = '…';
-      try {
-        const translated = await autoTranslate(text);
-        if (translated) {
-          translatedInput.value = translated;
-          translatedInput.focus();
-        } else {
-          this._showOcrStatus('Translation is disabled in Settings', '#94a3b8', 3000);
-        }
-      } catch (err) {
-        this._showOcrStatus(`✗ Translation failed: ${err.message}`, '#ef4444', 5000);
-      } finally {
-        translateBtn.disabled = false;
-        translateBtn.textContent = 'Translate ↗';
-      }
-    });
-
-    document.body.appendChild(this._el);
-  }
-
-  _syncStyleUI() {
-    this._el.querySelector('.wt-style-fontsize').value = this._style.fontSize;
-    this._el.querySelector('.wt-style-bold').classList.toggle('active', this._style.bold);
-    this._el.querySelector('.wt-style-italic').classList.toggle('active', this._style.italic);
-    this._el.querySelector('.wt-style-color').value = this._style.color;
-    this._el.querySelector('#wt-dot-color').style.background = this._style.color;
-    this._el.querySelector('.wt-style-nobg').checked = this._style.noBg;
-    this._el.querySelector('.wt-style-bg').value = this._style.bg;
-    this._el.querySelector('#wt-dot-bg').style.background = this._style.noBg ? '#ffffff' : this._style.bg;
-    this._el.querySelector('.wt-style-stroke-on').checked = !!this._style.stroke;
-    this._el.querySelector('.wt-style-stroke-color').value = this._style.strokeColor || '#ffffff';
-    this._el.querySelector('#wt-dot-stroke').style.background = this._style.strokeColor || '#ffffff';
-    this._el.querySelector('.wt-style-stroke-width').value = this._style.strokeWidth || 1;
-    this._el.querySelector('.wt-style-font').value = this._style.fontFamily || '';
-    const align = this._style.textAlign || 'center';
-    this._el.querySelectorAll('.wt-style-align').forEach(b => b.classList.toggle('active', b.dataset.align === align));
-    const rotate = this._style.rotate || 0;
-    this._el.querySelector('.wt-style-rotate').value = rotate;
-    this._el.querySelector('.wt-rotate-val').textContent = `${rotate}°`;
-    this._el.querySelector('.wt-btn-reset').style.display = this._onPreview ? 'block' : 'none';
-    this._firePreview();
-  }
-
-  _firePreview() {
-    if (!this._onPreview) return;
-    const text = this._el.querySelector('.wt-input-translated').value;
-    // Only show preview when the user has actually typed something
-    if (!text.trim()) { this._onCancel?.(); return; }
-    this._onPreview(text, { ...this._style });
-  }
-
-  _reset() {
-    this._el.querySelector('.wt-input-translated').value = this._initText;
-    this._style = { ...this._initStyle };
-    this._syncStyleUI();
-    this._firePreview();
-  }
-
-  _makeDraggable(handle) {
-    let dragging = false, ox = 0, oy = 0;
-    handle.style.cursor = 'move';
-    handle.addEventListener('mousedown', (e) => {
-      if (e.target.classList.contains('wt-btn-close')) return;
-      dragging = true;
-      const rect = this._el.getBoundingClientRect();
-      ox = e.clientX - rect.left;
-      oy = e.clientY - rect.top;
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      this._el.style.left = `${e.clientX - ox + window.scrollX}px`;
-      this._el.style.top  = `${e.clientY - oy + window.scrollY}px`;
-    });
-    document.addEventListener('mouseup', () => { dragging = false; });
-  }
-
-  _getBboxFromResize() {
-    return this._currentBbox || null;
-  }
-
-  _save() {
-    const originalText   = this._el.querySelector('.wt-input-original').value.trim();
-    const translatedText = this._el.querySelector('.wt-input-translated').value.trim();
-    if (!translatedText) { this._el.querySelector('.wt-input-translated').focus(); return; }
-    const resizedBbox = this._isEdit ? this._getBboxFromResize() : null;
-    InputDialog._lastStyle = { ...this._style };
-    this.hide();
-    this._onPreview = null;
-    this._onCancel  = null;
-    this._resolve?.({ originalText, translatedText, style: { ...this._style }, resizedBbox });
-    this._resolve = null;
-  }
-
-  _delete() {
-    this.hide();
-    this._onDelete?.();
-    this._resolve?.(null);
-    this._resolve = null;
-  }
-
-  _cancel() {
-    this.hide();
-    this._onCancel?.();
-    this._onPreview = null;
-    this._onCancel  = null;
-    this._resolve?.(null);
-    this._resolve = null;
-  }
-}
-
 // ── QuickTranslateDialog ──────────────────────────────────────────────────────
 // Minimal floating dialog for Read-mode quick OCR+translate.
 // No style options — result is saved with sensible defaults.
@@ -1467,6 +1071,8 @@ class QuickTranslateDialog {
     this._el.querySelector('.wt-quick-title').innerHTML = isEdit
       ? `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg> Edit Translation`
       : `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg> Quick Translate`;
+    // Deleting only makes sense for an already-saved bubble being re-opened for edit.
+    this._el.querySelector('.wt-quick-delete').classList.toggle('hidden', !isEdit);
 
     return new Promise(resolve => {
       this._resolve = resolve;
@@ -1529,6 +1135,8 @@ class QuickTranslateDialog {
       <div class="wt-quick-original" style="display:none"></div>
       <textarea class="wt-quick-translated" rows="3" placeholder="Translation will appear here…"></textarea>
       <div class="wt-quick-actions">
+        <button class="wt-quick-delete hidden" title="Delete this translation">Delete</button>
+        <span class="wt-quick-actions-spacer"></span>
         <button class="wt-quick-cancel">Cancel</button>
         <button class="wt-quick-save">Save</button>
       </div>`;
@@ -1538,6 +1146,7 @@ class QuickTranslateDialog {
     this._el.querySelector('.wt-quick-close').addEventListener('click',  () => this._cancel());
     this._el.querySelector('.wt-quick-cancel').addEventListener('click', () => this._cancel());
     this._el.querySelector('.wt-quick-save').addEventListener('click',   () => this._save());
+    this._el.querySelector('.wt-quick-delete').addEventListener('click', () => this._delete());
     this._el.querySelector('.wt-quick-translated').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) this._save();
     });
@@ -1576,176 +1185,11 @@ class QuickTranslateDialog {
     this._resolve?.(null);
     this._resolve = null;
   }
-}
 
-// ── BubbleEditor ─────────────────────────────────────────────────────────────
-// Attaches drag-to-move and 8-handle resize to a bubble in annotate mode.
-// Calls onBboxChange(newBbox) in real-time so the annotation can be saved on mouseup.
-
-class BubbleEditor {
-  constructor({ onBboxChange }) {
-    this._onBboxChange = onBboxChange;
-    this._active = null; // { bubble, img, handles }
-    this._justDragged = false;
-  }
-
-  /** Returns true (and clears) if a drag/resize just ended — used to suppress the post-drag click. */
-  consumeDrag() {
-    const v = this._justDragged;
-    this._justDragged = false;
-    return v;
-  }
-
-  attach(bubble, img) {
-    if (this._active?.bubble === bubble) return;
-    this.detach();
-
-    const handles = [];
-    // 8 resize handles: corners + mid-edges
-    const positions = ['nw','n','ne','e','se','s','sw','w'];
-    for (const pos of positions) {
-      const h = document.createElement('div');
-      h.className = `wt-resize-handle wt-rh-${pos}`;
-      h.dataset.pos = pos;
-      bubble.appendChild(h);
-      handles.push(h);
-      this._makeResizeHandle(h, bubble, img);
-    }
-
-    // Move cursor on bubble body (not on handles)
-    bubble.style.cursor = 'move';
-    this._makeMoveHandle(bubble, img, handles);
-
-    this._active = { bubble, img, handles };
-    bubble.classList.add('wt-bubble-editing');
-  }
-
-  detach() {
-    if (!this._active) return;
-    const { bubble, handles } = this._active;
-    handles.forEach(h => h.remove());
-    bubble.style.cursor = '';
-    bubble.classList.remove('wt-bubble-editing');
-    this._active = null;
-  }
-
-  _getBboxPct(bubble, img) {
-    const iw = img.offsetWidth || img.naturalWidth || 375;
-    const ih = img.offsetHeight || img.naturalHeight || 500;
-    return {
-      x: (parseFloat(bubble.style.left)      / iw) * 100,
-      y: (parseFloat(bubble.style.top)       / ih) * 100,
-      w: (parseFloat(bubble.style.width)     / iw) * 100,
-      h: (parseFloat(bubble.style.minHeight) / ih) * 100,
-    };
-  }
-
-  _applyBboxPx(bubble, img, bbox) {
-    const iw = img.offsetWidth || img.naturalWidth || 375;
-    const ih = img.offsetHeight || img.naturalHeight || 500;
-    const x = (bbox.x / 100) * iw, y = (bbox.y / 100) * ih;
-    const w = (bbox.w / 100) * iw, h = (bbox.h / 100) * ih;
-    bubble.style.left      = `${x}px`;
-    bubble.style.top       = `${y}px`;
-    bubble.style.width     = `${w}px`;
-    bubble.style.minHeight = `${h}px`;
-    // Update dataset
-    bubble.dataset.bboxX = bbox.x;
-    bubble.dataset.bboxY = bbox.y;
-    bubble.dataset.bboxW = bbox.w;
-    bubble.dataset.bboxH = bbox.h;
-  }
-
-  _makeMoveHandle(bubble, img, handles) {
-    let dragging = false, startX, startY, origLeft, origTop;
-
-    const onDown = (e) => {
-      if (e.target.classList.contains('wt-resize-handle')) return;
-      if (e.button !== 0) return;
-      dragging = true;
-      startX   = e.clientX;
-      startY   = e.clientY;
-      origLeft = parseFloat(bubble.style.left)  || 0;
-      origTop  = parseFloat(bubble.style.top)   || 0;
-      e.preventDefault();
-      e.stopPropagation();
-    };
-
-    const onMove = (e) => {
-      if (!dragging) return;
-      this._justDragged = true;
-      const iw = img.offsetWidth || img.naturalWidth || 375;
-      const ih = img.offsetHeight || img.naturalHeight || 500;
-      const newLeft = Math.max(0, Math.min(iw - parseFloat(bubble.style.width), origLeft + (e.clientX - startX)));
-      const newTop  = Math.max(0, Math.min(ih - parseFloat(bubble.style.minHeight), origTop  + (e.clientY - startY)));
-      bubble.style.left = `${newLeft}px`;
-      bubble.style.top  = `${newTop}px`;
-    };
-
-    const onUp = () => {
-      if (!dragging) return;
-      dragging = false;
-      this._onBboxChange?.(bubble, img, this._getBboxPct(bubble, img));
-    };
-
-    bubble.addEventListener('mousedown', onDown);
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    // Store cleanup
-    bubble._moveCleanup = () => {
-      bubble.removeEventListener('mousedown', onDown);
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-    };
-  }
-
-  _makeResizeHandle(handle, bubble, img) {
-    const pos = handle.dataset.pos;
-    let dragging = false;
-    let startX, startY, origLeft, origTop, origW, origH;
-
-    const onDown = (e) => {
-      if (e.button !== 0) return;
-      dragging = true;
-      startX   = e.clientX; startY = e.clientY;
-      origLeft = parseFloat(bubble.style.left)      || 0;
-      origTop  = parseFloat(bubble.style.top)       || 0;
-      origW    = parseFloat(bubble.style.width)     || 50;
-      origH    = parseFloat(bubble.style.minHeight) || 20;
-      e.preventDefault(); e.stopPropagation();
-    };
-
-    const onMove = (e) => {
-      if (!dragging) return;
-      this._justDragged = true;
-      const dx = e.clientX - startX, dy = e.clientY - startY;
-      const iw = img.offsetWidth || img.naturalWidth || 375;
-      const ih = img.offsetHeight || img.naturalHeight || 500;
-      let l = origLeft, t = origTop, w = origW, h = origH;
-
-      if (pos.includes('e')) w = Math.max(20, origW + dx);
-      if (pos.includes('s')) h = Math.max(12, origH + dy);
-      if (pos.includes('w')) { w = Math.max(20, origW - dx); l = Math.min(origLeft + origW - 20, origLeft + dx); }
-      if (pos.includes('n')) { h = Math.max(12, origH - dy); t = Math.min(origTop  + origH - 12, origTop  + dy); }
-
-      l = Math.max(0, Math.min(iw - w, l));
-      t = Math.max(0, Math.min(ih - h, t));
-
-      bubble.style.left      = `${l}px`;
-      bubble.style.top       = `${t}px`;
-      bubble.style.width     = `${w}px`;
-      bubble.style.minHeight = `${h}px`;
-    };
-
-    const onUp = () => {
-      if (!dragging) return;
-      dragging = false;
-      this._onBboxChange?.(bubble, img, this._getBboxPct(bubble, img));
-    };
-
-    handle.addEventListener('mousedown', onDown);
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+  _delete() {
+    this.hide();
+    this._resolve?.({ deleted: true });
+    this._resolve = null;
   }
 }
 
@@ -1837,7 +1281,7 @@ class SidePanel {
     list.innerHTML = '';
 
     if (!annotations.length) {
-      list.innerHTML = '<div class="wt-sp-empty">No translations yet.<br>Switch to Translate mode and drag on any panel to add one.</div>';
+      list.innerHTML = '<div class="wt-sp-empty">No translations yet.<br>Click (or drag) on any speech bubble to add one.</div>';
       return;
     }
 
@@ -2404,41 +1848,6 @@ function strokeTextShadow(color, width) {
   return shadows.join(',');
 }
 
-function detectBboxColors(imageEl, bbox) {
-  try {
-    const nw = imageEl.naturalWidth  || imageEl.width  || imageEl.offsetWidth;
-    const nh = imageEl.naturalHeight || imageEl.height || imageEl.offsetHeight;
-    const sx = (bbox.x / 100) * nw;
-    const sy = (bbox.y / 100) * nh;
-    const sw = Math.max(1, (bbox.w / 100) * nw);
-    const sh = Math.max(1, (bbox.h / 100) * nh);
-    const cw = Math.min(sw, 120), ch = Math.min(sh, 120);
-    const canvas = document.createElement('canvas');
-    canvas.width = cw; canvas.height = ch;
-    canvas.getContext('2d').drawImage(imageEl, sx, sy, sw, sh, 0, 0, cw, ch);
-    const data = canvas.getContext('2d').getImageData(0, 0, cw, ch).data;
-
-    let dark = { r: 0, g: 0, b: 0, n: 0 };
-    let light = { r: 0, g: 0, b: 0, n: 0 };
-    for (let i = 0; i < data.length; i += 16) {
-      const r = data[i], g = data[i+1], b = data[i+2];
-      const lum = 0.2126 * r/255 + 0.7152 * g/255 + 0.0722 * b/255;
-      if (lum < 0.45) { dark.r += r; dark.g += g; dark.b += b; dark.n++; }
-      else             { light.r += r; light.g += g; light.b += b; light.n++; }
-    }
-    const avg = (c, n) => n ? '#' + [c.r, c.g, c.b].map(v => Math.round(v/n).toString(16).padStart(2,'0')).join('') : null;
-    const darkHex  = avg(dark,  dark.n);
-    const lightHex = avg(light, light.n);
-    if (!darkHex && !lightHex) return null;
-    // Decide which is text and which is bg: majority → bg, minority → text
-    const textColor = dark.n <= light.n ? (darkHex || '#1a1a2e') : (lightHex || '#ffffff');
-    const bgColor   = dark.n <= light.n ? (lightHex || '#ffffff') : (darkHex  || '#1a1a2e');
-    return { textColor, bgColor };
-  } catch (e) {
-    return null; // canvas tainted (cross-origin image)
-  }
-}
-
 // ── Translation visibility toggle ────────────────────────────────────────────
 let _translationsVisible = true;
 
@@ -2608,46 +2017,10 @@ function bootForPage() {
       updateProgressBar();
     },
   });
-  const bubbleEditor = new BubbleEditor({
-    onBboxChange: async (bubble, img, newBbox) => {
-      // Persist the moved/resized bbox immediately on mouseup
-      const imgHash = await hashImage(img);
-      const imgIndex = images.indexOf(img);
-      const annKey  = bubble.dataset.annKey;
-      const { annotations: stored } = await sendToBackground({ type: MSG.LOAD_TRANSLATIONS, payload: meta });
-      const existing = stored?.find(a => `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` === annKey);
-      if (!existing) return;
-      const updated = { ...existing, imageIndex: imgIndex, bbox: newBbox };
-      await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [updated] } });
-      // annKey is derived from bbox x/y — moving the bubble changes the key,
-      // so drop the record stored under the old key or it duplicates on reload
-      const newKey = `${updated.imageHash}::${updated.bbox.x.toFixed(1)}::${updated.bbox.y.toFixed(1)}`;
-      if (newKey !== annKey) {
-        await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
-        bubble.dataset.annKey = newKey;
-        // Keep renderer state map in sync so removeBubble/upsertBubble work on the new key
-        const rendState = renderer.imageState.get(img);
-        if (rendState) {
-          rendState.bubbles.delete(annKey);
-          rendState.bubbles.set(newKey, bubble);
-        }
-      }
-      // Update dataset so dialog re-edit picks up new bbox
-      bubble.dataset.bboxX = newBbox.x;
-      bubble.dataset.bboxY = newBbox.y;
-      bubble.dataset.bboxW = newBbox.w;
-      bubble.dataset.bboxH = newBbox.h;
-      allAnnotations = allAnnotations.map(a =>
-        `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` === annKey ? updated : a
-      );
-    },
-  });
   let allAnnotations = [];
 
-  const dialog      = new InputDialog({ onDelete: () => {} });
   const quickDialog = new QuickTranslateDialog();
 
-  let currentMode     = MODES.READ;
   let readScanEnabled = false;
   let images          = [];
   let annotationCount = 0;
@@ -2782,7 +2155,7 @@ function bootForPage() {
     images = [...images, ...added].sort((a, b) =>
       a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
     );
-    if (currentMode === MODES.ANNOTATE) {
+    if (readScanEnabled) {
       if (isKakao) fixedLayer.enable(images);
       else added.forEach(img => selector.attachImage(img, images.indexOf(img)));
     }
@@ -2804,7 +2177,7 @@ function bootForPage() {
     onSelect: handleBBoxSelect,
     onDragStart: () => detectPreview.dismiss(),
     onClick: async ({ img, overlay, clickX, clickY, imgRect, imageIndex }) => {
-      const { bbox } = autoDetector.detect(img, clickX, clickY, imgRect);
+      const { bbox } = await autoDetector.detect(img, clickX, clickY, imgRect);
       if (!bbox) return; // validity check failed — fall back to manual drag-to-select
       const confirmed = await detectPreview.show(img, overlay.parentElement, bbox);
       if (!confirmed) return; // user cancelled — fall back to manual drag-to-select
@@ -2812,16 +2185,8 @@ function bootForPage() {
     },
   });
 
+  // OCR → auto-translate → minimal dialog (no styling)
   async function handleBBoxSelect({ bbox, imageEl, imageIndex, clips }) {
-    if (currentMode === MODES.READ) {
-      await handleReadBBoxSelect({ bbox, imageEl, imageIndex, clips });
-    } else {
-      await handleAnnotateBBoxSelect({ bbox, imageEl, imageIndex, clips });
-    }
-  }
-
-  // Read mode: OCR → auto-translate → minimal dialog (no styling)
-  async function handleReadBBoxSelect({ bbox, imageEl, imageIndex, clips }) {
     const rect = imageEl.getBoundingClientRect();
     const screenPos = {
       x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
@@ -2874,53 +2239,6 @@ function bootForPage() {
     updateProgressBar();
   }
 
-  // Annotate mode: full dialog with style options
-  async function handleAnnotateBBoxSelect({ bbox, imageEl, imageIndex, clips }) {
-    const rect = imageEl.getBoundingClientRect();
-    const screenPos = {
-      x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
-      y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
-    };
-    const colors    = detectBboxColors(imageEl, bbox);
-    const colorStyle = colors ? { color: colors.textColor, bg: colors.bgColor, noBg: false } : {};
-    // Hash early so preview callback can use it immediately
-    const imageHash = await hashImage(imageEl);
-    let tmpAnnKey = null;
-    const resultPromise = dialog.show(screenPos, {
-      style: colorStyle,
-      onPreview: (text, style) => {
-        const tmpAnn = { imageHash, imageIndex, bbox, originalText: '', translatedText: text || ' ', style, language: 'vi', createdAt: new Date().toISOString() };
-        tmpAnnKey = `${imageHash}::${bbox.x.toFixed(1)}::${bbox.y.toFixed(1)}`;
-        if (isKakao) fixedLayer.upsertBubble(imageEl, tmpAnn);
-        else renderer.upsertBubble(imageEl, tmpAnn);
-      },
-      onCancel: () => {
-        if (tmpAnnKey) {
-          if (isKakao) fixedLayer.removeBubble(tmpAnnKey);
-          else renderer.removeBubble(imageEl, tmpAnnKey);
-        }
-      },
-    });
-    const ocrSession = dialog.setOcrPending();
-    clips ? ocrClips(clips) : ocrRegionStitched(imageEl, bbox, images)
-      .then(text => dialog.setOcrText(text, ocrSession))
-      .catch(err => dialog.setOcrError(err.message, ocrSession));
-    const result = await resultPromise;
-    if (!result) return;
-
-    const annotation = {
-      imageHash, imageIndex, bbox: result.resizedBbox || bbox,
-      originalText: result.originalText, translatedText: result.translatedText,
-      style: result.style, language: 'vi', createdAt: new Date().toISOString(),
-    };
-    await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
-    _upsertAnnotation(annotation);
-    if (isKakao) fixedLayer.upsertBubble(imageEl, annotation);
-    else renderer.upsertBubble(imageEl, annotation);
-    panel.update(allAnnotations);
-    updateProgressBar();
-  }
-
   function _upsertAnnotation(annotation) {
     const newKey = `${annotation.imageHash}::${annotation.bbox.x.toFixed(1)}::${annotation.bbox.y.toFixed(1)}`;
     const existsIdx = allAnnotations.findIndex(a =>
@@ -2930,132 +2248,9 @@ function bootForPage() {
     else { allAnnotations.push(annotation); annotationCount++; }
   }
 
-  // ── click bubble to edit ───────────────────────────────────────────────
-
-  document.addEventListener('click', async (e) => {
-    if (currentMode !== MODES.ANNOTATE) return;
-    const bubble = e.target.closest('.wt-translation-bubble');
-    if (!bubble) return;
-    // If the user just finished a drag/resize, suppress the click-to-edit dialog
-    if (bubbleEditor.consumeDrag()) return;
-    e.stopPropagation();
-
-    const wrapper = bubble.closest('.wt-img-wrapper');
-    let img = wrapper?.querySelector('img');
-    // Kakao fixed bubbles live in body — resolve their image via the layer's map
-    if (!img && isKakao) img = fixedLayer.getBubbleImage(bubble.dataset.annKey);
-    if (!img) return;
-    if (!isKakao) bubbleEditor.attach(bubble, img); // drag/resize editor is Naver-only
-    const imgIndex = images.indexOf(img);
-
-    // Always read bbox from dataset — stays current after drag/resize
-    const existingBbox = {
-      x: parseFloat(bubble.dataset.bboxX), y: parseFloat(bubble.dataset.bboxY),
-      w: parseFloat(bubble.dataset.bboxW), h: parseFloat(bubble.dataset.bboxH),
-    };
-
-    const annKeyToDelete = bubble.dataset.annKey; // format: imageHash::bboxX::bboxY
-
-    // Look up annotation from in-memory allAnnotations first (always up-to-date),
-    // fall back to storage only if not found (e.g. imported annotation).
-    const imgHash = await hashImage(img);
-    let existing = allAnnotations.find(a =>
-      `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` === annKeyToDelete
-    );
-    if (!existing) {
-      // Fallback: fetch from storage and match by annKey
-      const { annotations: stored } = await sendToBackground({ type: MSG.LOAD_TRANSLATIONS, payload: meta });
-      existing = stored?.find(a =>
-        `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` === annKeyToDelete
-      );
-    }
-
-    const rect = img.getBoundingClientRect();
-    const bubbleLeft  = rect.left + window.scrollX + (existingBbox.x / 100) * rect.width;
-    const bubbleTop   = rect.top  + window.scrollY + (existingBbox.y / 100) * rect.height;
-    const bubbleRight = rect.left + window.scrollX + ((existingBbox.x + existingBbox.w) / 100) * rect.width;
-    const dialogW     = 300;
-    const spaceRight  = window.scrollX + window.innerWidth - bubbleRight - 24;
-    const screenPos   = {
-      x: spaceRight >= dialogW ? bubbleRight + 12 : bubbleLeft - dialogW - 12,
-      y: bubbleTop,
-    };
-
-    // Hide selector overlay on this image while dialog is open so color picker sees true colors
-    const selectorOverlay = wrapper?.querySelector('.wt-selector-overlay');
-    if (selectorOverlay) selectorOverlay.style.visibility = 'hidden';
-
-    dialog._onDelete = async () => {
-      await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey: annKeyToDelete } });
-      if (isKakao) fixedLayer.removeBubble(annKeyToDelete);
-      else renderer.removeBubble(img, annKeyToDelete);
-      allAnnotations = allAnnotations.filter(a =>
-        `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` !== annKeyToDelete
-      );
-      annotationCount--;
-      panel.update(allAnnotations);
-      updateProgressBar();
-    };
-
-    const originalAnnotation = existing ? { ...existing } : null;
-    const result = await dialog.show(screenPos, {
-      originalText:   existing?.originalText   || '',
-      translatedText: existing?.translatedText || bubble.querySelector('span')?.textContent || '',
-      style:          existing?.style          || {},
-      bbox:           existingBbox,
-      img,
-      onPreview: (text, style) => {
-        const previewAnn = { ...(existing || {}), imageHash: imgHash, imageIndex: imgIndex, bbox: existingBbox, originalText: existing?.originalText || '', translatedText: text || ' ', style, language: 'vi', createdAt: existing?.createdAt || new Date().toISOString() };
-        if (isKakao) fixedLayer.upsertBubble(img, previewAnn);
-        else renderer.upsertBubble(img, previewAnn);
-      },
-      onCancel: () => {
-        // Restore original bubble
-        if (originalAnnotation) {
-          if (isKakao) fixedLayer.upsertBubble(img, originalAnnotation);
-          else renderer.upsertBubble(img, originalAnnotation);
-        }
-      },
-    });
-    // Restore overlay regardless of save/cancel
-    if (selectorOverlay) selectorOverlay.style.visibility = '';
-    if (!result) return;
-
-    const finalBbox = result.resizedBbox || existingBbox;
-    const annotation = {
-      imageHash: imgHash, imageIndex: imgIndex, bbox: finalBbox,
-      originalText: result.originalText, translatedText: result.translatedText,
-      style: result.style, language: 'vi',
-      createdAt: existing?.createdAt || new Date().toISOString(),
-    };
-    await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
-
-    // annKey is derived from imageHash + bbox x/y — if the edit changed either,
-    // the save above created a NEW record; remove the old one or it duplicates
-    const savedKey = `${annotation.imageHash}::${annotation.bbox.x.toFixed(1)}::${annotation.bbox.y.toFixed(1)}`;
-    if (savedKey !== annKeyToDelete) {
-      await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey: annKeyToDelete } });
-      if (isKakao) fixedLayer.removeBubble(annKeyToDelete);
-      else renderer.removeBubble(img, annKeyToDelete);
-    } else if (result.resizedBbox) {
-      if (isKakao) fixedLayer.removeBubble(annKeyToDelete);
-      else renderer.removeBubble(img, annKeyToDelete);
-    }
-    if (isKakao) fixedLayer.upsertBubble(img, annotation);
-    else renderer.upsertBubble(img, annotation);
-
-    // Update allAnnotations by annKey (exact match, no bbox proximity)
-    allAnnotations = allAnnotations.filter(a =>
-      `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` !== annKeyToDelete
-    );
-    allAnnotations.push(annotation);
-    panel.update(allAnnotations);
-  });
-
-  // ── double-click bubble to edit in Read mode ───────────────────────────
+  // ── double-click bubble to edit ─────────────────────────────────────────
 
   document.addEventListener('dblclick', async (e) => {
-    if (currentMode !== MODES.READ) return;
     const bubble = e.target.closest('.wt-translation-bubble');
     if (!bubble) return;
     e.stopPropagation();
@@ -3091,6 +2286,19 @@ function bootForPage() {
       translatedText: existing?.translatedText || bubble.querySelector('span')?.textContent || '',
     });
     if (!result) return;
+
+    if (result.deleted) {
+      await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey: annKeyToEdit } });
+      if (isKakao) fixedLayer.removeBubble(annKeyToEdit);
+      else renderer.removeBubble(img, annKeyToEdit);
+      allAnnotations = allAnnotations.filter(a =>
+        `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` !== annKeyToEdit
+      );
+      annotationCount--;
+      panel.update(allAnnotations);
+      updateProgressBar();
+      return;
+    }
 
     const imgHash  = await hashImage(img);
     const annotation = {
@@ -3154,43 +2362,19 @@ function bootForPage() {
       const ogTitle = document.querySelector('meta[property="og:title"]')?.content
         || document.querySelector('title')?.textContent
         || meta.titleId;
-      sendResponse({ ...meta, title: ogTitle, annotationCount, currentMode,
+      sendResponse({ ...meta, title: ogTitle, annotationCount,
         imageCount: images.length,
         translatedPanels: new Set(allAnnotations.map(a => a.imageIndex ?? 0)).size });
       return true;
     }
-    if (message.type === 'SET_MODE') {
-      currentMode = message.mode;
-      if (currentMode === MODES.ANNOTATE) {
-        // Turn off read scan before entering annotate mode
-        setReadScan(false);
-        scanBtn.style.display = 'none';
-        if (isKakao) fixedLayer.enable(images);
-        else selector.enable(images);
-        document.body.classList.add('wt-annotate-mode');
-        toggleBtn.style.display = 'none';
-        toggleTranslations(true);
-      } else {
-        if (isKakao) fixedLayer.disable();
-        else selector.disable();
-        bubbleEditor.detach();
-        document.body.classList.remove('wt-annotate-mode');
-        toggleBtn.style.display = '';
-        scanBtn.style.display = '';
-        panel.hide();
-      }
-    }
-    // Translation list + Export are translator tools — ignored in Read mode.
-    // Import/Clear work in any mode so readers can use their own local files.
-    if (message.type === 'TOGGLE_PANEL' && currentMode === MODES.ANNOTATE) {
+    if (message.type === 'TOGGLE_PANEL') {
       panel.setImages(images);
       panel.update(allAnnotations);
       panel.toggle();
     }
-    if (message.type === 'TRIGGER_EXPORT' && currentMode === MODES.ANNOTATE) triggerExport(meta);
+    if (message.type === 'TRIGGER_EXPORT') triggerExport(meta);
     if (message.type === 'TRIGGER_IMPORT') triggerImport();
     if (message.type === 'TRIGGER_CLEAR')  triggerClear();
-    if (message.type === 'OCR_STATUS')     dialog.setOcrStatus(message.payload);
     if (message.type === 'SYNC_STATUS') {
       if (message.status === 'saved')    showToast('☁ Synced', '#6366f1', 2000);
       else if (message.status === 'imported') showToast(`☁ Synced ${message.error || ''} translations`, '#6366f1', 3000);
@@ -3264,12 +2448,10 @@ function bootForPage() {
     if (isKakao) { fixedLayer.disable(); fixedLayer.clearAll(); }
     else selector.disable();
     renderer.clearAll();
-    bubbleEditor.detach();
     toggleBtn.remove();
     scanBtn.remove();
     panel.hide();
     document.getElementById('wt-progress-bar')?.remove();
-    document.body.classList.remove('wt-annotate-mode');
     document.body.style.marginRight = '';
     document.removeEventListener('keydown', keyHandler);
     _translationsVisible = true;

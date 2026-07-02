@@ -105,24 +105,6 @@ header {
 
 .notice { padding: 16px 14px; color: #94a3b8; font-size: 12px; line-height: 1.5; }
 
-/* ── Mode toggle ───────────────────────────────────────────────────────── */
-
-.mode-toggle {
-  display: flex; gap: 4px; margin: 12px 16px 6px;
-  background: #f1f5f9; border-radius: 10px; padding: 3px;
-}
-.mode-btn {
-  flex: 1; padding: 8px 0; border: none; border-radius: 8px;
-  display: flex; align-items: center; justify-content: center; gap: 5px;
-  background: transparent; font-size: 12px; font-weight: 500;
-  color: #64748b; cursor: pointer;
-  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
-}
-.mode-btn.active {
-  background: #fff; color: #6366f1;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
-}
-
 /* ── Actions ───────────────────────────────────────────────────────────── */
 
 .actions {
@@ -187,25 +169,6 @@ header {
 }
 .key-save-btn:hover { background: #4f46e5; }
 .key-saved { font-size: 11px; color: #16a34a; margin-top: 4px; }
-
-.login-hint {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  color: #94a3b8;
-  padding: 0 16px 12px;
-  line-height: 1.4;
-}
-
-.login-hint a {
-  color: #6366f1;
-  font-weight: 600;
-  cursor: pointer;
-  text-decoration: none;
-}
-
-.login-hint a:hover { text-decoration: underline; }
 
 footer { padding: 6px 14px 10px; font-size: 10px; color: #cbd5e1; text-align: center; }
 .hidden { display: none !important; }
