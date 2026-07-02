@@ -2440,6 +2440,7 @@ class NaverAdapter {
                  || _firstMatchText(doc, ['.age', '.ico_stamp', '[class*="age_"]']);
     if (!ctx.ageRating) console.warn('[WebtoonTranslate] StoryContext(naver): age rating selectors matched nothing');
 
+    console.log('[WebtoonTranslate] StoryContext(naver) fetched:', ctx);
     return ctx;
   }
 }
