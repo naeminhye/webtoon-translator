@@ -55,6 +55,14 @@
   box-sizing: border-box;
 }
 
+/* Ridi/Kakao: no .wt-img-wrapper to be position:absolute inside (see
+   DetectionPreview.show()'s `fixed` mode) — position relative to the
+   viewport instead, same as .wt-fixed-overlay/.wt-fixed-bubble. */
+.wt-detect-preview.wt-detect-preview-fixed {
+  position: fixed;
+  z-index: 250; /* above .wt-fixed-overlay (100) and .wt-fixed-bubble (200) */
+}
+
 .wt-detect-toolbar {
   position: absolute;
   top: -34px;
@@ -1045,7 +1053,7 @@ body.wt-panel-open #wt-toggle-btn {
 }
 /* __DEV_TOOLS_BLOCK_END__ */
 
-/* ── Fixed overlay layer (Kakao) ─────────────────────────────────────── */
+/* ── Fixed overlay layer (Ridi / Kakao) ───────────────────────────────── */
 
 .wt-fixed-overlay {
   position: fixed;
@@ -1053,10 +1061,16 @@ body.wt-panel-open #wt-toggle-btn {
   width: 100%; height: 100%;
   z-index: 100;
   pointer-events: auto !important;
-  cursor: crosshair;
+  /* pointer, not crosshair: a click here auto-detects a bubble — crosshair
+     reads as "draw a rectangle" and hides that affordance. Switched to
+     crosshair only while an actual drag is in progress (.wt-dragging).
+     Mirrors .wt-selector-overlay's cursor fix for the non-fixed-overlay sites. */
+  cursor: pointer;
   background: rgba(99, 102, 241, 0.03);
   border: none;
 }
+
+.wt-fixed-overlay.wt-dragging { cursor: crosshair; }
 
 .wt-fixed-bubble {
   position: absolute;

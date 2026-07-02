@@ -62,9 +62,7 @@ const AUTO_FIT_MAX_FONT_SIZE   = 20;   // search seed — the app's prior fixed 
 const AUTO_FIT_ABSOLUTE_MAX_FONT_SIZE = 48; // sane ceiling so a short line in a huge bubble can't blow up to an absurd size; needs visual tuning
 const AUTO_FIT_MIN_FONT_SIZE   = 13;   // absolute floor — readability wins over fitting; needs visual tuning against real panels
 const AUTO_FIT_COMFORT_FONT_SIZE = 16; // below this, prefer a taller box over a cramped font — see fitAndExpand
-const AUTO_FIT_LINE_HEIGHT     = 1.45; // matches .wt-bubble-text's CSS line-height
-const AUTO_FIT_PAD_X           = 16;   // .wt-bubble-text CSS padding: 4px 8px -> 8*2 horizontal
-const AUTO_FIT_PAD_Y           = 8;    // 4*2 vertical
+const AUTO_FIT_LINE_HEIGHT     = 1.45; // matches .wt-bubble-text's CSS line-height — kept for reference/docs only; measurement below reads it from real CSS, doesn't assume it
 const AUTO_FIT_MAX_EXPAND_RATIO         = 2.5; // height fallback never grows the box past this multiple of its original bbox height
 const AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC = 0.5; // ...or this fraction of the viewport height, whichever is smaller
 // The OCR bbox is the RECTANGLE circumscribing an (often oval/round) bubble —
@@ -76,94 +74,78 @@ const AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC = 0.5; // ...or this fraction of the vie
 const AUTO_FIT_WIDTH_MARGIN  = 0.82;
 const AUTO_FIT_HEIGHT_MARGIN = 0.92;
 
-let _autoFitCtx = null;
-function _getAutoFitCtx() {
-  if (!_autoFitCtx) _autoFitCtx = document.createElement('canvas').getContext('2d');
-  return _autoFitCtx;
-}
-
-function _autoFitFontString(fontSizePx, fontFamily, bold, italic) {
-  const family = fontFamily ? `'${fontFamily}', system-ui, sans-serif` : `'Noto Sans', 'Be Vietnam Pro', system-ui, sans-serif`;
-  return `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${fontSizePx}px ${family}`;
-}
-
-/** Breaks a single word that's wider than maxWidthPx into char-level chunks (mirrors CSS word-break: break-word). */
-function _breakLongWord(ctx, word, maxWidthPx) {
-  const chunks = [];
-  let chunk = '';
-  for (const ch of word) {
-    const next = chunk + ch;
-    if (ctx.measureText(next).width > maxWidthPx && chunk) {
-      chunks.push(chunk);
-      chunk = ch;
-    } else {
-      chunk = next;
-    }
+// Fitting is measured with a hidden, off-screen element carrying the EXACT
+// same class (.wt-bubble-text) and CSS (padding, line-height, word-break,
+// white-space, box-sizing) the real bubble text renders with — not canvas
+// measureText(). A canvas approximation can silently diverge from the real
+// render (an unavailable font in the stack falling back differently, CSS
+// letter/word-spacing canvas doesn't know about, etc.), which showed up as
+// translated text visibly overflowing its box even though the fit search
+// "passed" — using the actual browser layout engine for both the search and
+// the final render eliminates that class of mismatch by construction.
+let _autoFitMeasureEl = null;
+function _getAutoFitMeasureEl() {
+  if (!_autoFitMeasureEl) {
+    // .wt-bubble-text itself declares no font-family/line-height — it
+    // inherits both from its real parent, .wt-translation-bubble. Nesting
+    // the measurement element the same way (instead of a bare .wt-bubble-text
+    // with no ancestor) is required for accurate measurement — a bare one
+    // would silently fall back to the page's own default font/line-height,
+    // which is exactly the kind of measurement-vs-render mismatch this
+    // whole DOM-based approach exists to eliminate.
+    const wrap = document.createElement('div');
+    wrap.className = 'wt-translation-bubble';
+    wrap.style.cssText = 'position:fixed; left:-99999px; top:0; visibility:hidden; display:block; width:auto; height:auto; animation:none;';
+    _autoFitMeasureEl = document.createElement('span');
+    _autoFitMeasureEl.className = 'wt-bubble-text';
+    _autoFitMeasureEl.style.height   = 'auto';
+    _autoFitMeasureEl.style.maxWidth = 'none'; // override .wt-bubble-text's max-width:100% — no real bbox-sized parent here
+    wrap.appendChild(_autoFitMeasureEl);
+    document.body.appendChild(wrap);
   }
-  chunks.push(chunk);
-  return chunks;
+  return _autoFitMeasureEl;
 }
 
-/** Greedy word-wrap of `text` to maxWidthPx using canvas measureText; \n starts a new paragraph. */
-function wrapTextToWidth(ctx, text, maxWidthPx) {
-  const outLines = [];
-  for (const para of text.split('\n')) {
-    if (para === '') { outLines.push(''); continue; }
-    let line = '';
-    for (const word of para.split(' ')) {
-      const candidate = line ? `${line} ${word}` : word;
-      if (ctx.measureText(candidate).width <= maxWidthPx) {
-        line = candidate;
-        continue;
-      }
-      if (line) outLines.push(line);
-      if (ctx.measureText(word).width > maxWidthPx) {
-        const broken = _breakLongWord(ctx, word, maxWidthPx);
-        outLines.push(...broken.slice(0, -1));
-        line = broken[broken.length - 1];
-      } else {
-        line = word;
-      }
-    }
-    outLines.push(line);
-  }
-  return outLines;
+/** Real wrapped outer height (border-box, padding included) of `text` at `fontSizePx` constrained to `boxWidthPx`. */
+function measureBubbleTextHeight(text, boxWidthPx, fontSizePx, { fontFamily, bold, italic } = {}) {
+  const el = _getAutoFitMeasureEl();
+  el.style.width      = `${boxWidthPx}px`;
+  el.style.fontSize   = `${fontSizePx}px`;
+  el.style.fontWeight = bold   ? 'bold'   : 'normal';
+  el.style.fontStyle  = italic ? 'italic' : 'normal';
+  el.style.fontFamily = fontFamily ? `'${fontFamily}', system-ui, sans-serif` : '';
+  el.textContent = text;
+  return el.scrollHeight;
 }
 
 /**
  * Binary-searches the largest font size for which `text`, wrapped to
- * (boxWidthPx - padding), fits within (boxHeightPx - padding). The search's
- * upper bound scales with the box's own height (see dynamicMax below)
- * instead of being hard-capped at AUTO_FIT_MAX_FONT_SIZE — a large bubble
- * with short text should be able to render well past the app's old fixed
- * default. AUTO_FIT_MAX_FONT_SIZE is used only as a search-efficiency seed.
- * Returns { fontSize, lines, totalTextHeight, overflow } — overflow is true
- * when even AUTO_FIT_MIN_FONT_SIZE doesn't fit (caller applies the
- * height-expansion / clip fallback).
+ * boxWidthPx (real DOM layout, not an approximation), fits within
+ * boxHeightPx. The search's upper bound scales with the box's own height
+ * (see dynamicMax below) instead of being hard-capped at
+ * AUTO_FIT_MAX_FONT_SIZE — a large bubble with short text should be able to
+ * render well past the app's old fixed default. AUTO_FIT_MAX_FONT_SIZE is
+ * used only as a search-efficiency seed. Returns { fontSize, totalTextHeight,
+ * overflow } — overflow is true when even AUTO_FIT_MIN_FONT_SIZE doesn't fit
+ * (caller applies the height-expansion / clip fallback).
  */
-function fitTextToBox(text, boxWidthPx, boxHeightPx, { fontFamily, bold, italic } = {}) {
-  const ctx    = _getAutoFitCtx();
-  const availW = Math.max(1, boxWidthPx - AUTO_FIT_PAD_X);
-  const availH = Math.max(1, boxHeightPx - AUTO_FIT_PAD_Y);
-
+function fitTextToBox(text, boxWidthPx, boxHeightPx, styleOpts = {}) {
   const measureAt = (fontSizePx) => {
-    ctx.font = _autoFitFontString(fontSizePx, fontFamily, bold, italic);
-    const lines = wrapTextToWidth(ctx, text, availW);
-    const totalTextHeight = lines.length * fontSizePx * AUTO_FIT_LINE_HEIGHT;
-    return { fontSize: fontSizePx, lines, totalTextHeight, fits: totalTextHeight <= availH };
+    const totalTextHeight = measureBubbleTextHeight(text, boxWidthPx, fontSizePx, styleOpts);
+    return { fontSize: fontSizePx, totalTextHeight, fits: totalTextHeight <= boxHeightPx };
   };
 
   const atFloor = measureAt(AUTO_FIT_MIN_FONT_SIZE);
   if (!atFloor.fits) return { ...atFloor, overflow: true };
 
-  // availH / line-height is the biggest a single line could be and still fit
-  // vertically — a cheap proxy for "how large could this box's text
+  // boxHeightPx / line-height is the biggest a single line could be and still
+  // fit vertically — a cheap proxy for "how large could this box's text
   // plausibly get", clamped so it never shrinks below the old fixed default
   // (small/normal boxes behave exactly as before) and never exceeds the
   // absolute sanity ceiling (huge boxes don't blow up unreasonably).
   const dynamicMax = Math.min(
     AUTO_FIT_ABSOLUTE_MAX_FONT_SIZE,
-    Math.max(AUTO_FIT_MAX_FONT_SIZE, Math.floor(availH / AUTO_FIT_LINE_HEIGHT))
+    Math.max(AUTO_FIT_MAX_FONT_SIZE, Math.floor(boxHeightPx / AUTO_FIT_LINE_HEIGHT))
   );
 
   const seedSize = Math.min(AUTO_FIT_MAX_FONT_SIZE, dynamicMax);
@@ -221,7 +203,9 @@ function fitAndExpand(text, boxWidthPx, boxHeightPx, styleOpts) {
   const expandedIsBetter = !expanded.overflow && (primary.overflow || expanded.fontSize > primary.fontSize);
   if (expandedIsBetter) {
     // Grow only as much as this font size actually needs, not the full cap.
-    const neededH = Math.max(boxHeightPx, expanded.totalTextHeight + AUTO_FIT_PAD_Y);
+    // totalTextHeight is already the full border-box height (real DOM
+    // measurement, padding included) — no manual padding add-back needed.
+    const neededH = Math.max(boxHeightPx, expanded.totalTextHeight);
     return { fontSize: expanded.fontSize, boxHeightPx: Math.min(neededH, maxExpandedH), clipped: false };
   }
   if (primary.overflow) {
@@ -232,22 +216,27 @@ function fitAndExpand(text, boxWidthPx, boxHeightPx, styleOpts) {
 
 /**
  * Runs fitAndExpand() for a bubble's translated text against its pixel box
- * size (shrunk by AUTO_FIT_WIDTH_MARGIN/AUTO_FIT_HEIGHT_MARGIN first, since
- * the raw box is the OCR bbox's circumscribing rectangle, not the bubble's
- * actual — often oval — outline), applies the resulting font-size to the
- * outer bubble `b`, and — when even the capped height-expansion fallback
- * isn't enough — clips the inner text span and adds a small toggle button so
- * the full translation is still reachable (secondary fallback from the
- * auto-fit spec; no special animation, just visibility on demand). Returns
- * the (possibly expanded) box height in px for the caller's _positionBubble
- * to use as its height.
+ * size, applies the resulting font-size to the outer bubble `b`, and — when
+ * even the capped height-expansion fallback isn't enough — clips the inner
+ * text span and adds a small toggle button so the full translation is still
+ * reachable (secondary fallback from the auto-fit spec; no special
+ * animation, just visibility on demand). Returns the (possibly expanded) box
+ * height in px for the caller's _positionBubble to use as its height.
+ *
+ * `applyMargin` (default true) shrinks boxWidthPx/boxHeightPx by
+ * AUTO_FIT_WIDTH_MARGIN/AUTO_FIT_HEIGHT_MARGIN first, since the raw box is
+ * the OCR bbox's circumscribing rectangle, not the bubble's actual — often
+ * oval — outline. Pass false when the box isn't an oval-bubble overlay at
+ * all (side-by-side mode's caption renders as a plain rectangle in open page
+ * margin, not on top of any bubble shape, so that margin has no meaning
+ * there and would just needlessly shrink the box).
  */
-function applyAutoFit(b, span, ann, boxWidthPx, boxHeightPx) {
+function applyAutoFit(b, span, ann, boxWidthPx, boxHeightPx, applyMargin = true) {
   const s = ann.style || {};
   const fit = fitAndExpand(
     ann.translatedText || '',
-    boxWidthPx  * AUTO_FIT_WIDTH_MARGIN,
-    boxHeightPx * AUTO_FIT_HEIGHT_MARGIN,
+    applyMargin ? boxWidthPx  * AUTO_FIT_WIDTH_MARGIN  : boxWidthPx,
+    applyMargin ? boxHeightPx * AUTO_FIT_HEIGHT_MARGIN : boxHeightPx,
     { fontFamily: s.fontFamily, bold: s.bold, italic: s.italic }
   );
   b.style.fontSize = `${fit.fontSize}px`;
@@ -258,7 +247,10 @@ function applyAutoFit(b, span, ann, boxWidthPx, boxHeightPx) {
   span.style.overflow  = '';
 
   if (fit.clipped) {
-    const capPx = fit.boxHeightPx - AUTO_FIT_PAD_Y;
+    // span has box-sizing:border-box, so max-height applies to the same
+    // border-box (padding-included) height fit.boxHeightPx already is —
+    // no manual padding subtraction needed.
+    const capPx = fit.boxHeightPx;
     b.classList.add('wt-bubble-clipped');
     span.style.maxHeight = `${capPx}px`;
     span.style.overflow  = 'hidden';
@@ -475,8 +467,9 @@ async function hashImage(img) {
 // All drag coords are converted back to % of the target image.
 
 class FixedOverlayLayer {
-  constructor({ onSelect, getImages }) {
+  constructor({ onSelect, onClick, getImages }) {
     this._onSelect  = onSelect;
+    this._onClick   = onClick;   // ({ img, clickX, clickY, imgRect, imageIndex }) — fired on click (no drag), same contract as BBoxSelector
     this._getImages = getImages || null; // live image list — survives lazy-load/remount
     this._el        = null;
     this._images    = [];
@@ -578,6 +571,7 @@ class FixedOverlayLayer {
       this._selRect.className = 'wt-fixed-sel-rect';
       document.body.appendChild(this._selRect);
       this._drag = { startX, startY };
+      this._el.classList.add('wt-dragging'); // pointer -> crosshair while an actual drag is happening
     });
 
     document.addEventListener('mousemove', (e) => {
@@ -595,9 +589,29 @@ class FixedOverlayLayer {
       const { startX, startY } = this._drag;
       this._drag = null;
       this._selRect?.remove(); this._selRect = null;
+      this._el.classList.remove('wt-dragging');
 
       const endX = e.clientX, endY = e.clientY;
       const pw = Math.abs(endX - startX), ph = Math.abs(endY - startY);
+
+      // Minimal pointer movement -> treat as a click and try auto-detect first;
+      // manual drag-to-select (below) remains the fallback for anything larger.
+      // Mirrors BBoxSelector's click-to-detect (same threshold constant) so
+      // Ridi/Kakao — the two sites that use this fixed-position overlay
+      // instead of BBoxSelector — get the same click-to-detect interaction.
+      if (Math.hypot(endX - startX, endY - startY) < BBOX_SELECTOR_CLICK_THRESHOLD_PX) {
+        const img = this._imageAtViewportPoint(endX, endY, this._liveImages()) || this._anyImageAtPoint(endX, endY);
+        if (!img) return;
+        const imgRect = img.getBoundingClientRect();
+        const clickX = endX - imgRect.left, clickY = endY - imgRect.top;
+        if (clickX < 0 || clickY < 0 || clickX > imgRect.width || clickY > imgRect.height) return;
+        const imgs = this._liveImages();
+        let imageIndex = imgs.indexOf(img);
+        if (imageIndex === -1) imageIndex = 0;
+        this._onClick?.({ img, clickX, clickY, imgRect, imageIndex });
+        return;
+      }
+
       if (pw < 10 || ph < 10) return;
 
       const selL = Math.min(startX, endX), selT = Math.min(startY, endY);
@@ -690,8 +704,6 @@ class FixedOverlayLayer {
     const r = img.getBoundingClientRect();
     const iw = r.width  || img.naturalWidth;
     const ih = r.height || img.naturalHeight;
-    const left    = r.left + window.scrollX + (bbox.x / 100) * iw;
-    const topOrig = r.top  + window.scrollY + (bbox.y / 100) * ih;
     // autoFitHeightPx (set once at _createBubble time) may exceed the raw
     // bbox-derived height when the translated text needed the box-expansion
     // fallback — see fitAndExpand(). Doesn't get recomputed on reposition/
@@ -699,12 +711,22 @@ class FixedOverlayLayer {
     // limitation the font-size styling already had before auto-fit.
     const storedH = parseFloat(bubble.dataset.autoFitHeightPx);
     const h = !isNaN(storedH) ? storedH : (bbox.h / 100) * ih;
-    bubble.style.left  = `${left}px`;
-    bubble.style.width = `${(bbox.w / 100) * iw}px`;
+
     if (_overlayMode === 'side-by-side') {
-      bubble.style.top       = `${topOrig + h + SIDE_BY_SIDE_GAP_PX}px`;
+      // Rendered entirely outside the panel, in the page's own margin to its
+      // right, at the same vertical position as the original bubble — not
+      // overlaid on the art at all. Needs actual blank page space there to
+      // be visible; on a full-bleed viewer with no side margin this can
+      // render off-screen or over neighboring page content.
+      bubble.style.left      = `${r.right + window.scrollX + SIDE_BY_SIDE_GAP_PX}px`;
+      bubble.style.top       = `${r.top   + window.scrollY + (bbox.y / 100) * ih}px`;
+      bubble.style.width     = `${SIDE_BY_SIDE_WIDTH_PX}px`;
       bubble.style.minHeight = '';
     } else {
+      const left    = r.left + window.scrollX + (bbox.x / 100) * iw;
+      const topOrig = r.top  + window.scrollY + (bbox.y / 100) * ih;
+      bubble.style.left      = `${left}px`;
+      bubble.style.width     = `${(bbox.w / 100) * iw}px`;
       bubble.style.top       = `${topOrig}px`;
       bubble.style.minHeight = `${h}px`;
     }
@@ -748,7 +770,10 @@ class FixedOverlayLayer {
     const r  = img.getBoundingClientRect();
     const iw = r.width  || img.naturalWidth;
     const ih = r.height || img.naturalHeight;
-    const boxHeightPx = applyAutoFit(b, span, ann, (ann.bbox.w / 100) * iw, (ann.bbox.h / 100) * ih);
+    // side-by-side mode: a fixed-width caption in the page's own margin, not
+    // an overlay on the (often oval) bubble shape — no oval-corner margin.
+    const boxWidthPx = _overlayMode === 'side-by-side' ? SIDE_BY_SIDE_WIDTH_PX : (ann.bbox.w / 100) * iw;
+    const boxHeightPx = applyAutoFit(b, span, ann, boxWidthPx, (ann.bbox.h / 100) * ih, _overlayMode !== 'side-by-side');
     b.dataset.autoFitHeightPx = boxHeightPx;
 
     return b;
@@ -882,23 +907,27 @@ class BubbleAutoDetector {
       // case keep only the valid half(s) instead of falling back to the
       // full (still-contaminated) merged region. Only fall back to the
       // merged region if NEITHER half is independently valid.
-      let regions = [region];
-      const split = findWaistSplit(region.mask, cw, ch, region);
-      if (split) {
-        const validHalves = split.filter(r => this._isValidRegion(r, cw, ch).valid);
-        if (validHalves.length > 0) {
-          regions = validHalves;
-          debug.split = validHalves.length === split.length ? 'both' : 'partial';
+      let { bboxes, firstFailReason } = this._extractBboxes(region, cw, ch, sx, segments, nw, nh, debug);
+
+      // Last-resort retry for bubbles with a literal gap in their border
+      // (dashed/dotted outlines), which a color-only fill leaks straight
+      // through regardless of tolerance tuning — see computeEdgeBarrierMask's
+      // doc. Only attempted when the plain fill actually leaked into the
+      // background (not other failure reasons, and never when the plain fill
+      // already succeeded), so solid-border bubbles — the vast majority — are
+      // completely unaffected by this and take zero extra work.
+      if (!bboxes.length && firstFailReason === 'leaked-into-background') {
+        const barrier    = computeEdgeBarrierMask(imageData);
+        const edgeRegion = floodFillBBox(imageData, localX, localY, AUTO_DETECT_TOLERANCE, barrier);
+        if (edgeRegion) {
+          const retry = this._extractBboxes(edgeRegion, cw, ch, sx, segments, nw, nh, debug);
+          if (retry.bboxes.length) {
+            bboxes = retry.bboxes;
+            debug.edgeBarrierRetry = true;
+          }
         }
       }
 
-      const bboxes = [];
-      let firstFailReason = null;
-      for (const r of regions) {
-        const v = this._isValidRegion(r, cw, ch);
-        if (!v.valid) { firstFailReason = firstFailReason || v.reason; continue; }
-        bboxes.push(this._regionToBbox(r, sx, segments.canvasTopFrameY, nw, nh));
-      }
       if (!bboxes.length) return this._fail(debug, firstFailReason || 'too-small');
 
       debug.bboxes = bboxes;
@@ -908,6 +937,28 @@ class BubbleAutoDetector {
     }
 
     return this._fail(debug, 'exceeded-max-attempts');
+  }
+
+  /** Waist-split + per-region validity check + bbox conversion — shared by the plain flood fill and the edge-barrier dashed-border retry. */
+  _extractBboxes(region, cw, ch, sx, segments, nw, nh, debug) {
+    let regions = [region];
+    const split = findWaistSplit(region.mask, cw, ch, region);
+    if (split) {
+      const validHalves = split.filter(r => this._isValidRegion(r, cw, ch).valid);
+      if (validHalves.length > 0) {
+        regions = validHalves;
+        debug.split = validHalves.length === split.length ? 'both' : 'partial';
+      }
+    }
+
+    const bboxes = [];
+    let firstFailReason = null;
+    for (const r of regions) {
+      const v = this._isValidRegion(r, cw, ch);
+      if (!v.valid) { firstFailReason = firstFailReason || v.reason; continue; }
+      bboxes.push(this._regionToBbox(r, sx, segments.canvasTopFrameY, nw, nh));
+    }
+    return { bboxes, firstFailReason };
   }
 
   /** Size/area/aspect validity check shared by the merged region and each waist-split half. */
@@ -1055,8 +1106,8 @@ function boxBlur3x3(imageData) {
   }
 }
 
-/** Iterative 4-connected flood fill by color distance to the seed pixel. Returns the bbox + pixel count + the fill mask, or null if the seed is out of bounds. */
-function floodFillBBox(imageData, startX, startY, tolerance) {
+/** Iterative 4-connected flood fill by color distance to the seed pixel. `barrierMask` (optional, from computeEdgeBarrierMask), when given, blocks traversal into any marked pixel regardless of color tolerance — used as a last-resort retry for bubbles whose border has literal gaps (dashed/dotted outlines) that a color-only fill leaks straight through. Returns the bbox + pixel count + the fill mask, or null if the seed is out of bounds. */
+function floodFillBBox(imageData, startX, startY, tolerance, barrierMask) {
   const { data, width: w, height: h } = imageData;
   if (startX < 0 || startY < 0 || startX >= w || startY >= h) return null;
 
@@ -1072,6 +1123,7 @@ function floodFillBBox(imageData, startX, startY, tolerance) {
 
   const tryVisit = (nIdx) => {
     if (visited[nIdx]) return;
+    if (barrierMask && barrierMask[nIdx]) return;
     const i = nIdx * 4;
     const dr = data[i] - sr, dg = data[i + 1] - sg, db = data[i + 2] - sb;
     if (dr * dr + dg * dg + db * db <= tolSq) {
@@ -1094,6 +1146,73 @@ function floodFillBBox(imageData, startX, startY, tolerance) {
   }
 
   return { minX, minY, maxX, maxY, filledPixels, mask: visited };
+}
+
+// ── Edge barrier (dashed/dotted bubble border fallback) ────────────────────────
+// A color-tolerance flood fill treats a dashed border as a series of walls with
+// literal gaps between them — the fill leaks straight through those gaps into
+// whatever's outside the bubble. This computes a simple gradient-magnitude edge
+// map (cheap central-difference approximation, not a full Sobel convolution)
+// and dilates it by a few px, so nearby dash segments' edges merge into a
+// mostly-continuous barrier that bridges small gaps. Deliberately NOT wired
+// into the main detection path — see AUTO_DETECT_EDGE_* below and detect()'s
+// last-resort retry — a real border (dashed or solid) is a strong edge either
+// way, so this mainly matters for closing dash gaps, not for solid borders
+// (which the plain color-tolerance fill already handles).
+
+const AUTO_DETECT_EDGE_THRESHOLD   = 40; // luminance gradient magnitude above this counts as an edge; needs tuning against real dashed-bubble screenshots
+const AUTO_DETECT_EDGE_DILATE_PX   = 2;  // how far to grow each edge pixel — must be >= half the typical gap between dashes to bridge them
+
+/** Grayscale gradient magnitude (central differences) thresholded into a binary edge mask. */
+function computeEdgeMask(imageData, threshold) {
+  const { data, width: w, height: h } = imageData;
+  const lum = new Float32Array(w * h);
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    lum[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  }
+  const edges = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      const gx = lum[p + (x < w - 1 ? 1 : 0)] - lum[p - (x > 0 ? 1 : 0)];
+      const gy = lum[p + (y < h - 1 ? w : 0)] - lum[p - (y > 0 ? w : 0)];
+      if (Math.sqrt(gx * gx + gy * gy) > threshold) edges[p] = 1;
+    }
+  }
+  return edges;
+}
+
+/** Separable square dilation (grows every set pixel by `radius` in both axes) — O(w*h*radius), not O(w*h*radius²). */
+function dilateMask(mask, w, h, radius) {
+  const tmp = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let on = 0;
+      for (let dx = -radius; dx <= radius && !on; dx++) {
+        const nx = x + dx;
+        if (nx >= 0 && nx < w && mask[y * w + nx]) on = 1;
+      }
+      tmp[y * w + x] = on;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let on = 0;
+      for (let dy = -radius; dy <= radius && !on; dy++) {
+        const ny = y + dy;
+        if (ny >= 0 && ny < h && tmp[ny * w + x]) on = 1;
+      }
+      out[y * w + x] = on;
+    }
+  }
+  return out;
+}
+
+/** computeEdgeMask + dilateMask in one call, for detect()'s dashed-border retry. */
+function computeEdgeBarrierMask(imageData) {
+  const edges = computeEdgeMask(imageData, AUTO_DETECT_EDGE_THRESHOLD);
+  return dilateMask(edges, imageData.width, imageData.height, AUTO_DETECT_EDGE_DILATE_PX);
 }
 
 // ── Waist-split (separates two bubbles merged by flood fill at a touching point) ─
@@ -1258,30 +1377,51 @@ class DetectionPreview {
     this._cleanup = null;
   }
 
-  /** Shows an adjustable box over `img` (appended to `wrapper`) for `bboxPct`. Resolves with the (possibly adjusted) bbox % on confirm, or null on cancel/dismiss. */
-  show(img, wrapper, bboxPct) {
+  /**
+   * Shows an adjustable box over `img` for `bboxPct`. Resolves with the
+   * (possibly adjusted) bbox % on confirm, or null on cancel/dismiss.
+   *
+   * By default the box is appended to `wrapper` (position:absolute, px
+   * relative to the wrapper's own top-left — the wrapper is sized to the
+   * image, so 0,0 IS the image's top-left). Pass `{ fixed: true }` and
+   * `wrapper` can be null: the box is appended to document.body instead
+   * (position:fixed, px relative to the *viewport*) — needed for Ridi/Kakao,
+   * whose bubbles/overlays already work in viewport coordinates via
+   * FixedOverlayLayer rather than a `.wt-img-wrapper` (which those sites
+   * never get — see BBoxSelector._ensureWrapper). The move/resize handles'
+   * own delta math (based on raw e.clientX/Y deltas) needs no changes either
+   * way; only the img-relative <-> viewport-relative offset conversions in
+   * applyPx/readPct and the handles' clamping bounds differ.
+   */
+  show(img, wrapper, bboxPct, { fixed = false } = {}) {
     this.dismiss();
     return new Promise((resolve) => {
       const box = document.createElement('div');
-      box.className = 'wt-detect-preview';
-      wrapper.appendChild(box);
+      box.className = `wt-detect-preview${fixed ? ' wt-detect-preview-fixed' : ''}`;
+      (fixed ? document.body : wrapper).appendChild(box);
 
       const dims = () => ({
         iw: img.offsetWidth || img.naturalWidth,
         ih: img.offsetHeight || img.naturalHeight,
       });
+      // Origin of the image in the box's own coordinate space: (0,0) when the
+      // box lives inside the image's own wrapper; the image's live viewport
+      // rect when the box is position:fixed instead.
+      const origin = () => fixed ? img.getBoundingClientRect() : { left: 0, top: 0 };
       const applyPx = (bbox) => {
         const { iw, ih } = dims();
-        box.style.left   = `${(bbox.x / 100) * iw}px`;
-        box.style.top    = `${(bbox.y / 100) * ih}px`;
+        const o = origin();
+        box.style.left   = `${o.left + (bbox.x / 100) * iw}px`;
+        box.style.top    = `${o.top  + (bbox.y / 100) * ih}px`;
         box.style.width  = `${(bbox.w / 100) * iw}px`;
         box.style.height = `${(bbox.h / 100) * ih}px`;
       };
       const readPct = () => {
         const { iw, ih } = dims();
+        const o = origin();
         return {
-          x: (parseFloat(box.style.left)   / iw) * 100,
-          y: (parseFloat(box.style.top)    / ih) * 100,
+          x: ((parseFloat(box.style.left) - o.left) / iw) * 100,
+          y: ((parseFloat(box.style.top)  - o.top)  / ih) * 100,
           w: (parseFloat(box.style.width)  / iw) * 100,
           h: (parseFloat(box.style.height) / ih) * 100,
         };
@@ -1293,9 +1433,9 @@ class DetectionPreview {
         const h = document.createElement('div');
         h.className = `wt-resize-handle wt-rh-${pos}`;
         box.appendChild(h);
-        cleanups.push(this._makeResizeHandle(h, pos, box, img));
+        cleanups.push(this._makeResizeHandle(h, pos, box, img, origin));
       });
-      cleanups.push(this._makeMoveHandle(box, img));
+      cleanups.push(this._makeMoveHandle(box, img, origin));
 
       const toolbar = document.createElement('div');
       toolbar.className = 'wt-detect-toolbar';
@@ -1334,7 +1474,7 @@ class DetectionPreview {
     this._cleanup?.();
   }
 
-  _makeMoveHandle(box, img) {
+  _makeMoveHandle(box, img, origin) {
     let dragging = false, startX, startY, origLeft, origTop;
     const onDown = (e) => {
       if (e.target !== box || e.button !== 0) return;
@@ -1348,9 +1488,10 @@ class DetectionPreview {
       if (!dragging) return;
       const iw = img.offsetWidth || img.naturalWidth;
       const ih = img.offsetHeight || img.naturalHeight;
+      const o = origin();
       const w = parseFloat(box.style.width), h = parseFloat(box.style.height);
-      const l = Math.max(0, Math.min(iw - w, origLeft + (e.clientX - startX)));
-      const t = Math.max(0, Math.min(ih - h, origTop  + (e.clientY - startY)));
+      const l = Math.max(o.left, Math.min(o.left + iw - w, origLeft + (e.clientX - startX)));
+      const t = Math.max(o.top,  Math.min(o.top  + ih - h, origTop  + (e.clientY - startY)));
       box.style.left = `${l}px`;
       box.style.top  = `${t}px`;
     };
@@ -1365,7 +1506,7 @@ class DetectionPreview {
     };
   }
 
-  _makeResizeHandle(handle, pos, box, img) {
+  _makeResizeHandle(handle, pos, box, img, origin) {
     let dragging = false, startX, startY, origLeft, origTop, origW, origH;
     const onDown = (e) => {
       if (e.button !== 0) return;
@@ -1382,6 +1523,7 @@ class DetectionPreview {
       const dx = e.clientX - startX, dy = e.clientY - startY;
       const iw = img.offsetWidth || img.naturalWidth;
       const ih = img.offsetHeight || img.naturalHeight;
+      const o = origin();
       let l = origLeft, t = origTop, w = origW, h = origH;
 
       if (pos.includes('e')) w = Math.max(AUTO_DETECT_MIN_W, origW + dx);
@@ -1389,8 +1531,8 @@ class DetectionPreview {
       if (pos.includes('w')) { w = Math.max(AUTO_DETECT_MIN_W, origW - dx); l = Math.min(origLeft + origW - AUTO_DETECT_MIN_W, origLeft + dx); }
       if (pos.includes('n')) { h = Math.max(AUTO_DETECT_MIN_H, origH - dy); t = Math.min(origTop  + origH - AUTO_DETECT_MIN_H, origTop  + dy); }
 
-      l = Math.max(0, Math.min(iw - w, l));
-      t = Math.max(0, Math.min(ih - h, t));
+      l = Math.max(o.left, Math.min(o.left + iw - w, l));
+      t = Math.max(o.top,  Math.min(o.top  + ih - h, t));
 
       box.style.left   = `${l}px`;
       box.style.top    = `${t}px`;
@@ -1966,7 +2108,10 @@ class OverlayRenderer {
     const rect = img.getBoundingClientRect();
     const iw = img.naturalWidth  || rect.width  || img.offsetWidth  || 375;
     const ih = img.naturalHeight || rect.height || img.offsetHeight || 500;
-    const boxHeightPx = applyAutoFit(b, span, ann, (ann.bbox.w / 100) * iw, (ann.bbox.h / 100) * ih);
+    // side-by-side mode: a fixed-width caption in the page's own margin, not
+    // an overlay on the (often oval) bubble shape — no oval-corner margin.
+    const boxWidthPx = _overlayMode === 'side-by-side' ? SIDE_BY_SIDE_WIDTH_PX : (ann.bbox.w / 100) * iw;
+    const boxHeightPx = applyAutoFit(b, span, ann, boxWidthPx, (ann.bbox.h / 100) * ih, _overlayMode !== 'side-by-side');
     b.dataset.autoFitHeightPx = boxHeightPx;
 
     return b;
@@ -1981,14 +2126,26 @@ class OverlayRenderer {
     // bbox-derived height — see fitAndExpand(). Not recomputed on reposition/
     // resize; same pre-existing limitation the font-size styling already had.
     const storedH = parseFloat(bubble.dataset.autoFitHeightPx);
-    const x = (bbox.x / 100) * iw, h = !isNaN(storedH) ? storedH : (bbox.h / 100) * ih;
-    bubble.style.left     = `${x}px`;
-    bubble.style.width    = `${(bbox.w / 100) * iw}px`;
-    bubble.style.maxWidth = `${iw - x}px`;
+    const h = !isNaN(storedH) ? storedH : (bbox.h / 100) * ih;
+
     if (_overlayMode === 'side-by-side') {
-      bubble.style.top       = `${(bbox.y / 100) * ih + h + SIDE_BY_SIDE_GAP_PX}px`;
+      // Rendered entirely outside the panel, in the wrapper's own overflow
+      // margin to the right of it (the wrapper has no overflow:hidden, so
+      // this paints in the page's blank space rather than being clipped),
+      // at the same vertical position as the original bubble — not overlaid
+      // on the art at all. Needs actual blank page space there to be
+      // visible; on a full-bleed viewer with no side margin this can render
+      // off-screen or over neighboring page content.
+      bubble.style.left      = `${iw + SIDE_BY_SIDE_GAP_PX}px`;
+      bubble.style.top       = `${(bbox.y / 100) * ih}px`;
+      bubble.style.width     = `${SIDE_BY_SIDE_WIDTH_PX}px`;
+      bubble.style.maxWidth  = '';
       bubble.style.minHeight = '';
     } else {
+      const x = (bbox.x / 100) * iw;
+      bubble.style.left      = `${x}px`;
+      bubble.style.width     = `${(bbox.w / 100) * iw}px`;
+      bubble.style.maxWidth  = `${iw - x}px`;
       bubble.style.top       = `${(bbox.y / 100) * ih}px`;
       bubble.style.minHeight = `${h}px`;
     }
@@ -2240,6 +2397,83 @@ function showStorageWarning(usedBytes, quotaBytes) {
   setTimeout(() => toast.remove(), 6000);
 }
 
+// ── Story Context (lazy auto-fetch, for future LLM translation modes) ─────────
+// Fetches synopsis/tags/author/age-rating from a title's info page (not the
+// chapter page itself) so it can eventually be injected into an LLM
+// translation prompt alongside chapter/character memory. Naver-only for now;
+// scoped to a per-site adapter method (fetchStoryContext) so a future
+// KakaoAdapter can add its own implementation without touching this file —
+// getStoryContext() below is adapter-agnostic and no-ops for any adapter that
+// doesn't implement fetchStoryContext.
+//
+// NOTE: there is currently no LLM prompt-building step anywhere in this
+// codebase to wire the result into — translation today is plain string
+// translation via Google/DeepL (see autoTranslate()). This only builds the
+// fetch+cache foundation; a future Mode B/C implementation should call
+// getStoryContext(adapter, meta.site, meta.titleId) (already memoized) when
+// constructing its prompt.
+
+const STORY_CONTEXT_KEY_PREFIX = 'wt:story-context:';
+const _storyContextInFlight = new Map(); // "site:titleId" -> Promise, dedupes concurrent lazy-fetch triggers
+// Bump this whenever fetchStoryContext's extraction logic changes in a way
+// that could change the resulting data (new field, fixed selector, switched
+// data source entirely, etc.) — a cached entry stamped with an older version
+// is treated as a miss and re-fetched. Without this, "no expiry in v1" means
+// a title cached under an old, since-fixed bug (e.g. empty tags from the
+// broken HTML-scraping approach) would silently keep serving that stale,
+// wrong data forever with no way to tell short of manually clearing storage.
+const STORY_CONTEXT_SCHEMA_VERSION = 2;
+
+/**
+ * Lazily fetches + caches Story Context for a title, keyed by site+titleId.
+ * Doesn't re-fetch a cache hit stamped with the current
+ * STORY_CONTEXT_SCHEMA_VERSION (synopsis/tags/author rarely change after a
+ * title publishes) — but a hit from an older schema version is treated as a
+ * miss and re-fetched, so a fix to the extraction logic actually takes
+ * effect instead of being masked by stale cached data indefinitely.
+ * Concurrent calls for the same title (e.g. several jobs starting near-
+ * simultaneously) share one in-flight fetch. Resolves to null (never
+ * rejects) if the adapter has no fetchStoryContext implementation, or if the
+ * fetch/parse fails — logged as a console warning, never surfaced to the
+ * user or allowed to block translation.
+ */
+async function getStoryContext(adapter, site, titleId) {
+  if (typeof adapter.fetchStoryContext !== 'function') return null;
+  const key = `${STORY_CONTEXT_KEY_PREFIX}${site}:${titleId}`;
+
+  const stored = await chrome.storage.local.get(key);
+  if (stored[key] && stored[key].schemaVersion === STORY_CONTEXT_SCHEMA_VERSION) {
+    // Cache-hit path never used to log anything, which reads as "nothing
+    // happened" on every run after the first — log every time so it's
+    // always visible, not just on a fresh fetch.
+    console.log(`[WebtoonTranslate] StoryContext(${site}) cache hit:`, stored[key]);
+    return stored[key];
+  }
+  if (stored[key]) {
+    console.log(`[WebtoonTranslate] StoryContext(${site}) cache stale (schema v${stored[key].schemaVersion ?? 'none'} -> v${STORY_CONTEXT_SCHEMA_VERSION}), re-fetching`);
+  }
+
+  if (_storyContextInFlight.has(key)) return _storyContextInFlight.get(key);
+
+  const promise = (async () => {
+    try {
+      const ctx = await adapter.fetchStoryContext(titleId);
+      if (ctx) {
+        ctx.schemaVersion = STORY_CONTEXT_SCHEMA_VERSION;
+        await chrome.storage.local.set({ [key]: ctx });
+      }
+      return ctx || null;
+    } catch (err) {
+      console.warn('[WebtoonTranslate] StoryContext fetch failed for', site, titleId, err);
+      return null;
+    } finally {
+      _storyContextInFlight.delete(key);
+    }
+  })();
+  _storyContextInFlight.set(key, promise);
+  return promise;
+}
+
 // ── Adapters ──────────────────────────────────────────────────────────────────
 
 class NaverAdapter {
@@ -2285,6 +2519,52 @@ class NaverAdapter {
     const obs = new MutationObserver(() => { const i = this.getImages(); if (i.length) callback(i); });
     obs.observe(target, { childList: true, subtree: true });
     return () => obs.disconnect();
+  }
+
+  /**
+   * Fetches Story Context from Naver's own title-info JSON API (not the list
+   * page's HTML at all — found via the network tab: the list page itself
+   * calls this same endpoint client-side to render its title header). Same-
+   * origin, returns clean structured JSON, so no HTML/selector parsing, no
+   * hidden-iframe rendering, no client-side-rendering timing concerns — all
+   * of which the two previous approaches (fetch()+DOMParser, then a
+   * rendered-iframe fallback once the tag data turned out to be client-
+   * rendered) needed to work around. `tab`/`week` isn't required — titleId
+   * alone is enough.
+   *
+   * Every field is still independently best-effort per REQUIREMENTS #5 — a
+   * field missing from the response logs a console.warn and is left
+   * undefined rather than throwing or blocking the others.
+   */
+  async fetchStoryContext(titleId) {
+    const url = `https://comic.naver.com/api/article/list/info?titleId=${encodeURIComponent(titleId)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
+    const json = await res.json();
+
+    const ctx = { site: SITES.NAVER, titleId, fetchedAt: new Date().toISOString() };
+
+    ctx.title = json.titleName || undefined;
+    if (!ctx.title) console.warn('[WebtoonTranslate] StoryContext(naver): titleName missing from API response');
+
+    ctx.synopsis = json.synopsis || undefined;
+    if (!ctx.synopsis) console.warn('[WebtoonTranslate] StoryContext(naver): synopsis missing from API response');
+
+    ctx.tags = Array.isArray(json.curationTagList)
+      ? json.curationTagList.map(t => t.tagName).filter(Boolean)
+      : [];
+    if (!ctx.tags.length) console.warn('[WebtoonTranslate] StoryContext(naver): curationTagList missing/empty in API response');
+
+    ctx.author = Array.isArray(json.communityArtists)
+      ? json.communityArtists.map(a => a.name).filter(Boolean).join(', ') || undefined
+      : undefined;
+    if (!ctx.author) console.warn('[WebtoonTranslate] StoryContext(naver): communityArtists missing/empty in API response');
+
+    ctx.ageRating = json.age?.description || undefined;
+    if (!ctx.ageRating) console.warn('[WebtoonTranslate] StoryContext(naver): age.description missing from API response');
+
+    console.log('[WebtoonTranslate] StoryContext(naver) fetched:', ctx);
+    return ctx;
   }
 }
 
@@ -2780,12 +3060,15 @@ let _wtEnabled  = true;
 
 // Persisted display-mode setting (extension/popup/settings.html): 'overlay'
 // (translation drawn on top of the original region, the default) or
-// 'side-by-side' (drawn just below it instead). Read live by _positionBubble
-// in both renderer classes, so a change takes effect for newly (re)positioned
+// 'side-by-side' (drawn entirely outside the panel, in the page's own margin
+// to the right of it, at the same vertical position as the original bubble —
+// not overlaid on the art at all). Read live by _positionBubble in both
+// renderer classes, so a change takes effect for newly (re)positioned
 // bubbles without needing to re-instantiate anything.
 const OVERLAY_MODE_KEY = 'wt:overlay-mode';
 let _overlayMode = 'overlay';
-const SIDE_BY_SIDE_GAP_PX = 6; // gap between the original region and the side-by-side caption
+const SIDE_BY_SIDE_GAP_PX   = 12; // gap between the panel's right edge and the side-by-side caption
+const SIDE_BY_SIDE_WIDTH_PX = 260; // fixed caption width in side-by-side mode — independent of the original bbox's width, since the box no longer overlays it
 
 function bootForPage() {
   bootCleanup?.();
@@ -2801,7 +3084,7 @@ function bootForPage() {
   const renderer    = new OverlayRenderer();
   const isKakao     = adapter.usesFixedOverlay === true;
   const fixedLayer  = isKakao
-    ? new FixedOverlayLayer({ onSelect: createJobFromSelection, getImages: () => images })
+    ? new FixedOverlayLayer({ onSelect: createJobFromSelection, onClick: handleAutoDetectClick, getImages: () => images })
     : null;
 
   const panel    = __DEV_TOOLS__ ? new SidePanel({
@@ -3075,8 +3358,23 @@ function bootForPage() {
       queued > 0 ? `${active} đang dịch · ${queued} chờ` : `${active} đang dịch`;
   }
 
+  let _storyContextRequestedThisPageLoad = false; // only fetch/log once per page load, not on every OCR request
+
   const jobManager = new JobManager({
-    runOcr:        (job) => job.clips ? ocrClips(job.clips) : ocrRegionStitched(job.imageEl, job.bbox, images),
+    runOcr:        (job) => {
+      // Lazy trigger point: first OCR/translation request for this title,
+      // once per page load (repeat scans on the same page don't re-trigger
+      // it — cached reads are silent past the first one now, by request).
+      // Fire-and-forget — nothing consumes the result yet (no LLM prompt step
+      // exists in this codebase), but it fetches + caches it now so a future
+      // Mode B/C implementation can read it back instantly. No-ops for any
+      // adapter without fetchStoryContext (i.e. every non-Naver site today).
+      if (!_storyContextRequestedThisPageLoad) {
+        _storyContextRequestedThisPageLoad = true;
+        getStoryContext(adapter, meta.site, meta.titleId);
+      }
+      return job.clips ? ocrClips(job.clips) : ocrRegionStitched(job.imageEl, job.bbox, images);
+    },
     runTranslate:  (job) => autoTranslate(job.originalText),
     findOverlap:   findOverlapForBbox,
     confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'Vùng này có vẻ trùng với bản dịch đã có. Vẫn tạo bản dịch mới ở đây?'),
@@ -3123,18 +3421,24 @@ function bootForPage() {
     return jobManager.create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey });
   }
 
+  // Shared click-to-detect handler — used by both BBoxSelector (normal sites)
+  // and FixedOverlayLayer (Ridi/Kakao's fixed-position overlay), so a click
+  // (vs. a drag) auto-detects the bubble under the cursor on every site
+  // instead of only the ones using BBoxSelector.
+  async function handleAutoDetectClick({ img, clickX, clickY, imgRect, imageIndex }) {
+    const { bboxes } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
+    if (!bboxes.length) return; // validity check failed — fall back to manual drag-to-select
+    // A waist-split click can yield two touching bubbles at once — each is
+    // translated as its own independent job.
+    for (const bbox of bboxes) {
+      await createJobFromSelection({ bbox, imageEl: img, imageIndex });
+    }
+  }
+
   const selector = new BBoxSelector({
     onSelect: createJobFromSelection,
     onDragStart: () => { detectPreview.dismiss(); dismissBubbleToolbar(); },
-    onClick: async ({ img, clickX, clickY, imgRect, imageIndex }) => {
-      const { bboxes } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
-      if (!bboxes.length) return; // validity check failed — fall back to manual drag-to-select
-      // A waist-split click can yield two touching bubbles at once — each is
-      // translated as its own independent job.
-      for (const bbox of bboxes) {
-        await createJobFromSelection({ bbox, imageEl: img, imageIndex });
-      }
-    },
+    onClick: handleAutoDetectClick,
   });
 
   // ── click bubble to edit / resize / delete ──────────────────────────────
@@ -3227,10 +3531,12 @@ function bootForPage() {
       x: parseFloat(bubble.dataset.bboxX), y: parseFloat(bubble.dataset.bboxY),
       w: parseFloat(bubble.dataset.bboxW), h: parseFloat(bubble.dataset.bboxH),
     };
+    // Ridi/Kakao bubbles live in document.body (FixedOverlayLayer), not inside
+    // a .wt-img-wrapper — DetectionPreview's `fixed` mode positions the box
+    // relative to the viewport instead in that case (see its show() doc comment).
     const wrapper = bubble.closest('.wt-img-wrapper');
-    if (!wrapper) return; // resize UI needs the wrapper coordinate space (non-Kakao only)
     bubble.style.visibility = 'hidden';
-    const newBbox = await detectPreview.show(img, wrapper, currentBbox);
+    const newBbox = await detectPreview.show(img, wrapper, currentBbox, { fixed: !wrapper });
     bubble.style.visibility = '';
     if (!newBbox) return; // cancelled — bbox unchanged
     // Re-run OCR + translate with the adjusted bbox; onDone updates this same
@@ -3296,7 +3602,7 @@ function bootForPage() {
     toolbar.className = 'wt-bubble-toolbar';
     toolbar.innerHTML = `
       <button type="button" class="wt-bt-edit" title="Sửa văn bản">${BT_EDIT_ICON}</button>
-      ${isKakao ? '' : `<button type="button" class="wt-bt-resize" title="Chỉnh khung">${BT_RESIZE_ICON}</button>`}
+      <button type="button" class="wt-bt-resize" title="Chỉnh khung">${BT_RESIZE_ICON}</button>
       <button type="button" class="wt-bt-delete" title="Xoá">${BT_DELETE_ICON}</button>
     `;
     toolbar.style.left = bubble.style.left;
