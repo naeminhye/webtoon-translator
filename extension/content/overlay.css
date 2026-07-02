@@ -55,6 +55,14 @@
   box-sizing: border-box;
 }
 
+/* Ridi/Kakao: no .wt-img-wrapper to be position:absolute inside (see
+   DetectionPreview.show()'s `fixed` mode) — position relative to the
+   viewport instead, same as .wt-fixed-overlay/.wt-fixed-bubble. */
+.wt-detect-preview.wt-detect-preview-fixed {
+  position: fixed;
+  z-index: 250; /* above .wt-fixed-overlay (100) and .wt-fixed-bubble (200) */
+}
+
 .wt-detect-toolbar {
   position: absolute;
   top: -34px;

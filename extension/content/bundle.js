@@ -1280,30 +1280,51 @@ class DetectionPreview {
     this._cleanup = null;
   }
 
-  /** Shows an adjustable box over `img` (appended to `wrapper`) for `bboxPct`. Resolves with the (possibly adjusted) bbox % on confirm, or null on cancel/dismiss. */
-  show(img, wrapper, bboxPct) {
+  /**
+   * Shows an adjustable box over `img` for `bboxPct`. Resolves with the
+   * (possibly adjusted) bbox % on confirm, or null on cancel/dismiss.
+   *
+   * By default the box is appended to `wrapper` (position:absolute, px
+   * relative to the wrapper's own top-left — the wrapper is sized to the
+   * image, so 0,0 IS the image's top-left). Pass `{ fixed: true }` and
+   * `wrapper` can be null: the box is appended to document.body instead
+   * (position:fixed, px relative to the *viewport*) — needed for Ridi/Kakao,
+   * whose bubbles/overlays already work in viewport coordinates via
+   * FixedOverlayLayer rather than a `.wt-img-wrapper` (which those sites
+   * never get — see BBoxSelector._ensureWrapper). The move/resize handles'
+   * own delta math (based on raw e.clientX/Y deltas) needs no changes either
+   * way; only the img-relative <-> viewport-relative offset conversions in
+   * applyPx/readPct and the handles' clamping bounds differ.
+   */
+  show(img, wrapper, bboxPct, { fixed = false } = {}) {
     this.dismiss();
     return new Promise((resolve) => {
       const box = document.createElement('div');
-      box.className = 'wt-detect-preview';
-      wrapper.appendChild(box);
+      box.className = `wt-detect-preview${fixed ? ' wt-detect-preview-fixed' : ''}`;
+      (fixed ? document.body : wrapper).appendChild(box);
 
       const dims = () => ({
         iw: img.offsetWidth || img.naturalWidth,
         ih: img.offsetHeight || img.naturalHeight,
       });
+      // Origin of the image in the box's own coordinate space: (0,0) when the
+      // box lives inside the image's own wrapper; the image's live viewport
+      // rect when the box is position:fixed instead.
+      const origin = () => fixed ? img.getBoundingClientRect() : { left: 0, top: 0 };
       const applyPx = (bbox) => {
         const { iw, ih } = dims();
-        box.style.left   = `${(bbox.x / 100) * iw}px`;
-        box.style.top    = `${(bbox.y / 100) * ih}px`;
+        const o = origin();
+        box.style.left   = `${o.left + (bbox.x / 100) * iw}px`;
+        box.style.top    = `${o.top  + (bbox.y / 100) * ih}px`;
         box.style.width  = `${(bbox.w / 100) * iw}px`;
         box.style.height = `${(bbox.h / 100) * ih}px`;
       };
       const readPct = () => {
         const { iw, ih } = dims();
+        const o = origin();
         return {
-          x: (parseFloat(box.style.left)   / iw) * 100,
-          y: (parseFloat(box.style.top)    / ih) * 100,
+          x: ((parseFloat(box.style.left) - o.left) / iw) * 100,
+          y: ((parseFloat(box.style.top)  - o.top)  / ih) * 100,
           w: (parseFloat(box.style.width)  / iw) * 100,
           h: (parseFloat(box.style.height) / ih) * 100,
         };
@@ -1315,9 +1336,9 @@ class DetectionPreview {
         const h = document.createElement('div');
         h.className = `wt-resize-handle wt-rh-${pos}`;
         box.appendChild(h);
-        cleanups.push(this._makeResizeHandle(h, pos, box, img));
+        cleanups.push(this._makeResizeHandle(h, pos, box, img, origin));
       });
-      cleanups.push(this._makeMoveHandle(box, img));
+      cleanups.push(this._makeMoveHandle(box, img, origin));
 
       const toolbar = document.createElement('div');
       toolbar.className = 'wt-detect-toolbar';
@@ -1356,7 +1377,7 @@ class DetectionPreview {
     this._cleanup?.();
   }
 
-  _makeMoveHandle(box, img) {
+  _makeMoveHandle(box, img, origin) {
     let dragging = false, startX, startY, origLeft, origTop;
     const onDown = (e) => {
       if (e.target !== box || e.button !== 0) return;
@@ -1370,9 +1391,10 @@ class DetectionPreview {
       if (!dragging) return;
       const iw = img.offsetWidth || img.naturalWidth;
       const ih = img.offsetHeight || img.naturalHeight;
+      const o = origin();
       const w = parseFloat(box.style.width), h = parseFloat(box.style.height);
-      const l = Math.max(0, Math.min(iw - w, origLeft + (e.clientX - startX)));
-      const t = Math.max(0, Math.min(ih - h, origTop  + (e.clientY - startY)));
+      const l = Math.max(o.left, Math.min(o.left + iw - w, origLeft + (e.clientX - startX)));
+      const t = Math.max(o.top,  Math.min(o.top  + ih - h, origTop  + (e.clientY - startY)));
       box.style.left = `${l}px`;
       box.style.top  = `${t}px`;
     };
@@ -1387,7 +1409,7 @@ class DetectionPreview {
     };
   }
 
-  _makeResizeHandle(handle, pos, box, img) {
+  _makeResizeHandle(handle, pos, box, img, origin) {
     let dragging = false, startX, startY, origLeft, origTop, origW, origH;
     const onDown = (e) => {
       if (e.button !== 0) return;
@@ -1404,6 +1426,7 @@ class DetectionPreview {
       const dx = e.clientX - startX, dy = e.clientY - startY;
       const iw = img.offsetWidth || img.naturalWidth;
       const ih = img.offsetHeight || img.naturalHeight;
+      const o = origin();
       let l = origLeft, t = origTop, w = origW, h = origH;
 
       if (pos.includes('e')) w = Math.max(AUTO_DETECT_MIN_W, origW + dx);
@@ -1411,8 +1434,8 @@ class DetectionPreview {
       if (pos.includes('w')) { w = Math.max(AUTO_DETECT_MIN_W, origW - dx); l = Math.min(origLeft + origW - AUTO_DETECT_MIN_W, origLeft + dx); }
       if (pos.includes('n')) { h = Math.max(AUTO_DETECT_MIN_H, origH - dy); t = Math.min(origTop  + origH - AUTO_DETECT_MIN_H, origTop  + dy); }
 
-      l = Math.max(0, Math.min(iw - w, l));
-      t = Math.max(0, Math.min(ih - h, t));
+      l = Math.max(o.left, Math.min(o.left + iw - w, l));
+      t = Math.max(o.top,  Math.min(o.top  + ih - h, t));
 
       box.style.left   = `${l}px`;
       box.style.top    = `${t}px`;
@@ -2304,6 +2327,26 @@ function _allMatchTexts(doc, selectors) {
   return [...out];
 }
 
+// Naver's age-rating badge isn't reliably reachable via a stable class name or
+// an <img alt> (verified against a real list page — no alt/class carried the
+// rating text at all), so match it by its own text content instead: it's
+// always one of a small, fixed set of Korean labels.
+const AGE_RATING_PATTERN = /^(전체 이용가|\d{1,2}세\s*이용가)$/;
+
+/** First leaf element (no children) whose trimmed text matches `pattern` exactly. */
+function _firstTextMatching(doc, pattern) {
+  const walker = doc.createTreeWalker(doc.body || doc, NodeFilter.SHOW_ELEMENT);
+  let node = walker.currentNode;
+  while (node) {
+    if (node.children.length === 0) {
+      const t = node.textContent?.trim();
+      if (t && pattern.test(t)) return t;
+    }
+    node = walker.nextNode();
+  }
+  return undefined;
+}
+
 /**
  * Lazily fetches + caches Story Context for a title, keyed by site+titleId.
  * Never re-fetches once cached (no expiry in v1 — synopsis/tags/author rarely
@@ -2419,25 +2462,30 @@ class NaverAdapter {
                 || _firstMatchText(doc, ['.EpisodeListInfo__summary--Jd1WG', '.info_area .summary', '.detail .summary']);
     if (!ctx.synopsis) console.warn('[WebtoonTranslate] StoryContext(naver): synopsis selector matched nothing');
 
+    // Verified against a real list page: genre tags are `<a class="TagGroup__tag--xxxxx" href=".../webtoon?tab=genre&genre=ACTION">#액션</a>`.
+    // `[class*="TagGroup__tag"]` ignores the hashed CSS-module suffix (churns
+    // across Naver deploys); the href fallback requires "&genre=" specifically
+    // so it doesn't also match the unrelated top-nav "장르" (Genre) tab link,
+    // which is just `/webtoon?tab=genre` with no "&genre=".
     ctx.tags = _allMatchTexts(doc, [
-      'a[href*="genreCode="]',
-      'a[href*="/genre?"]',
-      '.EpisodeListInfo__tag_area--WwArK a',
-      '.info_area .genre a',
-      '.tag_area a',
-    ]);
+      'a[class*="TagGroup__tag"]',
+      'a[href*="&genre="]',
+    ]).map(t => t.replace(/^#/, ''));
     if (!ctx.tags.length) console.warn('[WebtoonTranslate] StoryContext(naver): tags selectors matched nothing');
 
+    // Verified: author/artist is `<a class="ContentMetaInfo__link--xxxxx" href=".../community/u/...">`.
     ctx.author = _allMatchTexts(doc, [
-      'a[href*="/community/list?"]',
-      '.EpisodeListInfo__author--CizfK a',
-      '.wrt_nm',
-      '.author',
+      'a[class*="ContentMetaInfo__link"]',
+      'a[href*="/community/u/"]',
     ]).join(', ') || undefined;
     if (!ctx.author) console.warn('[WebtoonTranslate] StoryContext(naver): author selectors matched nothing');
 
-    ctx.ageRating = _firstMatchText(doc, ['img[alt*="이용가"]'], 'alt')
-                 || _firstMatchText(doc, ['.age', '.ico_stamp', '[class*="age_"]']);
+    // No stable class/alt carries the age-rating text on a real list page (an
+    // <img alt> match turned out to be a false positive — an unrelated poster
+    // image whose alt text happened to contain "세") — match by the badge's
+    // own text content instead, which is always one of a small fixed set of
+    // Korean labels (see AGE_RATING_PATTERN).
+    ctx.ageRating = _firstTextMatching(doc, AGE_RATING_PATTERN);
     if (!ctx.ageRating) console.warn('[WebtoonTranslate] StoryContext(naver): age rating selectors matched nothing');
 
     console.log('[WebtoonTranslate] StoryContext(naver) fetched:', ctx);
@@ -3398,10 +3446,12 @@ function bootForPage() {
       x: parseFloat(bubble.dataset.bboxX), y: parseFloat(bubble.dataset.bboxY),
       w: parseFloat(bubble.dataset.bboxW), h: parseFloat(bubble.dataset.bboxH),
     };
+    // Ridi/Kakao bubbles live in document.body (FixedOverlayLayer), not inside
+    // a .wt-img-wrapper — DetectionPreview's `fixed` mode positions the box
+    // relative to the viewport instead in that case (see its show() doc comment).
     const wrapper = bubble.closest('.wt-img-wrapper');
-    if (!wrapper) return; // resize UI needs the wrapper coordinate space (non-Kakao only)
     bubble.style.visibility = 'hidden';
-    const newBbox = await detectPreview.show(img, wrapper, currentBbox);
+    const newBbox = await detectPreview.show(img, wrapper, currentBbox, { fixed: !wrapper });
     bubble.style.visibility = '';
     if (!newBbox) return; // cancelled — bbox unchanged
     // Re-run OCR + translate with the adjusted bbox; onDone updates this same
@@ -3467,7 +3517,7 @@ function bootForPage() {
     toolbar.className = 'wt-bubble-toolbar';
     toolbar.innerHTML = `
       <button type="button" class="wt-bt-edit" title="Sửa văn bản">${BT_EDIT_ICON}</button>
-      ${isKakao ? '' : `<button type="button" class="wt-bt-resize" title="Chỉnh khung">${BT_RESIZE_ICON}</button>`}
+      <button type="button" class="wt-bt-resize" title="Chỉnh khung">${BT_RESIZE_ICON}</button>
       <button type="button" class="wt-bt-delete" title="Xoá">${BT_DELETE_ICON}</button>
     `;
     toolbar.style.left = bubble.style.left;
