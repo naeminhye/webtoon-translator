@@ -751,6 +751,262 @@ class DetectionPreview {
   }
 }
 
+// ── Job pipeline (concurrent region translation) ──────────────────────────────
+// Each selected region becomes an independent job (queued → ocr → translating →
+// done | error) instead of blocking on a modal dialog. Only MAX_CONCURRENT_JOBS
+// jobs run at once across the whole pipeline; OCR itself is additionally
+// serialized (Tesseract.js is CPU-bound) even when multiple jobs are active,
+// while each job's translate step (network-bound) can overlap with others'.
+
+const MAX_CONCURRENT_JOBS = 3;   // total active jobs (OCR+translate combined) — tune against real usage/API limits
+const OVERLAP_THRESHOLD   = 0.55; // intersection / min(areaA, areaB) — needs tuning against real screenshots
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+/** Overlap ratio of two %-of-image bboxes: intersection area / smaller box's area. */
+function bboxOverlapRatio(a, b) {
+  const ix0 = Math.max(a.x, b.x), iy0 = Math.max(a.y, b.y);
+  const ix1 = Math.min(a.x + a.w, b.x + b.w), iy1 = Math.min(a.y + a.h, b.y + b.h);
+  const iw = Math.max(0, ix1 - ix0), ih = Math.max(0, iy1 - iy0);
+  const interArea = iw * ih;
+  if (interArea <= 0) return 0;
+  const areaA = a.w * a.h, areaB = b.w * b.h;
+  return interArea / Math.min(areaA, areaB);
+}
+
+class JobManager {
+  /**
+   * @param runOcr          async (job) => originalText
+   * @param runTranslate    async (job) => translatedText
+   * @param onStatusChange  (job) => void — render/update the transient status overlay
+   * @param onDone          async (job) => void — persist + render the final bubble
+   * @param findOverlap     (bbox, imageIndex, excludeAnnKey) => ratio (0-1) against existing jobs/annotations
+   * @param confirmOverlap  async (screenPos) => boolean — "still create a new job here?"
+   */
+  constructor({ runOcr, runTranslate, onStatusChange, onDone, findOverlap, confirmOverlap }) {
+    this._runOcr         = runOcr;
+    this._runTranslate    = runTranslate;
+    this._onStatusChange  = onStatusChange;
+    this._onDone          = onDone;
+    this._findOverlap     = findOverlap;
+    this._confirmOverlap  = confirmOverlap;
+
+    this.jobs           = new Map(); // id -> job
+    this._queue          = [];        // pending job ids (FIFO)
+    this._active          = new Set(); // active job ids (occupy a concurrency slot)
+    this._ocrChainTail   = Promise.resolve(); // serializes OCR across jobs
+  }
+
+  async create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey = null }) {
+    const overlapRatio = this._findOverlap(bbox, imageIndex, existingAnnKey);
+    if (overlapRatio >= OVERLAP_THRESHOLD) {
+      const proceed = await this._confirmOverlap(screenPos);
+      if (!proceed) return null;
+    }
+    const job = {
+      id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      bbox, imageEl, imageIndex, clips, existingAnnKey,
+      status: 'queued', // queued -> ocr -> translating -> done | error
+      originalText: '', translatedText: '', errorMessage: '',
+      cancelled: false, createdAt: Date.now(),
+    };
+    this.jobs.set(job.id, job);
+    this._onStatusChange(job);
+    this._queue.push(job.id);
+    this._pump();
+    return job;
+  }
+
+  cancel(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) return;
+    job.cancelled = true;
+    this._queue = this._queue.filter(id => id !== jobId);
+    this.jobs.delete(jobId);
+    this._onStatusChange({ ...job, status: 'removed' });
+    this._pump();
+  }
+
+  retry(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) return;
+    job.status = 'queued';
+    job.errorMessage = '';
+    job.cancelled = false;
+    this._onStatusChange(job);
+    this._queue.push(job.id);
+    this._pump();
+  }
+
+  activeCount()  { return this._active.size; }
+  queuedCount()  { return this._queue.length; }
+
+  _pump() {
+    while (this._active.size < MAX_CONCURRENT_JOBS && this._queue.length) {
+      const id  = this._queue.shift();
+      const job = this.jobs.get(id);
+      if (!job || job.cancelled) continue;
+      this._process(job);
+    }
+  }
+
+  async _process(job) {
+    this._active.add(job.id);
+    try {
+      job.status = 'ocr';
+      this._onStatusChange(job);
+      const ocrText = await this._runExclusiveOcr(() => this._runOcr(job));
+      if (job.cancelled) return;
+      job.originalText = ocrText || '';
+      if (!ocrText) {
+        job.status = 'error';
+        job.errorMessage = 'Không tìm thấy chữ trong vùng này';
+        this._onStatusChange(job);
+        return;
+      }
+      job.status = 'translating';
+      this._onStatusChange(job);
+      const translated = await this._runTranslate(job);
+      if (job.cancelled) return;
+      job.translatedText = translated || ocrText;
+      job.status = 'done';
+      await this._onDone(job);
+      this.jobs.delete(job.id); // done jobs become regular annotations, no longer tracked as jobs
+    } catch (err) {
+      if (job.cancelled) return;
+      job.status = 'error';
+      job.errorMessage = err?.message || String(err);
+      this._onStatusChange(job);
+    } finally {
+      this._active.delete(job.id);
+      this._pump();
+    }
+  }
+
+  // Chains OCR calls so only one Tesseract recognition runs at a time, even
+  // though up to MAX_CONCURRENT_JOBS jobs may be "active" simultaneously —
+  // their translate steps (network-bound) can still overlap freely.
+  _runExclusiveOcr(fn) {
+    const run = this._ocrChainTail.then(fn, fn);
+    this._ocrChainTail = run.then(() => {}, () => {});
+    return run;
+  }
+}
+
+/** Transient status pill (queued/ocr/translating/error) shown at a job's bbox. */
+class JobOverlayRenderer {
+  constructor({ isKakao, onCancel, onRetry }) {
+    this._isKakao  = isKakao;
+    this._onCancel = onCancel;
+    this._onRetry  = onRetry;
+    this._els      = new Map(); // jobId -> el
+  }
+
+  render(job) {
+    if (job.status === 'removed') { this.remove(job.id); return; }
+    let el = this._els.get(job.id);
+    if (!el) {
+      el = document.createElement('div');
+      el.dataset.jobId = job.id;
+      if (this._isKakao) document.body.appendChild(el);
+      else this._wrapperFor(job.imageEl).appendChild(el);
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (el.dataset.status === 'error') this._onRetry(job.id);
+      });
+      this._els.set(job.id, el);
+    }
+    el.className = `wt-job-overlay wt-job-${job.status}${this._isKakao ? ' wt-job-fixed' : ''}`;
+    el.dataset.status = job.status;
+
+    const labels = { queued: 'Đang chờ…', ocr: 'Đang quét chữ…', translating: 'Đang dịch…' };
+    const label = job.status === 'error' ? (job.errorMessage || 'Lỗi') : (labels[job.status] || '');
+    const cancellable = job.status !== 'error';
+    el.innerHTML = `
+      <span class="wt-job-spinner"></span>
+      <span class="wt-job-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+      <button type="button" class="${cancellable ? 'wt-job-cancel' : 'wt-job-dismiss'}" title="${cancellable ? 'Huỷ' : 'Bỏ qua'}">&#10005;</button>
+    `;
+    el.querySelector('.wt-job-cancel, .wt-job-dismiss').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._onCancel(job.id);
+    });
+    this._position(el, job);
+  }
+
+  remove(jobId) {
+    this._els.get(jobId)?.remove();
+    this._els.delete(jobId);
+  }
+
+  repositionAll() {
+    for (const [jobId, el] of this._els) {
+      const job = el._job;
+      if (job) this._position(el, job);
+    }
+  }
+
+  _wrapperFor(img) {
+    return img.parentElement;
+  }
+
+  _position(el, job) {
+    el._job = job;
+    const { bbox, imageEl: img } = job;
+    if (this._isKakao) {
+      const r  = img.getBoundingClientRect();
+      const iw = r.width  || img.naturalWidth  || 375;
+      const ih = r.height || img.naturalHeight || 500;
+      el.style.left = `${r.left + window.scrollX + (bbox.x / 100) * iw}px`;
+      el.style.top  = `${r.top  + window.scrollY + (bbox.y / 100) * ih}px`;
+      el.style.maxWidth = `${(bbox.w / 100) * iw}px`;
+    } else {
+      const iw = img.naturalWidth  || img.getBoundingClientRect().width  || img.offsetWidth  || 375;
+      const ih = img.naturalHeight || img.getBoundingClientRect().height || img.offsetHeight || 500;
+      el.style.left = `${(bbox.x / 100) * iw}px`;
+      el.style.top  = `${(bbox.y / 100) * ih}px`;
+      el.style.maxWidth = `${(bbox.w / 100) * iw}px`;
+    }
+  }
+}
+
+/** Small floating Yes/No popup — used to confirm creating a job over a likely-duplicate region. */
+class ConfirmPopup {
+  constructor() { this._el = null; }
+
+  show(screenPos, message) {
+    this.dismiss();
+    return new Promise(resolve => {
+      const box = document.createElement('div');
+      box.className = 'wt-confirm-popup';
+      box.style.left = `${screenPos.x}px`;
+      box.style.top  = `${screenPos.y}px`;
+      box.innerHTML = `
+        <div class="wt-confirm-msg">${escapeHtml(message)}</div>
+        <div class="wt-confirm-actions">
+          <button type="button" class="wt-confirm-no">Huỷ</button>
+          <button type="button" class="wt-confirm-yes">Vẫn tạo</button>
+        </div>`;
+      document.body.appendChild(box);
+      const finish = (v) => {
+        document.removeEventListener('keydown', onKey);
+        box.remove();
+        if (this._el === box) this._el = null;
+        resolve(v);
+      };
+      box.querySelector('.wt-confirm-yes').addEventListener('click', () => finish(true));
+      box.querySelector('.wt-confirm-no').addEventListener('click', () => finish(false));
+      const onKey = (e) => { if (e.key === 'Escape') finish(false); };
+      document.addEventListener('keydown', onKey);
+      this._el = box;
+    });
+  }
+
+  dismiss() { this._el?.remove(); this._el = null; }
+}
+
 // ── BBoxSelector ─────────────────────────────────────────────────────────────
 
 const BBOX_SELECTOR_CLICK_THRESHOLD_PX = 5; // pointer movement below this is treated as a click, not a drag
@@ -1044,152 +1300,6 @@ class OverlayRenderer {
   _annKey(ann) {
     // Use :: separator so sha256: prefix in imageHash doesn't cause split confusion
     return `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
-  }
-}
-
-// ── QuickTranslateDialog ──────────────────────────────────────────────────────
-// Minimal floating dialog for Read-mode quick OCR+translate.
-// No style options — result is saved with sensible defaults.
-
-class QuickTranslateDialog {
-  constructor() {
-    this._el       = null;
-    this._resolve  = null;
-    this._origText = '';
-    this._build();
-  }
-
-  show(screenPos, prefill = {}) {
-    if (!this._el.isConnected) document.body.appendChild(this._el);
-    this._el.querySelector('.wt-quick-translated').value = prefill.translatedText || '';
-    this._origText = prefill.originalText || '';
-    const origEl = this._el.querySelector('.wt-quick-original');
-    origEl.textContent = this._origText;
-    origEl.style.display = this._origText ? 'block' : 'none';
-    this._setStatus('');
-    const isEdit = Boolean(prefill.translatedText);
-    this._el.querySelector('.wt-quick-title').innerHTML = isEdit
-      ? `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg> Edit Translation`
-      : `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg> Quick Translate`;
-    // Deleting only makes sense for an already-saved bubble being re-opened for edit.
-    this._el.querySelector('.wt-quick-delete').classList.toggle('hidden', !isEdit);
-
-    return new Promise(resolve => {
-      this._resolve = resolve;
-      const { innerWidth, innerHeight } = window;
-      const w = 280, h = 200;
-      let top  = screenPos.y + 10, left = screenPos.x;
-      if (left + w > scrollX + innerWidth  - 20) left = scrollX + innerWidth  - w - 20;
-      if (top  + h > scrollY + innerHeight - 20) top  = screenPos.y - h - 20;
-      if (left < scrollX + 10) left = scrollX + 10;
-      if (top  < scrollY + 10) top  = scrollY + 10;
-      this._el.style.top  = `${top}px`;
-      this._el.style.left = `${left}px`;
-      this._el.style.display = 'block';
-      this._escHandler = (e) => { if (e.key === 'Escape') this._cancel(); };
-      document.addEventListener('keydown', this._escHandler);
-    });
-  }
-
-  setStatus(text, color = '#6366f1') { this._setStatus(text, color); }
-
-  setOriginalText(text) {
-    this._origText = text;
-    const el = this._el.querySelector('.wt-quick-original');
-    el.textContent = text;
-    el.style.display = text ? 'block' : 'none';
-  }
-
-  setTranslated(text) {
-    this._el.querySelector('.wt-quick-translated').value = text;
-    this._setStatus('');
-    setTimeout(() => this._el.querySelector('.wt-quick-translated').focus(), 50);
-  }
-
-  getOriginalText() { return this._origText; }
-
-  hide() {
-    this._el.style.display = 'none';
-    document.removeEventListener('keydown', this._escHandler);
-  }
-
-  _setStatus(text, color = '#6366f1') {
-    const el = this._el.querySelector('.wt-quick-status');
-    el.textContent = text;
-    el.style.color  = color;
-    el.style.display = text ? 'block' : 'none';
-  }
-
-  _build() {
-    this._el = document.createElement('div');
-    this._el.className = 'wt-quick-dialog';
-    this._el.innerHTML = `
-      <div class="wt-quick-header">
-        <span class="wt-quick-title">
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>
-          Quick Translate
-        </span>
-        <button class="wt-quick-close" aria-label="Cancel">&#x2715;</button>
-      </div>
-      <div class="wt-quick-status" style="display:none"></div>
-      <div class="wt-quick-original" style="display:none"></div>
-      <textarea class="wt-quick-translated" rows="3" placeholder="Translation will appear here…"></textarea>
-      <div class="wt-quick-actions">
-        <button class="wt-quick-delete hidden" title="Delete this translation">Delete</button>
-        <span class="wt-quick-actions-spacer"></span>
-        <button class="wt-quick-cancel">Cancel</button>
-        <button class="wt-quick-save">Save</button>
-      </div>`;
-
-    this._makeDraggable(this._el.querySelector('.wt-quick-header'));
-    this._el.addEventListener('keydown', e => e.stopPropagation());
-    this._el.querySelector('.wt-quick-close').addEventListener('click',  () => this._cancel());
-    this._el.querySelector('.wt-quick-cancel').addEventListener('click', () => this._cancel());
-    this._el.querySelector('.wt-quick-save').addEventListener('click',   () => this._save());
-    this._el.querySelector('.wt-quick-delete').addEventListener('click', () => this._delete());
-    this._el.querySelector('.wt-quick-translated').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) this._save();
-    });
-    document.body.appendChild(this._el);
-  }
-
-  _makeDraggable(handle) {
-    let dragging = false, ox = 0, oy = 0;
-    handle.style.cursor = 'move';
-    handle.addEventListener('mousedown', (e) => {
-      if (e.target.classList.contains('wt-quick-close')) return;
-      dragging = true;
-      const rect = this._el.getBoundingClientRect();
-      ox = e.clientX - rect.left;
-      oy = e.clientY - rect.top;
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      this._el.style.left = `${e.clientX - ox + window.scrollX}px`;
-      this._el.style.top  = `${e.clientY - oy + window.scrollY}px`;
-    });
-    document.addEventListener('mouseup', () => { dragging = false; });
-  }
-
-  _save() {
-    const translatedText = this._el.querySelector('.wt-quick-translated').value.trim();
-    if (!translatedText) { this._el.querySelector('.wt-quick-translated').focus(); return; }
-    this.hide();
-    this._resolve?.({ translatedText });
-    this._resolve = null;
-  }
-
-  _cancel() {
-    this.hide();
-    this._resolve?.(null);
-    this._resolve = null;
-  }
-
-  _delete() {
-    this.hide();
-    this._resolve?.({ deleted: true });
-    this._resolve = null;
   }
 }
 
@@ -1970,7 +2080,7 @@ function bootForPage() {
   const renderer    = new OverlayRenderer();
   const isKakao     = adapter.usesFixedOverlay === true;
   const fixedLayer  = isKakao
-    ? new FixedOverlayLayer({ onSelect: handleBBoxSelect, getImages: () => images })
+    ? new FixedOverlayLayer({ onSelect: createJobFromSelection, getImages: () => images })
     : null;
 
   const panel    = new SidePanel({
@@ -2019,8 +2129,6 @@ function bootForPage() {
   });
   let allAnnotations = [];
 
-  const quickDialog = new QuickTranslateDialog();
-
   let readScanEnabled = false;
   let images          = [];
   let annotationCount = 0;
@@ -2059,7 +2167,6 @@ function bootForPage() {
     }
   };
   document.addEventListener('keydown', keyHandler);
-  let _pendingDeleteFn = null;
 
   // ── load & render ──────────────────────────────────────────────────────
 
@@ -2168,159 +2275,246 @@ function bootForPage() {
     updateProgressBar();
   });
 
-  // ── bbox select handler ────────────────────────────────────────────────
+  // ── job pipeline: bbox select → independent concurrent job ─────────────
 
-  const autoDetector  = new BubbleAutoDetector();
-  const detectPreview = new DetectionPreview();
+  const autoDetector      = new BubbleAutoDetector();
+  const detectPreview     = new DetectionPreview(); // reused for post-hoc bbox adjustment (resize action)
+  const confirmPopup      = new ConfirmPopup();
+  const jobOverlayRenderer = new JobOverlayRenderer({
+    isKakao,
+    onCancel: (jobId) => jobManager.cancel(jobId),
+    onRetry:  (jobId) => jobManager.retry(jobId),
+  });
 
-  const selector = new BBoxSelector({
-    onSelect: handleBBoxSelect,
-    onDragStart: () => detectPreview.dismiss(),
-    onClick: async ({ img, overlay, clickX, clickY, imgRect, imageIndex }) => {
-      const { bbox } = await autoDetector.detect(img, clickX, clickY, imgRect);
-      if (!bbox) return; // validity check failed — fall back to manual drag-to-select
-      const confirmed = await detectPreview.show(img, overlay.parentElement, bbox);
-      if (!confirmed) return; // user cancelled — fall back to manual drag-to-select
-      await handleBBoxSelect({ bbox: confirmed, imageEl: img, imageIndex });
+  const DEFAULT_STYLE = { fontSize: 20, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' };
+
+  function annKeyOf(a) {
+    return `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}`;
+  }
+
+  function _upsertAnnotation(annotation) {
+    const newKey = annKeyOf(annotation);
+    const existsIdx = allAnnotations.findIndex(a => annKeyOf(a) === newKey);
+    if (existsIdx >= 0) allAnnotations[existsIdx] = annotation;
+    else { allAnnotations.push(annotation); annotationCount++; }
+  }
+
+  async function deleteAnnotation(annKey, img) {
+    await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
+    if (isKakao) fixedLayer.removeBubble(annKey);
+    else renderer.removeBubble(img, annKey);
+    allAnnotations = allAnnotations.filter(a => annKeyOf(a) !== annKey);
+    annotationCount--;
+    panel.update(allAnnotations);
+    updateProgressBar();
+  }
+
+  // Overlap vs. pending/processing jobs and already-saved annotations on the same
+  // panel. excludeAnnKey lets a resize-triggered re-run ignore the annotation it's
+  // itself replacing (its new bbox naturally overlaps its own old bbox).
+  function findOverlapForBbox(bbox, imageIndex, excludeAnnKey) {
+    let max = 0;
+    for (const job of jobManager.jobs.values()) {
+      if (job.imageIndex !== imageIndex || job.status === 'error') continue;
+      if (excludeAnnKey && job.existingAnnKey === excludeAnnKey) continue;
+      max = Math.max(max, bboxOverlapRatio(bbox, job.bbox));
+    }
+    for (const a of allAnnotations) {
+      if ((a.imageIndex ?? 0) !== imageIndex) continue;
+      if (excludeAnnKey && annKeyOf(a) === excludeAnnKey) continue;
+      max = Math.max(max, bboxOverlapRatio(bbox, a.bbox));
+    }
+    return max;
+  }
+
+  function updateJobBadge() {
+    let badge = document.getElementById('wt-job-badge');
+    if (!badge) {
+      badge = document.createElement('div');
+      badge.id = 'wt-job-badge';
+      badge.innerHTML = '<span class="wt-job-badge-dot"></span><span class="wt-job-badge-text"></span>';
+      document.body.appendChild(badge);
+    }
+    const active = jobManager.activeCount(), queued = jobManager.queuedCount();
+    badge.classList.toggle('wt-job-badge-visible', active + queued > 0);
+    badge.querySelector('.wt-job-badge-text').textContent =
+      queued > 0 ? `${active} đang dịch · ${queued} chờ` : `${active} đang dịch`;
+  }
+
+  const jobManager = new JobManager({
+    runOcr:        (job) => job.clips ? ocrClips(job.clips) : ocrRegionStitched(job.imageEl, job.bbox, images),
+    runTranslate:  (job) => autoTranslate(job.originalText),
+    findOverlap:   findOverlapForBbox,
+    confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'Vùng này có vẻ trùng với bản dịch đã có. Vẫn tạo bản dịch mới ở đây?'),
+    onStatusChange: (job) => { jobOverlayRenderer.render(job); updateJobBadge(); },
+    onDone: async (job) => {
+      const imageHash = await hashImage(job.imageEl);
+      const existing  = job.existingAnnKey ? allAnnotations.find(a => annKeyOf(a) === job.existingAnnKey) : null;
+      const annotation = {
+        imageHash, imageIndex: job.imageIndex, bbox: job.bbox,
+        originalText: job.originalText, translatedText: job.translatedText,
+        style: existing?.style || DEFAULT_STYLE,
+        language: existing?.language || 'vi',
+        createdAt: existing?.createdAt || new Date().toISOString(),
+      };
+      await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
+      const newKey = annKeyOf(annotation);
+      if (job.existingAnnKey && job.existingAnnKey !== newKey) {
+        await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey: job.existingAnnKey } });
+        if (isKakao) fixedLayer.removeBubble(job.existingAnnKey);
+        else renderer.removeBubble(job.imageEl, job.existingAnnKey);
+        allAnnotations = allAnnotations.filter(a => annKeyOf(a) !== job.existingAnnKey);
+      }
+      _upsertAnnotation(annotation);
+      if (isKakao) fixedLayer.upsertBubble(job.imageEl, annotation);
+      else renderer.upsertBubble(job.imageEl, annotation);
+      jobOverlayRenderer.remove(job.id);
+      updateJobBadge();
+      panel.update(allAnnotations);
+      updateProgressBar();
     },
   });
 
-  // OCR → auto-translate → minimal dialog (no styling)
-  async function handleBBoxSelect({ bbox, imageEl, imageIndex, clips }) {
+  async function createJobFromSelection({ bbox, imageEl, imageIndex, clips, existingAnnKey }) {
     const rect = imageEl.getBoundingClientRect();
     const screenPos = {
       x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
       y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
     };
-    const resultPromise = quickDialog.show(screenPos);
+    return jobManager.create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey });
+  }
 
-    quickDialog.setStatus('⏳ Scanning text…', '#6366f1');
-    let ocrText = '';
-    try {
-      ocrText = clips ? await ocrClips(clips) : await ocrRegionStitched(imageEl, bbox, images);
-      if (ocrText) {
-        quickDialog.setOriginalText(ocrText);
-        quickDialog.setStatus('⏳ Translating…', '#6366f1');
-        try {
-          const translated = await autoTranslate(ocrText);
-          if (translated) {
-            quickDialog.setTranslated(translated);
-          } else {
-            // Provider is "none" — just pre-fill with OCR text
-            quickDialog.setTranslated(ocrText);
-            quickDialog.setStatus('Translation disabled — edit if needed', '#94a3b8');
-          }
-        } catch (err) {
-          quickDialog.setTranslated(ocrText);
-          quickDialog.setStatus(`⚠ Translation failed: ${err.message}`, '#f59e0b');
-        }
-      } else {
-        quickDialog.setStatus('No text found in this region', '#94a3b8');
-      }
-    } catch (err) {
-      quickDialog.setStatus(`✗ OCR failed: ${err.message}`, '#ef4444');
-    }
+  const selector = new BBoxSelector({
+    onSelect: createJobFromSelection,
+    onDragStart: () => { detectPreview.dismiss(); dismissBubbleToolbar(); },
+    onClick: async ({ img, clickX, clickY, imgRect, imageIndex }) => {
+      const { bbox } = await autoDetector.detect(img, clickX, clickY, imgRect);
+      if (!bbox) return; // validity check failed — fall back to manual drag-to-select
+      await createJobFromSelection({ bbox, imageEl: img, imageIndex });
+    },
+  });
 
-    const result = await resultPromise;
-    if (!result) return;
+  // ── click bubble to edit / resize / delete ──────────────────────────────
+  // Single click toggles a small inline toolbar — no modal dialog. Edit swaps
+  // the bubble's text for an inline textarea; resize shows an adjustable box
+  // (reusing DetectionPreview) and auto re-runs OCR+translate on confirm;
+  // delete removes the annotation immediately.
 
-    const imageHash  = await hashImage(imageEl);
-    const annotation = {
-      imageHash, imageIndex, bbox,
-      originalText:   quickDialog.getOriginalText(),
-      translatedText: result.translatedText,
-      style: { fontSize: 20, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' },
-      language: 'vi', createdAt: new Date().toISOString(),
+  let _activeToolbar = null; // { bubble, el }
+
+  function dismissBubbleToolbar() {
+    _activeToolbar?.el.remove();
+    _activeToolbar = null;
+  }
+
+  function startInlineEdit(bubble, img, annKey) {
+    dismissBubbleToolbar();
+    const span = bubble.querySelector('span');
+    const currentText = span?.textContent || '';
+    const textarea = document.createElement('textarea');
+    textarea.className = 'wt-bubble-edit-textarea';
+    textarea.value = currentText;
+    textarea.style.left   = bubble.style.left;
+    textarea.style.top    = bubble.style.top;
+    textarea.style.width  = bubble.style.width;
+    textarea.style.height = bubble.style.minHeight || bubble.style.height || '32px';
+    bubble.parentElement.appendChild(textarea);
+    bubble.style.visibility = 'hidden';
+    textarea.focus();
+    textarea.select();
+
+    const finish = async (save) => {
+      textarea.removeEventListener('blur', onBlur);
+      textarea.remove();
+      bubble.style.visibility = '';
+      if (!save) return;
+      const newText = textarea.value.trim();
+      if (!newText || newText === currentText) return;
+      const existing = allAnnotations.find(a => annKeyOf(a) === annKey);
+      if (!existing) return;
+      const updated = { ...existing, translatedText: newText };
+      await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [updated] } });
+      _upsertAnnotation(updated);
+      if (isKakao) fixedLayer.upsertBubble(img, updated);
+      else renderer.upsertBubble(img, updated);
+      panel.update(allAnnotations);
     };
-    await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
-    _upsertAnnotation(annotation);
-    if (isKakao) fixedLayer.upsertBubble(imageEl, annotation);
-    else renderer.upsertBubble(imageEl, annotation);
-    updateProgressBar();
+    const onBlur = () => finish(true);
+    textarea.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') finish(false);
+    });
+    textarea.addEventListener('blur', onBlur);
   }
 
-  function _upsertAnnotation(annotation) {
-    const newKey = `${annotation.imageHash}::${annotation.bbox.x.toFixed(1)}::${annotation.bbox.y.toFixed(1)}`;
-    const existsIdx = allAnnotations.findIndex(a =>
-      `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` === newKey
-    );
-    if (existsIdx >= 0) allAnnotations[existsIdx] = annotation;
-    else { allAnnotations.push(annotation); annotationCount++; }
-  }
-
-  // ── double-click bubble to edit ─────────────────────────────────────────
-
-  document.addEventListener('dblclick', async (e) => {
-    const bubble = e.target.closest('.wt-translation-bubble');
-    if (!bubble) return;
-    e.stopPropagation();
-    e.preventDefault();
-
-    const annKeyToEdit = bubble.dataset.annKey;
-    const wrapper = bubble.closest('.wt-img-wrapper');
-    let img = wrapper?.querySelector('img');
-    if (!img && isKakao) img = fixedLayer.getBubbleImage(annKeyToEdit);
-    if (!img) return;
-    const imgIndex = images.indexOf(img);
-
-    const existingBbox = {
+  async function startBubbleResize(bubble, img, annKey, imgIndex) {
+    dismissBubbleToolbar();
+    const currentBbox = {
       x: parseFloat(bubble.dataset.bboxX), y: parseFloat(bubble.dataset.bboxY),
       w: parseFloat(bubble.dataset.bboxW), h: parseFloat(bubble.dataset.bboxH),
     };
-    const existing = allAnnotations.find(a =>
-      `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` === annKeyToEdit
-    );
+    const wrapper = bubble.closest('.wt-img-wrapper');
+    if (!wrapper) return; // resize UI needs the wrapper coordinate space (non-Kakao only)
+    bubble.style.visibility = 'hidden';
+    const newBbox = await detectPreview.show(img, wrapper, currentBbox);
+    bubble.style.visibility = '';
+    if (!newBbox) return; // cancelled — bbox unchanged
+    // Re-run OCR + translate with the adjusted bbox; onDone updates this same
+    // annotation in place once it finishes, without blocking other jobs.
+    await createJobFromSelection({ bbox: newBbox, imageEl: img, imageIndex: imgIndex, existingAnnKey: annKey });
+  }
 
-    const rect = img.getBoundingClientRect();
-    const bubbleRight = rect.left + window.scrollX + ((existingBbox.x + existingBbox.w) / 100) * rect.width;
-    const bubbleLeft  = rect.left + window.scrollX + (existingBbox.x / 100) * rect.width;
-    const bubbleTop   = rect.top  + window.scrollY + (existingBbox.y / 100) * rect.height;
-    const spaceRight  = window.scrollX + window.innerWidth - bubbleRight - 24;
-    const screenPos   = {
-      x: spaceRight >= 280 ? bubbleRight + 8 : bubbleLeft - 288,
-      y: bubbleTop,
-    };
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('.wt-bubble-toolbar, .wt-bubble-edit-textarea, .wt-detect-preview')) return;
 
-    const result = await quickDialog.show(screenPos, {
-      originalText:   existing?.originalText   || '',
-      translatedText: existing?.translatedText || bubble.querySelector('span')?.textContent || '',
+    const bubble = e.target.closest('.wt-translation-bubble');
+    if (!bubble) { dismissBubbleToolbar(); return; }
+    e.stopPropagation();
+    if (_activeToolbar?.bubble === bubble) return;
+    dismissBubbleToolbar();
+
+    const annKey = bubble.dataset.annKey;
+    const wrapper = bubble.closest('.wt-img-wrapper');
+    let img = wrapper?.querySelector('img');
+    if (!img && isKakao) img = fixedLayer.getBubbleImage(annKey);
+    if (!img) return;
+    const imgIndex = images.indexOf(img);
+
+    // Appended to the bubble's parent (not the bubble itself) since bubbles have
+    // overflow:hidden — a child positioned above the bubble's own box would be clipped.
+    const toolbar = document.createElement('div');
+    toolbar.className = 'wt-bubble-toolbar';
+    toolbar.innerHTML = `
+      <button type="button" class="wt-bt-edit" title="Sửa văn bản">&#9998;</button>
+      ${isKakao ? '' : '<button type="button" class="wt-bt-resize" title="Chỉnh khung">&#10530;</button>'}
+      <button type="button" class="wt-bt-delete" title="Xoá">&#128465;</button>
+    `;
+    toolbar.style.left = bubble.style.left;
+    toolbar.style.top  = `${parseFloat(bubble.style.top) - 32}px`;
+    bubble.parentElement.appendChild(toolbar);
+    _activeToolbar = { bubble, el: toolbar };
+
+    toolbar.querySelector('.wt-bt-edit').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      startInlineEdit(bubble, img, annKey);
     });
-    if (!result) return;
-
-    if (result.deleted) {
-      await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey: annKeyToEdit } });
-      if (isKakao) fixedLayer.removeBubble(annKeyToEdit);
-      else renderer.removeBubble(img, annKeyToEdit);
-      allAnnotations = allAnnotations.filter(a =>
-        `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` !== annKeyToEdit
-      );
-      annotationCount--;
-      panel.update(allAnnotations);
-      updateProgressBar();
-      return;
-    }
-
-    const imgHash  = await hashImage(img);
-    const annotation = {
-      ...(existing || {}),
-      imageHash: imgHash, imageIndex: imgIndex, bbox: existingBbox,
-      originalText:   existing?.originalText || '',
-      translatedText: result.translatedText,
-      style:          existing?.style || { fontSize: 20, bold: false, italic: false, color: '#1a1a2e', bg: '#ffffff', noBg: false, stroke: false, strokeColor: '#ffffff', strokeWidth: 1, fontFamily: '' },
-      language:       existing?.language || 'vi',
-      createdAt:      existing?.createdAt || new Date().toISOString(),
-    };
-    await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [annotation] } });
-    _upsertAnnotation(annotation);
-    if (isKakao) fixedLayer.upsertBubble(img, annotation);
-    else renderer.upsertBubble(img, annotation);
+    toolbar.querySelector('.wt-bt-resize')?.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      startBubbleResize(bubble, img, annKey, imgIndex);
+    });
+    toolbar.querySelector('.wt-bt-delete').addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      dismissBubbleToolbar();
+      await deleteAnnotation(annKey, img);
+    });
   });
 
-  // Reposition fixed bubbles on scroll (Kakao uses position:absolute relative to page)
+  // Reposition fixed bubbles/job overlays on scroll (Kakao uses position:absolute relative to page)
   if (isKakao) {
     // capture:true also catches scrolls from inner scroll containers (scroll doesn't bubble)
-    document.addEventListener('scroll', () => fixedLayer?.repositionAll(), { passive: true, capture: true });
-    window.addEventListener('resize', () => fixedLayer?.repositionAll(), { passive: true });
+    document.addEventListener('scroll', () => { fixedLayer?.repositionAll(); jobOverlayRenderer.repositionAll(); }, { passive: true, capture: true });
+    window.addEventListener('resize', () => { fixedLayer?.repositionAll(); jobOverlayRenderer.repositionAll(); }, { passive: true });
   }
 
   // ── chapter navigation (SPA) ───────────────────────────────────────────
@@ -2448,10 +2642,15 @@ function bootForPage() {
     if (isKakao) { fixedLayer.disable(); fixedLayer.clearAll(); }
     else selector.disable();
     renderer.clearAll();
+    for (const jobId of [...jobManager.jobs.keys()]) jobManager.cancel(jobId);
+    dismissBubbleToolbar();
+    detectPreview.dismiss();
+    confirmPopup.dismiss();
     toggleBtn.remove();
     scanBtn.remove();
     panel.hide();
     document.getElementById('wt-progress-bar')?.remove();
+    document.getElementById('wt-job-badge')?.remove();
     document.body.style.marginRight = '';
     document.removeEventListener('keydown', keyHandler);
     _translationsVisible = true;
