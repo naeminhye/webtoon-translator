@@ -1295,6 +1295,7 @@ class JobManager {
         this._onStatusChange(job);
         return;
       }
+      console.log('[WebtoonTranslate] OCR text:', ocrText);
       job.status = 'translating';
       this._onStatusChange(job);
       const translated = await this._runTranslate(job);
