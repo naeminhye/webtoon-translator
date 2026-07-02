@@ -537,6 +537,7 @@ const AUTO_DETECT_MIN_H          = 15;  // px — reject shorter regions
 const AUTO_DETECT_MAX_AREA_RATIO = 0.85; // bbox area / crop area — reject if it likely leaked into background
 const AUTO_DETECT_MAX_ASPECT     = 5;
 const AUTO_DETECT_MIN_ASPECT     = 0.2;
+const AUTO_DETECT_MIN_FILL_DENSITY = 0.55; // filledPixels / own-bbox-area — a solid oval/rounded-rect bubble is ~0.7-0.9; an irregular leaked fragment (e.g. part of a connector fused with unrelated art) is much sparser within its own bbox
 
 class BubbleAutoDetector {
   /**
@@ -614,14 +615,23 @@ class BubbleAutoDetector {
       // Two touching/overlapping bubbles flood-fill as one blob. Check for a
       // "waist" — a narrow join between two otherwise-separate masses — and
       // split into independent regions when found, each validated on its
-      // own. Prefer splitting whenever it's viable (per spec, bubbles are
-      // translated as independent units); if a split half fails validity,
-      // fall back to the single merged region rather than two broken pieces.
+      // own. This also catches a different failure: flood fill leaking out
+      // of the bubble entirely through a thin bridge of similar-tolerance
+      // color into unrelated nearby art (e.g. a highlight on a character's
+      // clothing), which the retry-and-grow loop above can widen into a
+      // large, garbage-filled bbox. That leaked appendage is typically an
+      // odd, non-bubble shape, so it fails validity on its own — in that
+      // case keep only the valid half(s) instead of falling back to the
+      // full (still-contaminated) merged region. Only fall back to the
+      // merged region if NEITHER half is independently valid.
       let regions = [region];
       const split = findWaistSplit(region.mask, cw, ch, region);
-      if (split && split.every(r => this._isValidRegion(r, cw, ch).valid)) {
-        regions = split;
-        debug.split = true;
+      if (split) {
+        const validHalves = split.filter(r => this._isValidRegion(r, cw, ch).valid);
+        if (validHalves.length > 0) {
+          regions = validHalves;
+          debug.split = validHalves.length === split.length ? 'both' : 'partial';
+        }
       }
 
       const bboxes = [];
@@ -650,6 +660,8 @@ class BubbleAutoDetector {
     if (areaRatio > AUTO_DETECT_MAX_AREA_RATIO) return { valid: false, reason: 'leaked-into-background' };
     const aspect = rw / rh;
     if (aspect > AUTO_DETECT_MAX_ASPECT || aspect < AUTO_DETECT_MIN_ASPECT) return { valid: false, reason: 'bad-aspect-ratio' };
+    const density = region.filledPixels / (rw * rh);
+    if (density < AUTO_DETECT_MIN_FILL_DENSITY) return { valid: false, reason: 'low-fill-density' };
     return { valid: true };
   }
 
