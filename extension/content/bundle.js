@@ -2240,6 +2240,82 @@ function showStorageWarning(usedBytes, quotaBytes) {
   setTimeout(() => toast.remove(), 6000);
 }
 
+// ── Story Context (lazy auto-fetch, for future LLM translation modes) ─────────
+// Fetches synopsis/tags/author/age-rating from a title's info page (not the
+// chapter page itself) so it can eventually be injected into an LLM
+// translation prompt alongside chapter/character memory. Naver-only for now;
+// scoped to a per-site adapter method (fetchStoryContext) so a future
+// KakaoAdapter can add its own implementation without touching this file —
+// getStoryContext() below is adapter-agnostic and no-ops for any adapter that
+// doesn't implement fetchStoryContext.
+//
+// NOTE: there is currently no LLM prompt-building step anywhere in this
+// codebase to wire the result into — translation today is plain string
+// translation via Google/DeepL (see autoTranslate()). This only builds the
+// fetch+cache foundation; a future Mode B/C implementation should call
+// getStoryContext(adapter, meta.site, meta.titleId) (already memoized) when
+// constructing its prompt.
+
+const STORY_CONTEXT_KEY_PREFIX = 'wt:story-context:';
+const _storyContextInFlight = new Map(); // "site:titleId" -> Promise, dedupes concurrent lazy-fetch triggers
+
+/** First non-empty text (or attribute value, if `attr` given) from the first selector that matches. */
+function _firstMatchText(doc, selectors, attr) {
+  for (const sel of selectors) {
+    const el = doc.querySelector(sel);
+    if (!el) continue;
+    const val = (attr ? el.getAttribute(attr) : el.textContent)?.trim();
+    if (val) return val;
+  }
+  return undefined;
+}
+
+/** All non-empty text values across every selector's matches, deduped, in document order. */
+function _allMatchTexts(doc, selectors) {
+  const out = new Set();
+  for (const sel of selectors) {
+    doc.querySelectorAll(sel).forEach(el => {
+      const t = el.textContent?.trim();
+      if (t) out.add(t);
+    });
+  }
+  return [...out];
+}
+
+/**
+ * Lazily fetches + caches Story Context for a title, keyed by site+titleId.
+ * Never re-fetches once cached (no expiry in v1 — synopsis/tags/author rarely
+ * change after a title publishes). Concurrent calls for the same title (e.g.
+ * several jobs starting near-simultaneously) share one in-flight fetch.
+ * Resolves to null (never rejects) if the adapter has no fetchStoryContext
+ * implementation, or if the fetch/parse fails — logged as a console warning,
+ * never surfaced to the user or allowed to block translation.
+ */
+async function getStoryContext(adapter, site, titleId) {
+  if (typeof adapter.fetchStoryContext !== 'function') return null;
+  const key = `${STORY_CONTEXT_KEY_PREFIX}${site}:${titleId}`;
+
+  const stored = await chrome.storage.local.get(key);
+  if (stored[key]) return stored[key];
+
+  if (_storyContextInFlight.has(key)) return _storyContextInFlight.get(key);
+
+  const promise = (async () => {
+    try {
+      const ctx = await adapter.fetchStoryContext(titleId);
+      if (ctx) await chrome.storage.local.set({ [key]: ctx });
+      return ctx || null;
+    } catch (err) {
+      console.warn('[WebtoonTranslate] StoryContext fetch failed for', site, titleId, err);
+      return null;
+    } finally {
+      _storyContextInFlight.delete(key);
+    }
+  })();
+  _storyContextInFlight.set(key, promise);
+  return promise;
+}
+
 // ── Adapters ──────────────────────────────────────────────────────────────────
 
 class NaverAdapter {
@@ -2285,6 +2361,64 @@ class NaverAdapter {
     const obs = new MutationObserver(() => { const i = this.getImages(); if (i.length) callback(i); });
     obs.observe(target, { childList: true, subtree: true });
     return () => obs.disconnect();
+  }
+
+  /**
+   * Fetches + parses the title's info/list page (not the chapter page) for
+   * Story Context — see getStoryContext() above for the caching wrapper that
+   * calls this. `tab` (weekday) isn't derivable from the chapter URL and
+   * isn't required — Naver serves the full list page (synopsis/tags/author)
+   * without it.
+   *
+   * SELECTOR CAVEAT: written without a real sample of the list page's HTML
+   * (Naver's list-page markup uses hashed/module CSS class names that churn
+   * often — e.g. `EpisodeListInfo__xxxxx`). title/synopsis use `og:*` meta
+   * tags, which are far more stable than hashed classes; tags/author/age
+   * rating fall back to a short list of plausible structural selectors.
+   * Every field is independently best-effort per REQUIREMENTS #5 — a field
+   * that fails to match logs a console.warn and is left undefined rather
+   * than blocking the others or throwing. Verify against real HTML and
+   * adjust the selector lists once available.
+   */
+  async fetchStoryContext(titleId) {
+    const url = `https://comic.naver.com/webtoon/list?titleId=${encodeURIComponent(titleId)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
+    const html = await res.text();
+    const doc  = new DOMParser().parseFromString(html, 'text/html');
+
+    const ctx = { site: SITES.NAVER, titleId, fetchedAt: new Date().toISOString() };
+
+    ctx.title = _firstMatchText(doc, ['meta[property="og:title"]'], 'content')
+             || _firstMatchText(doc, ['title']);
+    if (!ctx.title) console.warn('[WebtoonTranslate] StoryContext(naver): title selector matched nothing');
+
+    ctx.synopsis = _firstMatchText(doc, ['meta[property="og:description"]'], 'content')
+                || _firstMatchText(doc, ['.EpisodeListInfo__summary--Jd1WG', '.info_area .summary', '.detail .summary']);
+    if (!ctx.synopsis) console.warn('[WebtoonTranslate] StoryContext(naver): synopsis selector matched nothing');
+
+    ctx.tags = _allMatchTexts(doc, [
+      'a[href*="genreCode="]',
+      'a[href*="/genre?"]',
+      '.EpisodeListInfo__tag_area--WwArK a',
+      '.info_area .genre a',
+      '.tag_area a',
+    ]);
+    if (!ctx.tags.length) console.warn('[WebtoonTranslate] StoryContext(naver): tags selectors matched nothing');
+
+    ctx.author = _allMatchTexts(doc, [
+      'a[href*="/community/list?"]',
+      '.EpisodeListInfo__author--CizfK a',
+      '.wrt_nm',
+      '.author',
+    ]).join(', ') || undefined;
+    if (!ctx.author) console.warn('[WebtoonTranslate] StoryContext(naver): author selectors matched nothing');
+
+    ctx.ageRating = _firstMatchText(doc, ['img[alt*="이용가"]'], 'alt')
+                 || _firstMatchText(doc, ['.age', '.ico_stamp', '[class*="age_"]']);
+    if (!ctx.ageRating) console.warn('[WebtoonTranslate] StoryContext(naver): age rating selectors matched nothing');
+
+    return ctx;
   }
 }
 
@@ -3076,7 +3210,15 @@ function bootForPage() {
   }
 
   const jobManager = new JobManager({
-    runOcr:        (job) => job.clips ? ocrClips(job.clips) : ocrRegionStitched(job.imageEl, job.bbox, images),
+    runOcr:        (job) => {
+      // Lazy trigger point: first OCR/translation request for this title.
+      // Fire-and-forget — nothing consumes the result yet (no LLM prompt step
+      // exists in this codebase), but it fetches + caches it now so a future
+      // Mode B/C implementation can read it back instantly. No-ops for any
+      // adapter without fetchStoryContext (i.e. every non-Naver site today).
+      getStoryContext(adapter, meta.site, meta.titleId);
+      return job.clips ? ocrClips(job.clips) : ocrRegionStitched(job.imageEl, job.bbox, images);
+    },
     runTranslate:  (job) => autoTranslate(job.originalText),
     findOverlap:   findOverlapForBbox,
     confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'Vùng này có vẻ trùng với bản dịch đã có. Vẫn tạo bản dịch mới ở đây?'),
