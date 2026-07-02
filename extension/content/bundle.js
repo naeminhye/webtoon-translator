@@ -543,11 +543,13 @@ class BubbleAutoDetector {
    * is re-centered on the click with a bigger radius and retried, up to
    * AUTO_DETECT_MAX_ATTEMPTS times.
    *
-   * Returns { bbox, debug }: `bbox` is a %-of-natural-image box relative to
-   * `img` matching BBoxSelector's onSelect contract — y may be negative or
-   * y+h may exceed 100 when the bubble spans into a neighboring panel;
-   * ocrRegionStitched already knows how to grab that overflow. `bbox` is
-   * null if detection failed (caller should fall back to manual drag).
+   * Returns { bboxes, debug }: `bboxes` is an array of 1+ %-of-natural-image
+   * boxes relative to `img` (usually 1; 2 when a waist-split separated two
+   * touching bubbles) matching BBoxSelector's onSelect contract for each — y
+   * may be negative or y+h may exceed 100 when a bubble spans into a
+   * neighboring panel; ocrRegionStitched already knows how to grab that
+   * overflow. `bboxes` is empty if detection failed (caller should fall back
+   * to manual drag).
    */
   async detect(img, clickX, clickY, imgRect, images, imageIndex) {
     const nw = img.naturalWidth  || img.width  || imgRect.width;
@@ -588,11 +590,9 @@ class BubbleAutoDetector {
       const region = floodFillBBox(imageData, localX, localY, AUTO_DETECT_TOLERANCE);
       if (!region) return this._fail(debug, 'seed-out-of-bounds');
 
-      const { minX, minY, maxX, maxY, filledPixels } = region;
-      const rw = maxX - minX + 1, rh = maxY - minY + 1;
-      const touchesEdge = minX === 0 || minY === 0 || maxX === cw - 1 || maxY === ch - 1;
-
-      debug.region = { x: minX, y: minY, w: rw, h: rh, filledPixels, aspect: +(rw / rh).toFixed(2), touchesEdge };
+      const rw = region.maxX - region.minX + 1, rh = region.maxY - region.minY + 1;
+      const touchesEdge = region.minX === 0 || region.minY === 0 || region.maxX === cw - 1 || region.maxY === ch - 1;
+      debug.region = { x: region.minX, y: region.minY, w: rw, h: rh, filledPixels: region.filledPixels, aspect: +(rw / rh).toFixed(2), touchesEdge };
 
       if (touchesEdge && radius < AUTO_DETECT_MAX_RADIUS) {
         // Likely clipped by the crop (off-center click, or a bubble bigger than
@@ -601,42 +601,67 @@ class BubbleAutoDetector {
         continue;
       }
 
-      const areaRatio = (rw * rh) / (cw * ch);
-      const aspect = rw / rh;
-      debug.region.areaRatio = +areaRatio.toFixed(3);
+      // Two touching/overlapping bubbles flood-fill as one blob. Check for a
+      // "waist" — a narrow join between two otherwise-separate masses — and
+      // split into independent regions when found, each validated on its
+      // own. Prefer splitting whenever it's viable (per spec, bubbles are
+      // translated as independent units); if a split half fails validity,
+      // fall back to the single merged region rather than two broken pieces.
+      let regions = [region];
+      const split = findWaistSplit(region.mask, cw, ch, region);
+      if (split && split.every(r => this._isValidRegion(r, cw, ch).valid)) {
+        regions = split;
+        debug.split = true;
+      }
 
-      if (rw < AUTO_DETECT_MIN_W || rh < AUTO_DETECT_MIN_H) return this._fail(debug, 'too-small');
-      if (areaRatio > AUTO_DETECT_MAX_AREA_RATIO) return this._fail(debug, 'leaked-into-background');
-      if (aspect > AUTO_DETECT_MAX_ASPECT || aspect < AUTO_DETECT_MIN_ASPECT) return this._fail(debug, 'bad-aspect-ratio');
+      const bboxes = [];
+      let firstFailReason = null;
+      for (const r of regions) {
+        const v = this._isValidRegion(r, cw, ch);
+        if (!v.valid) { firstFailReason = firstFailReason || v.reason; continue; }
+        bboxes.push(this._regionToBbox(r, sx, segments.canvasTopFrameY, nw, nh));
+      }
+      if (!bboxes.length) return this._fail(debug, firstFailReason || 'too-small');
 
-      // Crop-local region -> bbox relative to the CURRENT image's natural size,
-      // padded. x stays clamped to this image's width (no horizontal neighbor
-      // concept); y is intentionally left unclamped — see method doc above.
-      const px0 = Math.max(0,  sx + minX - AUTO_DETECT_PADDING);
-      const py0 = segments.canvasTopFrameY + minY - AUTO_DETECT_PADDING;
-      const px1 = Math.min(nw, sx + maxX + 1 + AUTO_DETECT_PADDING);
-      const py1 = segments.canvasTopFrameY + maxY + 1 + AUTO_DETECT_PADDING;
-
-      const bbox = {
-        x: (px0 / nw) * 100,
-        y: (py0 / nh) * 100,
-        w: ((px1 - px0) / nw) * 100,
-        h: ((py1 - py0) / nh) * 100,
-      };
-      debug.bbox = bbox;
+      debug.bboxes = bboxes;
       debug.pass = true;
       console.log('[WebtoonTranslate] AutoDetect pass', debug);
-      return { bbox, debug };
+      return { bboxes, debug };
     }
 
     return this._fail(debug, 'exceeded-max-attempts');
+  }
+
+  /** Size/area/aspect validity check shared by the merged region and each waist-split half. */
+  _isValidRegion(region, cw, ch) {
+    const rw = region.maxX - region.minX + 1, rh = region.maxY - region.minY + 1;
+    if (rw < AUTO_DETECT_MIN_W || rh < AUTO_DETECT_MIN_H) return { valid: false, reason: 'too-small' };
+    const areaRatio = (rw * rh) / (cw * ch);
+    if (areaRatio > AUTO_DETECT_MAX_AREA_RATIO) return { valid: false, reason: 'leaked-into-background' };
+    const aspect = rw / rh;
+    if (aspect > AUTO_DETECT_MAX_ASPECT || aspect < AUTO_DETECT_MIN_ASPECT) return { valid: false, reason: 'bad-aspect-ratio' };
+    return { valid: true };
+  }
+
+  /** Crop-local region -> bbox relative to the CURRENT image's natural size, padded. x stays clamped to this image's width; y is intentionally left unclamped — see detect()'s doc. */
+  _regionToBbox(region, sx, canvasTopFrameY, nw, nh) {
+    const px0 = Math.max(0,  sx + region.minX - AUTO_DETECT_PADDING);
+    const py0 = canvasTopFrameY + region.minY - AUTO_DETECT_PADDING;
+    const px1 = Math.min(nw, sx + region.maxX + 1 + AUTO_DETECT_PADDING);
+    const py1 = canvasTopFrameY + region.maxY + 1 + AUTO_DETECT_PADDING;
+    return {
+      x: (px0 / nw) * 100,
+      y: (py0 / nh) * 100,
+      w: ((px1 - px0) / nw) * 100,
+      h: ((py1 - py0) / nh) * 100,
+    };
   }
 
   _fail(debug, reason) {
     debug.pass = false;
     debug.reason = reason;
     console.log('[WebtoonTranslate] AutoDetect fail', debug);
-    return { bbox: null, debug };
+    return { bboxes: [], debug };
   }
 
   /**
@@ -750,7 +775,7 @@ function boxBlur3x3(imageData) {
   }
 }
 
-/** Iterative 4-connected flood fill by color distance to the seed pixel. Returns the bbox + pixel count, or null if the seed is out of bounds. */
+/** Iterative 4-connected flood fill by color distance to the seed pixel. Returns the bbox + pixel count + the fill mask, or null if the seed is out of bounds. */
 function floodFillBBox(imageData, startX, startY, tolerance) {
   const { data, width: w, height: h } = imageData;
   if (startX < 0 || startY < 0 || startX >= w || startY >= h) return null;
@@ -788,6 +813,135 @@ function floodFillBBox(imageData, startX, startY, tolerance) {
     if (y < h - 1) tryVisit(idx + w);
   }
 
+  return { minX, minY, maxX, maxY, filledPixels, mask: visited };
+}
+
+// ── Waist-split (separates two bubbles merged by flood fill at a touching point) ─
+// A pair of touching/overlapping speech bubbles flood-fills as one connected
+// blob. The signature of that join is a "waist": a row or column where the
+// blob's width/height narrows sharply relative to the bubble mass on both
+// sides of it — unlike a single bubble's natural taper toward its own edges,
+// which only ever narrows on ONE side (going to zero at the boundary).
+
+const WAIST_SPLIT_RATIO      = 0.45; // width at the narrowest point vs. the weaker side's local max — below this, treat as two joined bubbles. Needs tuning against real touching-bubble screenshots.
+const WAIST_EDGE_MARGIN_FRAC = 0.15; // ignore narrowing within this fraction of the scan axis's own extent from either end (that's just normal bubble taper, not a junction)
+const WAIST_MIN_REGION_DIM   = 20;   // px — each split half must still span at least this far along the scan axis to be considered a real second bubble, not noise
+
+/**
+ * If `region` (within a `w`x`h` `mask`) looks like two bubbles joined at a
+ * narrow waist, returns the two split sub-regions (each with its own bbox +
+ * filledPixels, same shape as floodFillBBox's return). Otherwise returns null.
+ * Checks both a vertical waist (bubbles stacked, narrows along rows) and a
+ * horizontal waist (bubbles side-by-side, narrows along columns), preferring
+ * whichever axis shows the stronger (lower ratio) narrowing.
+ */
+function findWaistSplit(mask, w, h, region) {
+  const { minX, minY, maxX, maxY } = region;
+
+  const rowProfile = [];
+  for (let y = minY; y <= maxY; y++) {
+    let count = 0;
+    const base = y * w;
+    for (let x = minX; x <= maxX; x++) if (mask[base + x]) count++;
+    rowProfile.push(count);
+  }
+  const rowWaist = _scanForWaist(rowProfile, WAIST_SPLIT_RATIO, WAIST_EDGE_MARGIN_FRAC);
+
+  const colProfile = [];
+  for (let x = minX; x <= maxX; x++) {
+    let count = 0;
+    for (let y = minY; y <= maxY; y++) if (mask[y * w + x]) count++;
+    colProfile.push(count);
+  }
+  const colWaist = _scanForWaist(colProfile, WAIST_SPLIT_RATIO, WAIST_EDGE_MARGIN_FRAC);
+
+  let axis = null;
+  if (rowWaist && (!colWaist || rowWaist.ratio <= colWaist.ratio)) axis = { type: 'row', ...rowWaist };
+  else if (colWaist) axis = { type: 'col', ...colWaist };
+  if (!axis) return null;
+
+  let regionA, regionB;
+  if (axis.type === 'row') {
+    const splitY = minY + axis.index;
+    regionA = _maskSubRegion(mask, w, minX, minY, maxX, splitY - 1);
+    regionB = _maskSubRegion(mask, w, minX, splitY + 1, maxX, maxY);
+    if (!regionA || !regionB) return null;
+    if (regionA.maxY - regionA.minY + 1 < WAIST_MIN_REGION_DIM) return null;
+    if (regionB.maxY - regionB.minY + 1 < WAIST_MIN_REGION_DIM) return null;
+  } else {
+    const splitX = minX + axis.index;
+    regionA = _maskSubRegion(mask, w, minX, minY, splitX - 1, maxY);
+    regionB = _maskSubRegion(mask, w, splitX + 1, minY, maxX, maxY);
+    if (!regionA || !regionB) return null;
+    if (regionA.maxX - regionA.minX + 1 < WAIST_MIN_REGION_DIM) return null;
+    if (regionB.maxX - regionB.minX + 1 < WAIST_MIN_REGION_DIM) return null;
+  }
+  return [regionA, regionB];
+}
+
+/**
+ * Scans a 1-D width/height profile for a "waist": an index (away from both
+ * ends, by `edgeMarginFrac`) whose value is under `ratioThreshold` of the
+ * smaller of the local max before it and the local max after it. Returns the
+ * strongest (lowest-ratio) candidate, or null.
+ *
+ * A straight connector (the common case — a tail or two bubble edges just
+ * touching) has constant width across several rows/columns, all tied for the
+ * minimum ratio; picking the middle of that run lands the cut in the middle
+ * of the connector instead of at whichever end the scan reaches first.
+ */
+function _scanForWaist(profile, ratioThreshold, edgeMarginFrac) {
+  const n = profile.length;
+  if (n < 5) return null;
+  const margin = Math.max(1, Math.round(n * edgeMarginFrac));
+  if (margin * 2 >= n) return null;
+
+  const prefixMax = new Array(n);
+  for (let i = 0, pm = 0; i < n; i++) { pm = Math.max(pm, profile[i]); prefixMax[i] = pm; }
+  const suffixMax = new Array(n);
+  for (let i = n - 1, sm = 0; i >= 0; i--) { sm = Math.max(sm, profile[i]); suffixMax[i] = sm; }
+
+  let bestRatio = Infinity;
+  for (let k = margin; k < n - margin; k++) {
+    const before = prefixMax[k - 1] || 0;
+    const after  = suffixMax[k + 1] || 0;
+    if (!before || !after) continue;
+    const ratio = profile[k] / Math.min(before, after);
+    if (ratio < bestRatio) bestRatio = ratio;
+  }
+  if (bestRatio >= ratioThreshold) return null;
+
+  let runStart = -1, runEnd = -1;
+  for (let k = margin; k < n - margin; k++) {
+    const before = prefixMax[k - 1] || 0;
+    const after  = suffixMax[k + 1] || 0;
+    if (!before || !after) continue;
+    const ratio = profile[k] / Math.min(before, after);
+    if (Math.abs(ratio - bestRatio) < 1e-9) {
+      if (runStart === -1) runStart = k;
+      runEnd = k;
+    } else if (runStart !== -1) {
+      break; // first tied run ended
+    }
+  }
+  return { index: Math.round((runStart + runEnd) / 2), ratio: bestRatio };
+}
+
+/** bbox + filledPixels of the mask pixels within a clip rect — NOT a connected-component search, just a rectangular restriction of the original connected blob. */
+function _maskSubRegion(mask, w, x0, y0, x1, y1) {
+  if (x1 < x0 || y1 < y0) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, filledPixels = 0;
+  for (let y = y0; y <= y1; y++) {
+    const base = y * w;
+    for (let x = x0; x <= x1; x++) {
+      if (mask[base + x]) {
+        filledPixels++;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (!filledPixels) return null;
   return { minX, minY, maxX, maxY, filledPixels };
 }
 
@@ -2666,9 +2820,13 @@ function bootForPage() {
     onSelect: createJobFromSelection,
     onDragStart: () => { detectPreview.dismiss(); dismissBubbleToolbar(); },
     onClick: async ({ img, clickX, clickY, imgRect, imageIndex }) => {
-      const { bbox } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
-      if (!bbox) return; // validity check failed — fall back to manual drag-to-select
-      await createJobFromSelection({ bbox, imageEl: img, imageIndex });
+      const { bboxes } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
+      if (!bboxes.length) return; // validity check failed — fall back to manual drag-to-select
+      // A waist-split click can yield two touching bubbles at once — each is
+      // translated as its own independent job.
+      for (const bbox of bboxes) {
+        await createJobFromSelection({ bbox, imageEl: img, imageIndex });
+      }
     },
   });
 
@@ -2692,18 +2850,39 @@ function bootForPage() {
     const textarea = document.createElement('textarea');
     textarea.className = 'wt-bubble-edit-textarea';
     textarea.value = currentText;
-    textarea.style.left   = bubble.style.left;
-    textarea.style.top    = bubble.style.top;
-    textarea.style.width  = bubble.style.width;
-    textarea.style.height = bubble.style.minHeight || bubble.style.height || '32px';
-    bubble.parentElement.appendChild(textarea);
+    textarea.style.left     = bubble.style.left;
+    textarea.style.top      = bubble.style.top;
+    textarea.style.width    = bubble.style.width;
+    textarea.style.height   = bubble.style.minHeight || bubble.style.height || '32px';
+    // Match the size text actually renders at in the normal overlay — the
+    // bubble already carries this as an inline style — instead of a small,
+    // debug-looking fixed size.
+    textarea.style.fontSize = bubble.style.fontSize || '20px';
+    const parent = bubble.parentElement;
+    parent.appendChild(textarea);
     bubble.style.visibility = 'hidden';
     textarea.focus();
     textarea.select();
 
+    // Reuses the same checkmark/✕ confirm-reject pattern as DetectionPreview's
+    // toolbar, so Save/Cancel are always visible — not just reachable via keys.
+    const toolbar = document.createElement('div');
+    toolbar.className = 'wt-detect-toolbar';
+    toolbar.innerHTML = `
+      <button type="button" class="wt-detect-confirm" title="Lưu (Enter)">&#10003;</button>
+      <button type="button" class="wt-detect-cancel" title="Huỷ (Esc)">&#10005;</button>
+    `;
+    toolbar.style.left = textarea.style.left;
+    toolbar.style.top  = `${parseFloat(textarea.style.top) - 34}px`;
+    parent.appendChild(toolbar);
+
+    let finished = false;
     const finish = async (save) => {
+      if (finished) return;
+      finished = true;
       textarea.removeEventListener('blur', onBlur);
       textarea.remove();
+      toolbar.remove();
       bubble.style.visibility = '';
       if (!save) return;
       const newText = textarea.value.trim();
@@ -2724,6 +2903,15 @@ function bootForPage() {
       else if (e.key === 'Escape') finish(false);
     });
     textarea.addEventListener('blur', onBlur);
+
+    // preventDefault (not just stopPropagation) on mousedown stops the browser
+    // from blurring the textarea before the click lands — otherwise clicking
+    // Cancel would blur-trigger a save first, then the click's own finish(false)
+    // would be a no-op against an already-closed edit view.
+    toolbar.querySelector('.wt-detect-confirm').addEventListener('mousedown', e => e.preventDefault());
+    toolbar.querySelector('.wt-detect-cancel').addEventListener('mousedown', e => e.preventDefault());
+    toolbar.querySelector('.wt-detect-confirm').addEventListener('click', () => finish(true));
+    toolbar.querySelector('.wt-detect-cancel').addEventListener('click', () => finish(false));
   }
 
   async function startBubbleResize(bubble, img, annKey, imgIndex) {
