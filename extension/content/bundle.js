@@ -475,8 +475,9 @@ async function hashImage(img) {
 // All drag coords are converted back to % of the target image.
 
 class FixedOverlayLayer {
-  constructor({ onSelect, getImages }) {
+  constructor({ onSelect, onClick, getImages }) {
     this._onSelect  = onSelect;
+    this._onClick   = onClick;   // ({ img, clickX, clickY, imgRect, imageIndex }) — fired on click (no drag), same contract as BBoxSelector
     this._getImages = getImages || null; // live image list — survives lazy-load/remount
     this._el        = null;
     this._images    = [];
@@ -578,6 +579,7 @@ class FixedOverlayLayer {
       this._selRect.className = 'wt-fixed-sel-rect';
       document.body.appendChild(this._selRect);
       this._drag = { startX, startY };
+      this._el.classList.add('wt-dragging'); // pointer -> crosshair while an actual drag is happening
     });
 
     document.addEventListener('mousemove', (e) => {
@@ -595,9 +597,29 @@ class FixedOverlayLayer {
       const { startX, startY } = this._drag;
       this._drag = null;
       this._selRect?.remove(); this._selRect = null;
+      this._el.classList.remove('wt-dragging');
 
       const endX = e.clientX, endY = e.clientY;
       const pw = Math.abs(endX - startX), ph = Math.abs(endY - startY);
+
+      // Minimal pointer movement -> treat as a click and try auto-detect first;
+      // manual drag-to-select (below) remains the fallback for anything larger.
+      // Mirrors BBoxSelector's click-to-detect (same threshold constant) so
+      // Ridi/Kakao — the two sites that use this fixed-position overlay
+      // instead of BBoxSelector — get the same click-to-detect interaction.
+      if (Math.hypot(endX - startX, endY - startY) < BBOX_SELECTOR_CLICK_THRESHOLD_PX) {
+        const img = this._imageAtViewportPoint(endX, endY, this._liveImages()) || this._anyImageAtPoint(endX, endY);
+        if (!img) return;
+        const imgRect = img.getBoundingClientRect();
+        const clickX = endX - imgRect.left, clickY = endY - imgRect.top;
+        if (clickX < 0 || clickY < 0 || clickX > imgRect.width || clickY > imgRect.height) return;
+        const imgs = this._liveImages();
+        let imageIndex = imgs.indexOf(img);
+        if (imageIndex === -1) imageIndex = 0;
+        this._onClick?.({ img, clickX, clickY, imgRect, imageIndex });
+        return;
+      }
+
       if (pw < 10 || ph < 10) return;
 
       const selL = Math.min(startX, endX), selT = Math.min(startY, endY);
@@ -2935,7 +2957,7 @@ function bootForPage() {
   const renderer    = new OverlayRenderer();
   const isKakao     = adapter.usesFixedOverlay === true;
   const fixedLayer  = isKakao
-    ? new FixedOverlayLayer({ onSelect: createJobFromSelection, getImages: () => images })
+    ? new FixedOverlayLayer({ onSelect: createJobFromSelection, onClick: handleAutoDetectClick, getImages: () => images })
     : null;
 
   const panel    = __DEV_TOOLS__ ? new SidePanel({
@@ -3265,18 +3287,24 @@ function bootForPage() {
     return jobManager.create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey });
   }
 
+  // Shared click-to-detect handler — used by both BBoxSelector (normal sites)
+  // and FixedOverlayLayer (Ridi/Kakao's fixed-position overlay), so a click
+  // (vs. a drag) auto-detects the bubble under the cursor on every site
+  // instead of only the ones using BBoxSelector.
+  async function handleAutoDetectClick({ img, clickX, clickY, imgRect, imageIndex }) {
+    const { bboxes } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
+    if (!bboxes.length) return; // validity check failed — fall back to manual drag-to-select
+    // A waist-split click can yield two touching bubbles at once — each is
+    // translated as its own independent job.
+    for (const bbox of bboxes) {
+      await createJobFromSelection({ bbox, imageEl: img, imageIndex });
+    }
+  }
+
   const selector = new BBoxSelector({
     onSelect: createJobFromSelection,
     onDragStart: () => { detectPreview.dismiss(); dismissBubbleToolbar(); },
-    onClick: async ({ img, clickX, clickY, imgRect, imageIndex }) => {
-      const { bboxes } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
-      if (!bboxes.length) return; // validity check failed — fall back to manual drag-to-select
-      // A waist-split click can yield two touching bubbles at once — each is
-      // translated as its own independent job.
-      for (const bbox of bboxes) {
-        await createJobFromSelection({ bbox, imageEl: img, imageIndex });
-      }
-    },
+    onClick: handleAutoDetectClick,
   });
 
   // ── click bubble to edit / resize / delete ──────────────────────────────
