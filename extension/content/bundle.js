@@ -40,6 +40,187 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+// ── Auto-fit text sizing ─────────────────────────────────────────────────────
+// The overlay box comes from the ORIGINAL text's OCR bbox, but Vietnamese
+// translations usually run longer in character count than the Korean source
+// for the same meaning — using a fixed font size overflows the box. This
+// finds the largest font size that lets the (already-translated) text wrap
+// to fit the box, with a readability floor, and a box-height-expansion
+// fallback (capped) for text that still doesn't fit at the floor. Sizing
+// only — does not touch font-family/weight/style, which stay whatever the
+// bubble's own `style` says (out of scope here, see the task that added
+// auto color-matching for that).
+//
+// Overlay text is rendered as real DOM/CSS (a <span class="wt-bubble-text">
+// with an inline font-size), not drawn on a canvas — see OverlayRenderer/
+// FixedOverlayLayer._createBubble. Measurement still uses canvas
+// measureText() (the standard technique for this even when the final
+// render is DOM) so the wrap/fit math has a real width to work from before
+// the span exists in the document.
+
+const AUTO_FIT_MAX_FONT_SIZE   = 20;   // ceiling — matches DEFAULT_STYLE.fontSize, the app's prior fixed default
+const AUTO_FIT_MIN_FONT_SIZE   = 13;   // floor — readability wins over fitting; needs visual tuning against real panels
+const AUTO_FIT_LINE_HEIGHT     = 1.45; // matches .wt-bubble-text's CSS line-height
+const AUTO_FIT_PAD_X           = 16;   // .wt-bubble-text CSS padding: 4px 8px -> 8*2 horizontal
+const AUTO_FIT_PAD_Y           = 8;    // 4*2 vertical
+const AUTO_FIT_MAX_EXPAND_RATIO         = 2.5; // height fallback never grows the box past this multiple of its original bbox height
+const AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC = 0.5; // ...or this fraction of the viewport height, whichever is smaller
+
+let _autoFitCtx = null;
+function _getAutoFitCtx() {
+  if (!_autoFitCtx) _autoFitCtx = document.createElement('canvas').getContext('2d');
+  return _autoFitCtx;
+}
+
+function _autoFitFontString(fontSizePx, fontFamily, bold, italic) {
+  const family = fontFamily ? `'${fontFamily}', system-ui, sans-serif` : `'Noto Sans', 'Be Vietnam Pro', system-ui, sans-serif`;
+  return `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${fontSizePx}px ${family}`;
+}
+
+/** Breaks a single word that's wider than maxWidthPx into char-level chunks (mirrors CSS word-break: break-word). */
+function _breakLongWord(ctx, word, maxWidthPx) {
+  const chunks = [];
+  let chunk = '';
+  for (const ch of word) {
+    const next = chunk + ch;
+    if (ctx.measureText(next).width > maxWidthPx && chunk) {
+      chunks.push(chunk);
+      chunk = ch;
+    } else {
+      chunk = next;
+    }
+  }
+  chunks.push(chunk);
+  return chunks;
+}
+
+/** Greedy word-wrap of `text` to maxWidthPx using canvas measureText; \n starts a new paragraph. */
+function wrapTextToWidth(ctx, text, maxWidthPx) {
+  const outLines = [];
+  for (const para of text.split('\n')) {
+    if (para === '') { outLines.push(''); continue; }
+    let line = '';
+    for (const word of para.split(' ')) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (ctx.measureText(candidate).width <= maxWidthPx) {
+        line = candidate;
+        continue;
+      }
+      if (line) outLines.push(line);
+      if (ctx.measureText(word).width > maxWidthPx) {
+        const broken = _breakLongWord(ctx, word, maxWidthPx);
+        outLines.push(...broken.slice(0, -1));
+        line = broken[broken.length - 1];
+      } else {
+        line = word;
+      }
+    }
+    outLines.push(line);
+  }
+  return outLines;
+}
+
+/**
+ * Binary-searches the largest font size in [AUTO_FIT_MIN_FONT_SIZE, AUTO_FIT_MAX_FONT_SIZE]
+ * for which `text`, wrapped to (boxWidthPx - padding), fits within (boxHeightPx - padding).
+ * Returns { fontSize, lines, totalTextHeight, overflow } — overflow is true when even the
+ * floor size doesn't fit (caller applies the height-expansion / clip fallback).
+ */
+function fitTextToBox(text, boxWidthPx, boxHeightPx, { fontFamily, bold, italic } = {}) {
+  const ctx    = _getAutoFitCtx();
+  const availW = Math.max(1, boxWidthPx - AUTO_FIT_PAD_X);
+  const availH = Math.max(1, boxHeightPx - AUTO_FIT_PAD_Y);
+
+  const measureAt = (fontSizePx) => {
+    ctx.font = _autoFitFontString(fontSizePx, fontFamily, bold, italic);
+    const lines = wrapTextToWidth(ctx, text, availW);
+    const totalTextHeight = lines.length * fontSizePx * AUTO_FIT_LINE_HEIGHT;
+    return { fontSize: fontSizePx, lines, totalTextHeight, fits: totalTextHeight <= availH };
+  };
+
+  const atMax = measureAt(AUTO_FIT_MAX_FONT_SIZE);
+  if (atMax.fits) return { ...atMax, overflow: false };
+
+  const atMin = measureAt(AUTO_FIT_MIN_FONT_SIZE);
+  if (!atMin.fits) return { ...atMin, overflow: true };
+
+  let lo = AUTO_FIT_MIN_FONT_SIZE, hi = AUTO_FIT_MAX_FONT_SIZE, best = atMin;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const r = measureAt(mid);
+    if (r.fits) { lo = mid; best = r; } else { hi = mid - 1; }
+  }
+  return { ...best, overflow: false };
+}
+
+/**
+ * fitTextToBox() plus the box-height-expansion fallback: if the text still
+ * overflows at the font-size floor, grow the box's height (never its width —
+ * webtoons read vertically, so vertical growth is less disruptive) up to a
+ * cap. If even the capped height isn't enough, returns clipped: true so the
+ * caller can render a "show more" affordance instead of silently cutting text.
+ */
+function fitAndExpand(text, boxWidthPx, boxHeightPx, styleOpts) {
+  const fit = fitTextToBox(text, boxWidthPx, boxHeightPx, styleOpts);
+  if (!fit.overflow) {
+    return { fontSize: fit.fontSize, boxHeightPx, clipped: false };
+  }
+
+  const maxExpandedH = Math.min(
+    boxHeightPx * AUTO_FIT_MAX_EXPAND_RATIO,
+    window.innerHeight * AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC
+  );
+  const neededH = fit.totalTextHeight + AUTO_FIT_PAD_Y;
+  if (neededH <= maxExpandedH) {
+    return { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx: neededH, clipped: false };
+  }
+  return { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx: maxExpandedH, clipped: true };
+}
+
+/**
+ * Runs fitAndExpand() for a bubble's translated text against its pixel box
+ * size, applies the resulting font-size to the outer bubble `b`, and — when
+ * even the capped height-expansion fallback isn't enough — clips the inner
+ * text span and adds a small toggle button so the full translation is still
+ * reachable (secondary fallback from the auto-fit spec; no special
+ * animation, just visibility on demand). Returns the (possibly expanded)
+ * box height in px for the caller's _positionBubble to use as its height.
+ */
+function applyAutoFit(b, span, ann, boxWidthPx, boxHeightPx) {
+  const s = ann.style || {};
+  const fit = fitAndExpand(ann.translatedText || '', boxWidthPx, boxHeightPx, {
+    fontFamily: s.fontFamily, bold: s.bold, italic: s.italic,
+  });
+  b.style.fontSize = `${fit.fontSize}px`;
+
+  b.querySelector('.wt-bubble-expand-toggle')?.remove();
+  b.classList.remove('wt-bubble-clipped', 'wt-bubble-expanded');
+  span.style.maxHeight = '';
+  span.style.overflow  = '';
+
+  if (fit.clipped) {
+    const capPx = fit.boxHeightPx - AUTO_FIT_PAD_Y;
+    b.classList.add('wt-bubble-clipped');
+    span.style.maxHeight = `${capPx}px`;
+    span.style.overflow  = 'hidden';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'wt-bubble-expand-toggle';
+    toggle.title = 'Xem đầy đủ bản dịch';
+    toggle.textContent = '⋯';
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const expanded = b.classList.toggle('wt-bubble-expanded');
+      span.style.maxHeight = expanded ? '' : `${capPx}px`;
+      span.style.overflow  = expanded ? '' : 'hidden';
+    });
+    b.appendChild(toggle);
+  }
+
+  return fit.boxHeightPx;
+}
+
 // ── Auto color-matching (best-effort) ─────────────────────────────────────────
 // Detects a dominant background color + a contrasting text color from the
 // original bbox region, so the translation overlay blends in instead of
@@ -263,7 +444,7 @@ class FixedOverlayLayer {
   upsertBubble(img, annotation) {
     const key = `${annotation.imageHash}::${annotation.bbox.x.toFixed(1)}::${annotation.bbox.y.toFixed(1)}`;
     this._bubbles.get(key)?.el.remove();
-    const bubble = this._createBubble(annotation);
+    const bubble = this._createBubble(annotation, img);
     document.body.appendChild(bubble);
     this._bubbles.set(key, { el: bubble, img, annotation });
     this._positionBubble(bubble, annotation.bbox, img);
@@ -452,7 +633,13 @@ class FixedOverlayLayer {
     const ih = r.height || img.naturalHeight;
     const left    = r.left + window.scrollX + (bbox.x / 100) * iw;
     const topOrig = r.top  + window.scrollY + (bbox.y / 100) * ih;
-    const h = (bbox.h / 100) * ih;
+    // autoFitHeightPx (set once at _createBubble time) may exceed the raw
+    // bbox-derived height when the translated text needed the box-expansion
+    // fallback — see fitAndExpand(). Doesn't get recomputed on reposition/
+    // resize, so it can go slightly stale after a responsive resize, same
+    // limitation the font-size styling already had before auto-fit.
+    const storedH = parseFloat(bubble.dataset.autoFitHeightPx);
+    const h = !isNaN(storedH) ? storedH : (bbox.h / 100) * ih;
     bubble.style.left  = `${left}px`;
     bubble.style.width = `${(bbox.w / 100) * iw}px`;
     if (_overlayMode === 'side-by-side') {
@@ -464,7 +651,7 @@ class FixedOverlayLayer {
     }
   }
 
-  _createBubble(ann) {
+  _createBubble(ann, img) {
     const b = document.createElement('div');
     b.className      = 'wt-translation-bubble wt-fixed-bubble';
     b.dataset.annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
@@ -473,7 +660,6 @@ class FixedOverlayLayer {
     b.style.position  = 'absolute';
     if (ann.style) {
       const s = ann.style;
-      b.style.fontSize   = `${s.fontSize || 20}px`;
       b.style.fontWeight = s.bold   ? 'bold'   : 'normal';
       b.style.fontStyle  = s.italic ? 'italic' : 'normal';
       b.style.color      = s.color  || '#1a1a2e';
@@ -499,6 +685,13 @@ class FixedOverlayLayer {
     const s = ann.style || {};
     span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', OVERLAY_BG_OPACITY);
     b.appendChild(span);
+
+    const r  = img.getBoundingClientRect();
+    const iw = r.width  || img.naturalWidth;
+    const ih = r.height || img.naturalHeight;
+    const boxHeightPx = applyAutoFit(b, span, ann, (ann.bbox.w / 100) * iw, (ann.bbox.h / 100) * ih);
+    b.dataset.autoFitHeightPx = boxHeightPx;
+
     return b;
   }
 
@@ -1610,7 +1803,7 @@ class OverlayRenderer {
     state.bubbles.forEach(el => el.remove());
     state.bubbles.clear();
     for (const ann of annotations) {
-      const bubble = this._createBubble(ann);
+      const bubble = this._createBubble(ann, img);
       wrapper.appendChild(bubble);
       state.bubbles.set(this._annKey(ann), bubble);
       this._positionBubble(bubble, ann.bbox, img);
@@ -1622,7 +1815,7 @@ class OverlayRenderer {
     const state   = this.imageState.get(img);
     const key     = this._annKey(annotation);
     state.bubbles.get(key)?.remove();
-    const bubble = this._createBubble(annotation);
+    const bubble = this._createBubble(annotation, img);
     wrapper.appendChild(bubble);
     state.bubbles.set(key, bubble);
     this._positionBubble(bubble, annotation.bbox, img);
@@ -1675,7 +1868,7 @@ class OverlayRenderer {
     return wrapper;
   }
 
-  _createBubble(ann) {
+  _createBubble(ann, img) {
     const b = document.createElement('div');
     b.className       = 'wt-translation-bubble';
     b.dataset.annKey  = this._annKey(ann);
@@ -1685,7 +1878,6 @@ class OverlayRenderer {
     b.dataset.bboxH   = ann.bbox.h;
     if (ann.style) {
       const s = ann.style;
-      b.style.fontSize   = `${s.fontSize || 20}px`;
       b.style.fontWeight = s.bold   ? 'bold'   : 'normal';
       b.style.fontStyle  = s.italic ? 'italic' : 'normal';
       b.style.color      = s.color  || '#1a1a2e';
@@ -1711,6 +1903,13 @@ class OverlayRenderer {
     const s = ann.style || {};
     span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', OVERLAY_BG_OPACITY);
     b.appendChild(span);
+
+    const rect = img.getBoundingClientRect();
+    const iw = img.naturalWidth  || rect.width  || img.offsetWidth  || 375;
+    const ih = img.naturalHeight || rect.height || img.offsetHeight || 500;
+    const boxHeightPx = applyAutoFit(b, span, ann, (ann.bbox.w / 100) * iw, (ann.bbox.h / 100) * ih);
+    b.dataset.autoFitHeightPx = boxHeightPx;
+
     return b;
   }
 
@@ -1719,7 +1918,11 @@ class OverlayRenderer {
     // Kakao uses padding-top ratio so rect.height may be 0 — fallback to naturalHeight
     const iw = img.naturalWidth  || rect.width  || img.offsetWidth  || 375;
     const ih = img.naturalHeight || rect.height || img.offsetHeight || 500;
-    const x = (bbox.x / 100) * iw, h = (bbox.h / 100) * ih;
+    // autoFitHeightPx (set once at _createBubble time) may exceed the raw
+    // bbox-derived height — see fitAndExpand(). Not recomputed on reposition/
+    // resize; same pre-existing limitation the font-size styling already had.
+    const storedH = parseFloat(bubble.dataset.autoFitHeightPx);
+    const x = (bbox.x / 100) * iw, h = !isNaN(storedH) ? storedH : (bbox.h / 100) * ih;
     bubble.style.left     = `${x}px`;
     bubble.style.width    = `${(bbox.w / 100) * iw}px`;
     bubble.style.maxWidth = `${iw - x}px`;

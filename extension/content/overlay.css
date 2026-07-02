@@ -283,6 +283,31 @@
   box-sizing: border-box;
 }
 
+/* Auto-fit secondary fallback: text still overflows even at the min font
+   size and the capped box-height expansion — .wt-bubble-text gets an
+   inline max-height/overflow (set in JS, size varies per bubble) and this
+   toggle button reveals the rest on demand instead of silently clipping it. */
+.wt-bubble-expand-toggle {
+  position: absolute;
+  right: 2px;
+  bottom: -20px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(30, 41, 59, 0.75);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+  pointer-events: auto;
+  z-index: 1;
+}
+.wt-bubble-expand-toggle:hover { background: rgba(30, 41, 59, 0.92); }
+.wt-bubble-clipped.wt-bubble-expanded { z-index: 210; } /* float above neighboring bubbles while expanded */
+
 @keyframes wt-fade-in {
   from { opacity: 0; transform: translateY(2px); }
   to   { opacity: 1; transform: translateY(0); }
