@@ -56,7 +56,15 @@ async function initTranslationSettings() {
     $('deepl-key-saved').classList.add('hidden');
   }
 
-  applyProvider(stored[TRANSLATE_PROVIDER_KEY]);
+  // "none" (Disabled) was removed as an option — fall back a stored legacy
+  // value to the default provider so the UI doesn't render with nothing
+  // selected, and persist the fallback so it sticks.
+  let initialProvider = stored[TRANSLATE_PROVIDER_KEY];
+  if (initialProvider === 'none') {
+    initialProvider = 'google';
+    chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: initialProvider });
+  }
+  applyProvider(initialProvider);
   $('target-lang').value = stored[TRANSLATE_LANG_KEY];
   if (stored[DEEPL_KEY_STR]) $('deepl-key').value = stored[DEEPL_KEY_STR];
 

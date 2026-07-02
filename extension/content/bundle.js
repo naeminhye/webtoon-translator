@@ -216,22 +216,27 @@ function fitAndExpand(text, boxWidthPx, boxHeightPx, styleOpts) {
 
 /**
  * Runs fitAndExpand() for a bubble's translated text against its pixel box
- * size (shrunk by AUTO_FIT_WIDTH_MARGIN/AUTO_FIT_HEIGHT_MARGIN first, since
- * the raw box is the OCR bbox's circumscribing rectangle, not the bubble's
- * actual — often oval — outline), applies the resulting font-size to the
- * outer bubble `b`, and — when even the capped height-expansion fallback
- * isn't enough — clips the inner text span and adds a small toggle button so
- * the full translation is still reachable (secondary fallback from the
- * auto-fit spec; no special animation, just visibility on demand). Returns
- * the (possibly expanded) box height in px for the caller's _positionBubble
- * to use as its height.
+ * size, applies the resulting font-size to the outer bubble `b`, and — when
+ * even the capped height-expansion fallback isn't enough — clips the inner
+ * text span and adds a small toggle button so the full translation is still
+ * reachable (secondary fallback from the auto-fit spec; no special
+ * animation, just visibility on demand). Returns the (possibly expanded) box
+ * height in px for the caller's _positionBubble to use as its height.
+ *
+ * `applyMargin` (default true) shrinks boxWidthPx/boxHeightPx by
+ * AUTO_FIT_WIDTH_MARGIN/AUTO_FIT_HEIGHT_MARGIN first, since the raw box is
+ * the OCR bbox's circumscribing rectangle, not the bubble's actual — often
+ * oval — outline. Pass false when the box isn't an oval-bubble overlay at
+ * all (side-by-side mode's caption renders as a plain rectangle in open page
+ * margin, not on top of any bubble shape, so that margin has no meaning
+ * there and would just needlessly shrink the box).
  */
-function applyAutoFit(b, span, ann, boxWidthPx, boxHeightPx) {
+function applyAutoFit(b, span, ann, boxWidthPx, boxHeightPx, applyMargin = true) {
   const s = ann.style || {};
   const fit = fitAndExpand(
     ann.translatedText || '',
-    boxWidthPx  * AUTO_FIT_WIDTH_MARGIN,
-    boxHeightPx * AUTO_FIT_HEIGHT_MARGIN,
+    applyMargin ? boxWidthPx  * AUTO_FIT_WIDTH_MARGIN  : boxWidthPx,
+    applyMargin ? boxHeightPx * AUTO_FIT_HEIGHT_MARGIN : boxHeightPx,
     { fontFamily: s.fontFamily, bold: s.bold, italic: s.italic }
   );
   b.style.fontSize = `${fit.fontSize}px`;
@@ -699,8 +704,6 @@ class FixedOverlayLayer {
     const r = img.getBoundingClientRect();
     const iw = r.width  || img.naturalWidth;
     const ih = r.height || img.naturalHeight;
-    const left    = r.left + window.scrollX + (bbox.x / 100) * iw;
-    const topOrig = r.top  + window.scrollY + (bbox.y / 100) * ih;
     // autoFitHeightPx (set once at _createBubble time) may exceed the raw
     // bbox-derived height when the translated text needed the box-expansion
     // fallback — see fitAndExpand(). Doesn't get recomputed on reposition/
@@ -708,12 +711,22 @@ class FixedOverlayLayer {
     // limitation the font-size styling already had before auto-fit.
     const storedH = parseFloat(bubble.dataset.autoFitHeightPx);
     const h = !isNaN(storedH) ? storedH : (bbox.h / 100) * ih;
-    bubble.style.left  = `${left}px`;
-    bubble.style.width = `${(bbox.w / 100) * iw}px`;
+
     if (_overlayMode === 'side-by-side') {
-      bubble.style.top       = `${topOrig + h + SIDE_BY_SIDE_GAP_PX}px`;
+      // Rendered entirely outside the panel, in the page's own margin to its
+      // right, at the same vertical position as the original bubble — not
+      // overlaid on the art at all. Needs actual blank page space there to
+      // be visible; on a full-bleed viewer with no side margin this can
+      // render off-screen or over neighboring page content.
+      bubble.style.left      = `${r.right + window.scrollX + SIDE_BY_SIDE_GAP_PX}px`;
+      bubble.style.top       = `${r.top   + window.scrollY + (bbox.y / 100) * ih}px`;
+      bubble.style.width     = `${SIDE_BY_SIDE_WIDTH_PX}px`;
       bubble.style.minHeight = '';
     } else {
+      const left    = r.left + window.scrollX + (bbox.x / 100) * iw;
+      const topOrig = r.top  + window.scrollY + (bbox.y / 100) * ih;
+      bubble.style.left      = `${left}px`;
+      bubble.style.width     = `${(bbox.w / 100) * iw}px`;
       bubble.style.top       = `${topOrig}px`;
       bubble.style.minHeight = `${h}px`;
     }
@@ -757,7 +770,10 @@ class FixedOverlayLayer {
     const r  = img.getBoundingClientRect();
     const iw = r.width  || img.naturalWidth;
     const ih = r.height || img.naturalHeight;
-    const boxHeightPx = applyAutoFit(b, span, ann, (ann.bbox.w / 100) * iw, (ann.bbox.h / 100) * ih);
+    // side-by-side mode: a fixed-width caption in the page's own margin, not
+    // an overlay on the (often oval) bubble shape — no oval-corner margin.
+    const boxWidthPx = _overlayMode === 'side-by-side' ? SIDE_BY_SIDE_WIDTH_PX : (ann.bbox.w / 100) * iw;
+    const boxHeightPx = applyAutoFit(b, span, ann, boxWidthPx, (ann.bbox.h / 100) * ih, _overlayMode !== 'side-by-side');
     b.dataset.autoFitHeightPx = boxHeightPx;
 
     return b;
@@ -2092,7 +2108,10 @@ class OverlayRenderer {
     const rect = img.getBoundingClientRect();
     const iw = img.naturalWidth  || rect.width  || img.offsetWidth  || 375;
     const ih = img.naturalHeight || rect.height || img.offsetHeight || 500;
-    const boxHeightPx = applyAutoFit(b, span, ann, (ann.bbox.w / 100) * iw, (ann.bbox.h / 100) * ih);
+    // side-by-side mode: a fixed-width caption in the page's own margin, not
+    // an overlay on the (often oval) bubble shape — no oval-corner margin.
+    const boxWidthPx = _overlayMode === 'side-by-side' ? SIDE_BY_SIDE_WIDTH_PX : (ann.bbox.w / 100) * iw;
+    const boxHeightPx = applyAutoFit(b, span, ann, boxWidthPx, (ann.bbox.h / 100) * ih, _overlayMode !== 'side-by-side');
     b.dataset.autoFitHeightPx = boxHeightPx;
 
     return b;
@@ -2107,14 +2126,26 @@ class OverlayRenderer {
     // bbox-derived height — see fitAndExpand(). Not recomputed on reposition/
     // resize; same pre-existing limitation the font-size styling already had.
     const storedH = parseFloat(bubble.dataset.autoFitHeightPx);
-    const x = (bbox.x / 100) * iw, h = !isNaN(storedH) ? storedH : (bbox.h / 100) * ih;
-    bubble.style.left     = `${x}px`;
-    bubble.style.width    = `${(bbox.w / 100) * iw}px`;
-    bubble.style.maxWidth = `${iw - x}px`;
+    const h = !isNaN(storedH) ? storedH : (bbox.h / 100) * ih;
+
     if (_overlayMode === 'side-by-side') {
-      bubble.style.top       = `${(bbox.y / 100) * ih + h + SIDE_BY_SIDE_GAP_PX}px`;
+      // Rendered entirely outside the panel, in the wrapper's own overflow
+      // margin to the right of it (the wrapper has no overflow:hidden, so
+      // this paints in the page's blank space rather than being clipped),
+      // at the same vertical position as the original bubble — not overlaid
+      // on the art at all. Needs actual blank page space there to be
+      // visible; on a full-bleed viewer with no side margin this can render
+      // off-screen or over neighboring page content.
+      bubble.style.left      = `${iw + SIDE_BY_SIDE_GAP_PX}px`;
+      bubble.style.top       = `${(bbox.y / 100) * ih}px`;
+      bubble.style.width     = `${SIDE_BY_SIDE_WIDTH_PX}px`;
+      bubble.style.maxWidth  = '';
       bubble.style.minHeight = '';
     } else {
+      const x = (bbox.x / 100) * iw;
+      bubble.style.left      = `${x}px`;
+      bubble.style.width     = `${(bbox.w / 100) * iw}px`;
+      bubble.style.maxWidth  = `${iw - x}px`;
       bubble.style.top       = `${(bbox.y / 100) * ih}px`;
       bubble.style.minHeight = `${h}px`;
     }
@@ -3029,12 +3060,15 @@ let _wtEnabled  = true;
 
 // Persisted display-mode setting (extension/popup/settings.html): 'overlay'
 // (translation drawn on top of the original region, the default) or
-// 'side-by-side' (drawn just below it instead). Read live by _positionBubble
-// in both renderer classes, so a change takes effect for newly (re)positioned
+// 'side-by-side' (drawn entirely outside the panel, in the page's own margin
+// to the right of it, at the same vertical position as the original bubble —
+// not overlaid on the art at all). Read live by _positionBubble in both
+// renderer classes, so a change takes effect for newly (re)positioned
 // bubbles without needing to re-instantiate anything.
 const OVERLAY_MODE_KEY = 'wt:overlay-mode';
 let _overlayMode = 'overlay';
-const SIDE_BY_SIDE_GAP_PX = 6; // gap between the original region and the side-by-side caption
+const SIDE_BY_SIDE_GAP_PX   = 12; // gap between the panel's right edge and the side-by-side caption
+const SIDE_BY_SIDE_WIDTH_PX = 260; // fixed caption width in side-by-side mode — independent of the original bbox's width, since the box no longer overlays it
 
 function bootForPage() {
   bootCleanup?.();
