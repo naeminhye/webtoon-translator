@@ -831,7 +831,8 @@ body.wt-panel-open #wt-toggle-btn {
   left: 24px;
 }
 
-/* ── Side Panel ───────────────────────────────────────────────────────── */
+/* ── Side Panel (dev-only Translation List, gated by __DEV_TOOLS__) ────── */
+/* __DEV_TOOLS_BLOCK_START__ */
 
 .wt-side-panel {
   position: fixed;
@@ -896,29 +897,6 @@ body.wt-panel-open #wt-toggle-btn {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-
-.wt-sp-actions {
-  display: flex;
-  gap: 8px;
-  padding: 0 16px 10px;
-  flex-shrink: 0;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-.wt-sp-btn {
-  flex: 1;
-  padding: 7px 6px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #f8fafc;
-  font-size: 11px;
-  font-weight: 500;
-  color: #475569;
-  cursor: pointer;
-  text-align: center;
-  transition: background 0.12s, color 0.12s;
-}
-.wt-sp-btn:hover { background: #f1f5f9; color: #1e293b; }
 
 .wt-sp-list {
   flex: 1;
@@ -1040,6 +1018,7 @@ body.wt-panel-open #wt-toggle-btn {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* __DEV_TOOLS_BLOCK_END__ */
 
 /* ── Fixed overlay layer (Kakao) ─────────────────────────────────────── */
 

@@ -1,3 +1,7 @@
+// Dev-only build flag — see extension/content/bundle.js for the full
+// explanation. Must stay in sync with that file's copy of this constant.
+const __DEV_TOOLS__ = true;
+
 const $ = id => document.getElementById(id);
 const ENABLED_KEY = 'wt:enabled';
 
@@ -59,9 +63,9 @@ async function init() {
   const openSettings = () => chrome.tabs.create({ url: chrome.runtime.getURL('popup/settings.html') });
   $('btn-settings').addEventListener('click', openSettings);
 
-  $('btn-panel').addEventListener('click',  () => { chrome.tabs.sendMessage(activeTabId, { type: 'TOGGLE_PANEL' }); window.close(); });
-  $('btn-export').addEventListener('click', () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_EXPORT' }); window.close(); });
-  $('btn-import').addEventListener('click', () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_IMPORT' }); window.close(); });
+  if (__DEV_TOOLS__) {
+    $('btn-panel')?.addEventListener('click', () => { chrome.tabs.sendMessage(activeTabId, { type: 'TOGGLE_PANEL' }); window.close(); });
+  }
   $('btn-clear').addEventListener('click',  () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_CLEAR' }); window.close(); });
 }
 

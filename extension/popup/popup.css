@@ -111,8 +111,6 @@ header {
   display: flex; flex-direction: column;
   gap: 6px; padding: 6px 16px 14px;
 }
-.action-row { display: flex; gap: 6px; }
-.action-row .action-btn { flex: 1; justify-content: center; }
 .action-btn {
   display: flex; align-items: center; gap: 7px;
   padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px;

@@ -7,8 +7,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'SAVE_TRANSLATIONS':   handleSave(message.payload).then(sendResponse);   return true;
     case 'LOAD_TRANSLATIONS':   handleLoad(message.payload).then(sendResponse);   return true;
     case 'DELETE_ANNOTATION':   handleDelete(message.payload).then(sendResponse); return true;
-    case 'EXPORT_CHAPTER':      handleExport(message.payload).then(sendResponse); return true;
-    case 'IMPORT_FILE':         handleImport(message.payload).then(sendResponse); return true;
     case 'CLEAR_CHAPTER':       handleClear(message.payload).then(sendResponse);  return true;
     case 'OCR_REGION':
       handleOcr(message.payload)
@@ -85,40 +83,9 @@ async function handleDelete({ site, titleId, chapterId, annKey: keyToDelete }) {
   return { ok: true, removed: data ? data.annotations.length : 0 };
 }
 
-async function handleExport({ site, titleId }) {
-  const allKeys = await getAllKeysForTitle(site, titleId);
-  const chapters = {};
-  for (const key of allKeys) {
-    const data = await getLocal(key);
-    if (data) chapters[data.chapterId] = data.annotations;
-  }
-  return {
-    exportData: {
-      version: 1, site, titleId, language: 'vi',
-      exportedAt: new Date().toISOString(), chapters,
-    },
-  };
-}
-
 async function handleClear({ site, titleId, chapterId }) {
   await chrome.storage.local.remove(storageKey(site, titleId, chapterId));
   return { ok: true };
-}
-
-async function handleImport({ jsonString }) {
-  let parsed;
-  try { parsed = JSON.parse(jsonString); }
-  catch { return { ok: false, error: 'Invalid JSON' }; }
-
-  if (parsed.version !== 1) return { ok: false, error: `Unsupported version: ${parsed.version}` };
-
-  const { site, titleId, chapters } = parsed;
-  let count = 0;
-  for (const [chapterId, annotations] of Object.entries(chapters)) {
-    await handleSave({ site, titleId, chapterId, annotations });
-    count += annotations.length;
-  }
-  return { ok: true, imported: count };
 }
 
 // ── OCR ───────────────────────────────────────────────────────────────────────
@@ -391,11 +358,4 @@ function storageKey(site, titleId, chapterId) { return `wt:${site}:${titleId}:${
 
 function getLocal(key) {
   return new Promise(resolve => chrome.storage.local.get(key, r => resolve(r[key])));
-}
-
-async function getAllKeysForTitle(site, titleId) {
-  const prefix = `wt:${site}:${titleId}:`;
-  return new Promise(resolve =>
-    chrome.storage.local.get(null, all => resolve(Object.keys(all).filter(k => k.startsWith(prefix))))
-  );
 }

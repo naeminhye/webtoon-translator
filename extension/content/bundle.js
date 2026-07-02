@@ -3,13 +3,19 @@
 
 // ── constants ────────────────────────────────────────────────────────────────
 
+// Dev-only build flag — gates the Translation List side panel (original +
+// translated text inspector), used while testing the difficulty classifier
+// and story-context features. `npm run build` (scripts/build.js) rewrites
+// this to `false` for production output and strips the __DEV_TOOLS_BLOCK__
+// sections below entirely; `npm run dev` ships this file as-is (flag stays
+// true). Must stay in sync with the same-named flag in popup/popup.js.
+const __DEV_TOOLS__ = true;
+
 const SITES = { NAVER: 'naver', RIDI: 'ridi', KAKAO: 'kakao' };
 const MSG    = {
   SAVE_TRANSLATIONS: 'SAVE_TRANSLATIONS',
   LOAD_TRANSLATIONS: 'LOAD_TRANSLATIONS',
   DELETE_ANNOTATION: 'DELETE_ANNOTATION',
-  EXPORT_CHAPTER:    'EXPORT_CHAPTER',
-  IMPORT_FILE:       'IMPORT_FILE',
   CLEAR_CHAPTER:     'CLEAR_CHAPTER',
   OCR_REGION:        'OCR_REGION',
   OCR_STITCH:        'OCR_STITCH',
@@ -1748,14 +1754,14 @@ class OverlayRenderer {
 }
 
 // ── SidePanel ────────────────────────────────────────────────────────────────
-// Persistent side panel (like Claude's extension), shown/hidden via toggle.
-// Contains: annotation list, import/export, live updates on add/delete.
+// Persistent side panel listing every original/translated text pair on the
+// page — a dev-only inspection tool (gated by __DEV_TOOLS__ below), kept
+// around for testing the difficulty-classifier and story-context features.
+// __DEV_TOOLS_BLOCK_START__
 
 class SidePanel {
-  constructor({ onJump, onImport, onExport, onDelete, onEdit }) {
+  constructor({ onJump, onDelete, onEdit }) {
     this._onJump   = onJump;
-    this._onImport = onImport;
-    this._onExport = onExport;
     this._onDelete = onDelete;
     this._onEdit   = onEdit;
     this._visible  = false;
@@ -1813,15 +1819,9 @@ class SidePanel {
       <div class="wt-sp-meta">
         <span class="wt-sp-count">0 translations</span>
       </div>
-      <div class="wt-sp-actions">
-        <button class="wt-sp-btn wt-sp-import">⬆ Import JSON</button>
-        <button class="wt-sp-btn wt-sp-export">⬇ Export JSON</button>
-      </div>
       <div class="wt-sp-list"></div>`;
 
     this._el.querySelector('.wt-sp-close').addEventListener('click', () => this.hide());
-    this._el.querySelector('.wt-sp-import').addEventListener('click', () => this._onImport?.());
-    this._el.querySelector('.wt-sp-export').addEventListener('click', () => this._onExport?.());
 
     // Start hidden (off-screen right)
     this._el.style.transform = `translateX(${PANEL_W}px)`;
@@ -1964,6 +1964,7 @@ function scrollAncestorBy(el, delta) {
   }
   window.scrollBy({ top: delta, behavior: 'smooth' });
 }
+// __DEV_TOOLS_BLOCK_END__
 
 // ── StorageBar ────────────────────────────────────────────────────────────────
 
@@ -2541,7 +2542,7 @@ function bootForPage() {
     ? new FixedOverlayLayer({ onSelect: createJobFromSelection, getImages: () => images })
     : null;
 
-  const panel    = new SidePanel({
+  const panel    = __DEV_TOOLS__ ? new SidePanel({
     onJump: (ann, img) => {
       const key = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
       // Search document-wide since wrapper may be nested differently per site
@@ -2551,8 +2552,6 @@ function bootForPage() {
         setTimeout(() => b.classList.remove('wt-bubble-highlight'), 1500);
       }
     },
-    onImport: () => triggerImport(),
-    onExport: () => triggerExport(meta),
     onEdit: async (ann) => {
       await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [ann] } });
       // Update in-memory list so a re-render reflects the change
@@ -2581,10 +2580,10 @@ function bootForPage() {
         `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` !== annKey
       );
       annotationCount = allAnnotations.length;
-      panel.update(allAnnotations);
+      panel?.update(allAnnotations);
       updateProgressBar();
     },
-  });
+  }) : null;
   let allAnnotations = [];
 
   let readScanEnabled = false;
@@ -2682,8 +2681,8 @@ function bootForPage() {
       }
     }
     // Keep side panel in sync
-    panel.setImages(images);
-    panel.update(allAnnotations);
+    panel?.setImages(images);
+    panel?.update(allAnnotations);
   }
 
   // ── progress indicator ──────────────────────────────────────────────────
@@ -2778,7 +2777,7 @@ function bootForPage() {
     else renderer.removeBubble(img, annKey);
     allAnnotations = allAnnotations.filter(a => annKeyOf(a) !== annKey);
     annotationCount--;
-    panel.update(allAnnotations);
+    panel?.update(allAnnotations);
     updateProgressBar();
   }
 
@@ -2848,7 +2847,7 @@ function bootForPage() {
       if (isKakao) fixedLayer.upsertBubble(job.imageEl, annotation);
       else renderer.upsertBubble(job.imageEl, annotation);
       jobOverlayRenderer.remove(job.id);
-      panel.update(allAnnotations);
+      panel?.update(allAnnotations);
       updateProgressBar();
     },
   });
@@ -2940,7 +2939,7 @@ function bootForPage() {
       _upsertAnnotation(updated);
       if (isKakao) fixedLayer.upsertBubble(img, updated);
       else renderer.upsertBubble(img, updated);
-      panel.update(allAnnotations);
+      panel?.update(allAnnotations);
     };
     const onBlur = () => finish(true);
     textarea.addEventListener('keydown', (e) => {
@@ -3077,7 +3076,7 @@ function bootForPage() {
       if (newAdapter) {
         console.log('[WebtoonTranslate] SPA navigation detected, re-booting');
         renderer.clearAll();
-        panel.hide();
+        panel?.hide();
         document.getElementById('wt-progress-bar')?.remove();
         // Small delay for Naver to render new chapter DOM
         setTimeout(() => bootForPage(), 800);
@@ -3109,36 +3108,16 @@ function bootForPage() {
         translatedPanels: new Set(allAnnotations.map(a => a.imageIndex ?? 0)).size });
       return true;
     }
-    if (message.type === 'TOGGLE_PANEL') {
-      panel.setImages(images);
-      panel.update(allAnnotations);
-      panel.toggle();
+    if (message.type === 'TOGGLE_PANEL' && __DEV_TOOLS__) {
+      panel?.setImages(images);
+      panel?.update(allAnnotations);
+      panel?.toggle();
     }
-    if (message.type === 'TRIGGER_EXPORT') triggerExport(meta);
-    if (message.type === 'TRIGGER_IMPORT') triggerImport();
     if (message.type === 'TRIGGER_CLEAR')  triggerClear();
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
-  // ── export / import ────────────────────────────────────────────────────
-
-  async function triggerExport({ site, titleId }) {
-    try {
-      const response = await sendToBackground({ type: MSG.EXPORT_CHAPTER, payload: { site, titleId } });
-      if (!response?.exportData) {
-        showToast('✗ Export failed: no data returned. Try reloading the extension.', '#ef4444');
-        return;
-      }
-      const blob = new Blob([JSON.stringify(response.exportData, null, 2)], { type: 'application/json' });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href = url; a.download = `webtoon-translate_${site}_${titleId}_vi.json`;
-      a.click(); URL.revokeObjectURL(url);
-      showToast('✓ Exported successfully.');
-    } catch (err) {
-      showToast(`✗ Export error: ${err.message}`, '#ef4444');
-    }
-  }
+  // ── clear ─────────────────────────────────────────────────────────────
 
   async function triggerClear() {
     const count = allAnnotations.length;
@@ -3150,30 +3129,12 @@ function bootForPage() {
       else renderer.clearAll();
       allAnnotations  = [];
       annotationCount = 0;
-      panel.update(allAnnotations);
+      panel?.update(allAnnotations);
       updateProgressBar();
       showToast('✓ Cleared all translations for this chapter.');
     } catch (err) {
       showToast(`✗ Clear failed: ${err.message}`, '#ef4444');
     }
-  }
-
-  function triggerImport() {
-    const input = document.createElement('input');
-    input.type = 'file'; input.accept = '.json';
-    input.addEventListener('change', async () => {
-      const file = input.files[0];
-      if (!file) return;
-      const text = await file.text();
-      const { ok, imported, error } = await sendToBackground({ type: MSG.IMPORT_FILE, payload: { jsonString: text } });
-      if (ok) {
-        await loadAndRender(); updateProgressBar();
-        showToast(`✓ Imported ${imported} translation${imported !== 1 ? 's' : ''}.`);
-      } else {
-        showToast(`✗ Import failed: ${error}`, '#ef4444');
-      }
-    });
-    input.click();
   }
 
   bootCleanup = () => {
@@ -3190,7 +3151,7 @@ function bootForPage() {
     confirmPopup.dismiss();
     toggleBtn.remove();
     scanBtn.remove();
-    panel.hide();
+    panel?.hide();
     document.getElementById('wt-progress-bar')?.remove();
     document.getElementById('wt-job-badge')?.remove();
     document.body.style.marginRight = '';
