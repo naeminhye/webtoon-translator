@@ -2385,6 +2385,56 @@ function showStorageWarning(usedBytes, quotaBytes) {
 const STORY_CONTEXT_KEY_PREFIX = 'wt:story-context:';
 const _storyContextInFlight = new Map(); // "site:titleId" -> Promise, dedupes concurrent lazy-fetch triggers
 
+// Naver's list page renders its genre-tag/author/etc. markup client-side
+// (React) — a plain fetch() only gets the server HTML, which doesn't contain
+// it at all (confirmed against a real page: "View Page Source" has no trace
+// of the tag markup, only DevTools' post-hydration Elements panel does). A
+// hidden same-origin iframe actually loads and executes the page like a real
+// browser tab, so its contentDocument reflects the true rendered DOM.
+const STORY_CONTEXT_RENDER_TIMEOUT_MS = 8000;
+
+/**
+ * Loads `url` in a hidden same-origin iframe, waits for `waitForSelector` to
+ * appear in it (polling — there's no event for "React finished hydrating"),
+ * and resolves with its contentDocument. Removes the iframe before resolving
+ * either way. Rejects on load failure or STORY_CONTEXT_RENDER_TIMEOUT_MS
+ * timeout (e.g. blocked by X-Frame-Options, or the selector never appears).
+ */
+function fetchRenderedDocument(url, waitForSelector) {
+  return new Promise((resolve, reject) => {
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed; left:-99999px; top:0; width:1200px; height:2000px; border:0; visibility:hidden;';
+
+    let settled = false, pollTimer = null;
+    const finish = (result, err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      clearInterval(pollTimer);
+      iframe.remove();
+      err ? reject(err) : resolve(result);
+    };
+
+    const timeoutTimer = setTimeout(
+      () => finish(null, new Error(`Timed out waiting for ${waitForSelector} to render`)),
+      STORY_CONTEXT_RENDER_TIMEOUT_MS
+    );
+
+    iframe.addEventListener('load', () => {
+      let doc;
+      try { doc = iframe.contentDocument; } catch (e) { finish(null, e); return; }
+      if (!doc) { finish(null, new Error('iframe contentDocument unavailable')); return; }
+      pollTimer = setInterval(() => {
+        if (doc.querySelector(waitForSelector)) finish(doc);
+      }, 200);
+    });
+    iframe.addEventListener('error', () => finish(null, new Error(`iframe failed to load ${url}`)));
+
+    document.body.appendChild(iframe);
+    iframe.src = url;
+  });
+}
+
 /** First non-empty text (or attribute value, if `attr` given) from the first selector that matches. */
 function _firstMatchText(doc, selectors, attr) {
   for (const sel of selectors) {
@@ -2522,22 +2572,30 @@ class NaverAdapter {
    * isn't required — Naver serves the full list page (synopsis/tags/author)
    * without it.
    *
-   * SELECTOR CAVEAT: written without a real sample of the list page's HTML
-   * (Naver's list-page markup uses hashed/module CSS class names that churn
-   * often — e.g. `EpisodeListInfo__xxxxx`). title/synopsis use `og:*` meta
-   * tags, which are far more stable than hashed classes; tags/author/age
-   * rating fall back to a short list of plausible structural selectors.
-   * Every field is independently best-effort per REQUIREMENTS #5 — a field
-   * that fails to match logs a console.warn and is left undefined rather
-   * than blocking the others or throwing. Verify against real HTML and
-   * adjust the selector lists once available.
+   * Naver's list page renders tags/author/etc. client-side (React) — a plain
+   * fetch() only gets the server HTML, which doesn't contain that markup at
+   * all (confirmed: "View Page Source" on a real list page has no trace of
+   * it, only DevTools' post-hydration Elements panel does). Uses
+   * fetchRenderedDocument() (hidden same-origin iframe, real browser
+   * execution) instead, waiting for the title heading to appear as the
+   * "hydration is done enough" signal before extracting everything else.
+   *
+   * SELECTOR CAVEAT: title/synopsis use `og:*` meta tags, which are far more
+   * stable than Naver's hashed CSS-module class names; tags/author/age
+   * rating use selectors verified against real rendered HTML (see comments
+   * below) but those hashed class suffixes (e.g. `TagGroup__tag--xu0OH`)
+   * can still churn across Naver deploys — matched via `[class*="..."]`
+   * (ignores the suffix) plus an href-based fallback where possible. Every
+   * field is independently best-effort per REQUIREMENTS #5 — a field that
+   * fails to match logs a console.warn and is left undefined rather than
+   * blocking the others or throwing.
    */
   async fetchStoryContext(titleId) {
     const url = `https://comic.naver.com/webtoon/list?titleId=${encodeURIComponent(titleId)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
-    const html = await res.text();
-    const doc  = new DOMParser().parseFromString(html, 'text/html');
+    const doc = await fetchRenderedDocument(url, '[class*="EpisodeListInfo__title"]');
+    // Small settle delay — the title heading rendering first doesn't guarantee
+    // the tag/author markup below it has painted in the same tick.
+    await new Promise(r => setTimeout(r, 400));
 
     const ctx = { site: SITES.NAVER, titleId, fetchedAt: new Date().toISOString() };
 
