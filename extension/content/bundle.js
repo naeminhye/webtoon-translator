@@ -378,11 +378,353 @@ function fixPointerEvents(img) {
   }
 }
 
+// ── BubbleAutoDetector (Strategy 1: standard white/light speech bubbles) ──────
+// Click-to-detect via local flood fill. Only handles plain white/light-gray
+// bubbles — anything else (text clusters, colored/red text) is out of scope
+// for this MVP and simply fails validity, letting the caller fall back to
+// manual drag-to-select.
+
+const AUTO_DETECT_CROP_RADIUS    = 250; // px around click, in natural-image pixels
+const AUTO_DETECT_TOLERANCE      = 25;  // flood-fill color-distance tolerance — needs tuning against real screenshots
+const AUTO_DETECT_PADDING        = 8;   // px padding added to the final bbox
+const AUTO_DETECT_MIN_W          = 20;  // px — reject narrower regions
+const AUTO_DETECT_MIN_H          = 15;  // px — reject shorter regions
+const AUTO_DETECT_MAX_AREA_RATIO = 0.85; // bbox area / crop area — reject if it likely leaked into background
+const AUTO_DETECT_MAX_ASPECT     = 5;
+const AUTO_DETECT_MIN_ASPECT     = 0.2;
+
+class BubbleAutoDetector {
+  /**
+   * Attempts to detect a speech-bubble region around a click point using a
+   * local flood fill. `clickX`/`clickY` and `imgRect` are in the same CSS-px
+   * space as img.getBoundingClientRect(). Returns { bbox, debug }: `bbox` is
+   * a %-of-natural-image box matching BBoxSelector's onSelect contract, or
+   * null if the region failed the validity check (caller should fall back
+   * to manual drag-to-select).
+   */
+  detect(img, clickX, clickY, imgRect) {
+    const nw = img.naturalWidth  || img.width  || imgRect.width;
+    const nh = img.naturalHeight || img.height || imgRect.height;
+    const scaleX = nw / imgRect.width, scaleY = nh / imgRect.height;
+    const cx = clickX * scaleX, cy = clickY * scaleY; // click point in natural-image px
+
+    const sx = Math.max(0, Math.round(cx - AUTO_DETECT_CROP_RADIUS));
+    const sy = Math.max(0, Math.round(cy - AUTO_DETECT_CROP_RADIUS));
+    const ex = Math.min(nw, Math.round(cx + AUTO_DETECT_CROP_RADIUS));
+    const ey = Math.min(nh, Math.round(cy + AUTO_DETECT_CROP_RADIUS));
+    const cw = ex - sx, ch = ey - sy;
+
+    const debug = {
+      click: { x: clickX, y: clickY },
+      clickNatural: { x: Math.round(cx), y: Math.round(cy) },
+      crop: { sx, sy, w: cw, h: ch },
+      tolerance: AUTO_DETECT_TOLERANCE,
+    };
+
+    if (cw < 2 || ch < 2) {
+      return this._fail(debug, 'crop-too-small');
+    }
+
+    let imageData;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = cw; canvas.height = ch;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, sx, sy, cw, ch, 0, 0, cw, ch);
+      imageData = ctx.getImageData(0, 0, cw, ch);
+    } catch (e) {
+      return this._fail(debug, 'canvas-tainted');
+    }
+
+    boxBlur3x3(imageData);
+
+    const localX = Math.round(cx - sx), localY = Math.round(cy - sy);
+    const region = floodFillBBox(imageData, localX, localY, AUTO_DETECT_TOLERANCE);
+    if (!region) {
+      return this._fail(debug, 'seed-out-of-bounds');
+    }
+
+    const { minX, minY, maxX, maxY, filledPixels } = region;
+    const rw = maxX - minX + 1, rh = maxY - minY + 1;
+    const areaRatio = (rw * rh) / (cw * ch);
+    const aspect = rw / rh;
+
+    debug.region = {
+      x: minX, y: minY, w: rw, h: rh,
+      filledPixels, areaRatio: +areaRatio.toFixed(3), aspect: +aspect.toFixed(2),
+    };
+
+    if (rw < AUTO_DETECT_MIN_W || rh < AUTO_DETECT_MIN_H) {
+      return this._fail(debug, 'too-small');
+    }
+    if (areaRatio > AUTO_DETECT_MAX_AREA_RATIO) {
+      return this._fail(debug, 'leaked-into-background');
+    }
+    if (aspect > AUTO_DETECT_MAX_ASPECT || aspect < AUTO_DETECT_MIN_ASPECT) {
+      return this._fail(debug, 'bad-aspect-ratio');
+    }
+
+    // Crop-local region -> natural-image px, padded and clamped to image bounds.
+    const px0 = Math.max(0,  sx + minX - AUTO_DETECT_PADDING);
+    const py0 = Math.max(0,  sy + minY - AUTO_DETECT_PADDING);
+    const px1 = Math.min(nw, sx + maxX + 1 + AUTO_DETECT_PADDING);
+    const py1 = Math.min(nh, sy + maxY + 1 + AUTO_DETECT_PADDING);
+
+    const bbox = {
+      x: (px0 / nw) * 100,
+      y: (py0 / nh) * 100,
+      w: ((px1 - px0) / nw) * 100,
+      h: ((py1 - py0) / nh) * 100,
+    };
+    debug.bbox = bbox;
+    debug.pass = true;
+    console.log('[WebtoonTranslate] AutoDetect pass', debug);
+    return { bbox, debug };
+  }
+
+  _fail(debug, reason) {
+    debug.pass = false;
+    debug.reason = reason;
+    console.log('[WebtoonTranslate] AutoDetect fail', debug);
+    return { bbox: null, debug };
+  }
+}
+
+/** In-place 3x3 box blur (radius 1) — smooths JPEG ringing artifacts around bubble edges. */
+function boxBlur3x3(imageData) {
+  const { data, width: w, height: h } = imageData;
+  const src = new Uint8ClampedArray(data); // blur from a snapshot, not partially-blurred values
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let rSum = 0, gSum = 0, bSum = 0, n = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= h) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= w) continue;
+          const i = (ny * w + nx) * 4;
+          rSum += src[i]; gSum += src[i + 1]; bSum += src[i + 2];
+          n++;
+        }
+      }
+      const i = (y * w + x) * 4;
+      data[i] = rSum / n; data[i + 1] = gSum / n; data[i + 2] = bSum / n;
+    }
+  }
+}
+
+/** Iterative 4-connected flood fill by color distance to the seed pixel. Returns the bbox + pixel count, or null if the seed is out of bounds. */
+function floodFillBBox(imageData, startX, startY, tolerance) {
+  const { data, width: w, height: h } = imageData;
+  if (startX < 0 || startY < 0 || startX >= w || startY >= h) return null;
+
+  const seedI = (startY * w + startX) * 4;
+  const sr = data[seedI], sg = data[seedI + 1], sb = data[seedI + 2];
+  const tolSq = tolerance * tolerance;
+
+  const visited = new Uint8Array(w * h);
+  const stack = [startY * w + startX];
+  visited[startY * w + startX] = 1;
+
+  let minX = startX, maxX = startX, minY = startY, maxY = startY, filledPixels = 0;
+
+  const tryVisit = (nIdx) => {
+    if (visited[nIdx]) return;
+    const i = nIdx * 4;
+    const dr = data[i] - sr, dg = data[i + 1] - sg, db = data[i + 2] - sb;
+    if (dr * dr + dg * dg + db * db <= tolSq) {
+      visited[nIdx] = 1;
+      stack.push(nIdx);
+    }
+  };
+
+  while (stack.length) {
+    const idx = stack.pop();
+    const x = idx % w, y = (idx / w) | 0;
+    filledPixels++;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+
+    if (x > 0)     tryVisit(idx - 1);
+    if (x < w - 1) tryVisit(idx + 1);
+    if (y > 0)     tryVisit(idx - w);
+    if (y < h - 1) tryVisit(idx + w);
+  }
+
+  return { minX, minY, maxX, maxY, filledPixels };
+}
+
+// ── DetectionPreview ─────────────────────────────────────────────────────────
+// Adjustable bounding-box preview shown after a successful auto-detect, so the
+// user can correct the region before it's sent into the OCR pipeline.
+
+class DetectionPreview {
+  constructor() {
+    this._el = null;
+    this._cleanup = null;
+  }
+
+  /** Shows an adjustable box over `img` (appended to `wrapper`) for `bboxPct`. Resolves with the (possibly adjusted) bbox % on confirm, or null on cancel/dismiss. */
+  show(img, wrapper, bboxPct) {
+    this.dismiss();
+    return new Promise((resolve) => {
+      const box = document.createElement('div');
+      box.className = 'wt-detect-preview';
+      wrapper.appendChild(box);
+
+      const dims = () => ({
+        iw: img.offsetWidth || img.naturalWidth,
+        ih: img.offsetHeight || img.naturalHeight,
+      });
+      const applyPx = (bbox) => {
+        const { iw, ih } = dims();
+        box.style.left   = `${(bbox.x / 100) * iw}px`;
+        box.style.top    = `${(bbox.y / 100) * ih}px`;
+        box.style.width  = `${(bbox.w / 100) * iw}px`;
+        box.style.height = `${(bbox.h / 100) * ih}px`;
+      };
+      const readPct = () => {
+        const { iw, ih } = dims();
+        return {
+          x: (parseFloat(box.style.left)   / iw) * 100,
+          y: (parseFloat(box.style.top)    / ih) * 100,
+          w: (parseFloat(box.style.width)  / iw) * 100,
+          h: (parseFloat(box.style.height) / ih) * 100,
+        };
+      };
+      applyPx(bboxPct);
+
+      const cleanups = [];
+      ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].forEach(pos => {
+        const h = document.createElement('div');
+        h.className = `wt-resize-handle wt-rh-${pos}`;
+        box.appendChild(h);
+        cleanups.push(this._makeResizeHandle(h, pos, box, img));
+      });
+      cleanups.push(this._makeMoveHandle(box, img));
+
+      const toolbar = document.createElement('div');
+      toolbar.className = 'wt-detect-toolbar';
+      toolbar.innerHTML = `
+        <button type="button" class="wt-detect-confirm" title="Use this region">&#10003;</button>
+        <button type="button" class="wt-detect-cancel" title="Draw manually instead">&#10005;</button>
+      `;
+      box.appendChild(toolbar);
+
+      const finish = (result) => {
+        cleanups.forEach(fn => fn());
+        document.removeEventListener('keydown', onKey);
+        box.remove();
+        if (this._el === box) this._el = null;
+        resolve(result);
+      };
+
+      toolbar.querySelector('.wt-detect-confirm').addEventListener('mousedown', e => e.stopPropagation());
+      toolbar.querySelector('.wt-detect-cancel').addEventListener('mousedown', e => e.stopPropagation());
+      toolbar.querySelector('.wt-detect-confirm').addEventListener('click', () => finish(readPct()));
+      toolbar.querySelector('.wt-detect-cancel').addEventListener('click', () => finish(null));
+
+      const onKey = (e) => {
+        if (e.key === 'Escape') finish(null);
+        else if (e.key === 'Enter') finish(readPct());
+      };
+      document.addEventListener('keydown', onKey);
+
+      this._el = box;
+      this._cleanup = () => finish(null);
+    });
+  }
+
+  /** Dismisses any open preview without resolving to a bbox (treated as cancel). */
+  dismiss() {
+    this._cleanup?.();
+  }
+
+  _makeMoveHandle(box, img) {
+    let dragging = false, startX, startY, origLeft, origTop;
+    const onDown = (e) => {
+      if (e.target !== box || e.button !== 0) return;
+      dragging = true;
+      startX = e.clientX; startY = e.clientY;
+      origLeft = parseFloat(box.style.left) || 0;
+      origTop  = parseFloat(box.style.top)  || 0;
+      e.preventDefault(); e.stopPropagation();
+    };
+    const onMove = (e) => {
+      if (!dragging) return;
+      const iw = img.offsetWidth || img.naturalWidth;
+      const ih = img.offsetHeight || img.naturalHeight;
+      const w = parseFloat(box.style.width), h = parseFloat(box.style.height);
+      const l = Math.max(0, Math.min(iw - w, origLeft + (e.clientX - startX)));
+      const t = Math.max(0, Math.min(ih - h, origTop  + (e.clientY - startY)));
+      box.style.left = `${l}px`;
+      box.style.top  = `${t}px`;
+    };
+    const onUp = () => { dragging = false; };
+    box.addEventListener('mousedown', onDown);
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      box.removeEventListener('mousedown', onDown);
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }
+
+  _makeResizeHandle(handle, pos, box, img) {
+    let dragging = false, startX, startY, origLeft, origTop, origW, origH;
+    const onDown = (e) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      startX = e.clientX; startY = e.clientY;
+      origLeft = parseFloat(box.style.left)   || 0;
+      origTop  = parseFloat(box.style.top)    || 0;
+      origW    = parseFloat(box.style.width)  || AUTO_DETECT_MIN_W;
+      origH    = parseFloat(box.style.height) || AUTO_DETECT_MIN_H;
+      e.preventDefault(); e.stopPropagation();
+    };
+    const onMove = (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      const iw = img.offsetWidth || img.naturalWidth;
+      const ih = img.offsetHeight || img.naturalHeight;
+      let l = origLeft, t = origTop, w = origW, h = origH;
+
+      if (pos.includes('e')) w = Math.max(AUTO_DETECT_MIN_W, origW + dx);
+      if (pos.includes('s')) h = Math.max(AUTO_DETECT_MIN_H, origH + dy);
+      if (pos.includes('w')) { w = Math.max(AUTO_DETECT_MIN_W, origW - dx); l = Math.min(origLeft + origW - AUTO_DETECT_MIN_W, origLeft + dx); }
+      if (pos.includes('n')) { h = Math.max(AUTO_DETECT_MIN_H, origH - dy); t = Math.min(origTop  + origH - AUTO_DETECT_MIN_H, origTop  + dy); }
+
+      l = Math.max(0, Math.min(iw - w, l));
+      t = Math.max(0, Math.min(ih - h, t));
+
+      box.style.left   = `${l}px`;
+      box.style.top    = `${t}px`;
+      box.style.width  = `${w}px`;
+      box.style.height = `${h}px`;
+    };
+    const onUp = () => { dragging = false; };
+    handle.addEventListener('mousedown', onDown);
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      handle.removeEventListener('mousedown', onDown);
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }
+}
+
 // ── BBoxSelector ─────────────────────────────────────────────────────────────
 
+const BBOX_SELECTOR_CLICK_THRESHOLD_PX = 5; // pointer movement below this is treated as a click, not a drag
+
 class BBoxSelector {
-  constructor({ onSelect }) {
-    this.onSelect     = onSelect;
+  constructor({ onSelect, onClick, onDragStart }) {
+    this.onSelect      = onSelect;
+    this.onClick       = onClick;      // ({ img, overlay, clickX, clickY, imgRect, imageIndex }) — fired on click (no drag)
+    this.onDragStart   = onDragStart;  // () => void — fired when a manual drag starts
     this.overlays     = new Map();
     this.active       = false;
     this._currentDrag = null;
@@ -421,6 +763,7 @@ class BBoxSelector {
       if (e.button !== 0) return;
       if (e.target.closest('.wt-translation-bubble')) return; // let bubble clicks through
       e.preventDefault();
+      this.onDragStart?.();
       const rect = overlay.getBoundingClientRect();
       startX = e.clientX - rect.left;
       startY = e.clientY - rect.top;
@@ -448,6 +791,18 @@ class BBoxSelector {
       const pw = Math.abs(ex - startX), ph = Math.abs(ey - startY);
       selectionEl.remove();
       this._currentDrag = null;
+
+      // Minimal pointer movement -> treat as a click and try auto-detect first;
+      // manual drag-to-select (below) remains the fallback for anything larger.
+      if (Math.hypot(ex - startX, ey - startY) < BBOX_SELECTOR_CLICK_THRESHOLD_PX) {
+        const imgRect = img.getBoundingClientRect();
+        const clickX = e.clientX - imgRect.left, clickY = e.clientY - imgRect.top;
+        if (clickX >= 0 && clickY >= 0 && clickX <= imgRect.width && clickY <= imgRect.height) {
+          this.onClick?.({ img, overlay, clickX, clickY, imgRect, imageIndex });
+        }
+        return;
+      }
+
       if (pw < 10 || ph < 10) return;
       // Use IMAGE dimensions (not overlay) for %-coordinates.
       // The overlay is 80px taller than the image for cross-panel drag affordance;
@@ -2442,7 +2797,20 @@ function bootForPage() {
 
   // ── bbox select handler ────────────────────────────────────────────────
 
-  const selector = new BBoxSelector({ onSelect: handleBBoxSelect });
+  const autoDetector  = new BubbleAutoDetector();
+  const detectPreview = new DetectionPreview();
+
+  const selector = new BBoxSelector({
+    onSelect: handleBBoxSelect,
+    onDragStart: () => detectPreview.dismiss(),
+    onClick: async ({ img, overlay, clickX, clickY, imgRect, imageIndex }) => {
+      const { bbox } = autoDetector.detect(img, clickX, clickY, imgRect);
+      if (!bbox) return; // validity check failed — fall back to manual drag-to-select
+      const confirmed = await detectPreview.show(img, overlay.parentElement, bbox);
+      if (!confirmed) return; // user cancelled — fall back to manual drag-to-select
+      await handleBBoxSelect({ bbox: confirmed, imageEl: img, imageIndex });
+    },
+  });
 
   async function handleBBoxSelect({ bbox, imageEl, imageIndex, clips }) {
     if (currentMode === MODES.READ) {
