@@ -137,6 +137,11 @@ html, body {
   color: #ea580c;
 }
 
+.card-icon-display {
+  background: linear-gradient(135deg, #ecfdf5, #d1fae5);
+  color: #059669;
+}
+
 .card-title {
   font-size: 15px;
   font-weight: 650;

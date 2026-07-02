@@ -4,6 +4,7 @@ const OCR_SPACE_KEY_STR      = 'wt:ocrspace-key';
 const TRANSLATE_PROVIDER_KEY = 'wt:translate-provider';
 const TRANSLATE_LANG_KEY     = 'wt:translate-lang';
 const DEEPL_KEY_STR          = 'wt:deepl-key';
+const OVERLAY_MODE_KEY       = 'wt:overlay-mode';
 
 // Mirrors background/worker.js — keep in sync.
 const DEV_OCR_SPACE_KEY = '';
@@ -76,5 +77,15 @@ async function initTranslationSettings() {
   });
 }
 
+async function initDisplaySettings() {
+  const stored = await chrome.storage.local.get({ [OVERLAY_MODE_KEY]: 'overlay' });
+  const radios = document.querySelectorAll('input[name="overlay-mode"]');
+  radios.forEach(r => { r.checked = r.value === stored[OVERLAY_MODE_KEY]; });
+  radios.forEach(r => r.addEventListener('change', async () => {
+    await chrome.storage.local.set({ [OVERLAY_MODE_KEY]: r.value });
+  }));
+}
+
 initTranslationSettings();
 initOcrSettings();
+initDisplaySettings();

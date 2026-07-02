@@ -34,6 +34,88 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+// ── Auto color-matching (best-effort) ─────────────────────────────────────────
+// Detects a dominant background color + a contrasting text color from the
+// original bbox region, so the translation overlay blends in instead of
+// looking like a foreign UI element. Works well for solid-bg + solid-text
+// dialogue bubbles; deliberately does NOT try to handle gradient text, stroke-
+// outlined text in a different color than fill, or busy/textured art — the
+// confidence checks below are tuned to bail out (falling back to the default
+// style) rather than guess wrong in those cases.
+
+const COLOR_QUANTIZE_STEP    = 24;   // round each RGB channel to the nearest N — buckets away JPEG noise; tune against real panels
+const COLOR_MIN_BUCKET_SHARE = 0.03; // ignore color buckets under this fraction of sampled pixels (noise)
+const COLOR_CONFIDENCE_GAP   = 0.18; // top bg bucket must beat the runner-up by at least this fraction of its own count, else "too close to call"
+const COLOR_MIN_TEXT_CONTRAST = 80;  // min Euclidean RGB distance a candidate text color needs vs. the detected background
+
+/**
+ * Samples the bbox region of `img` and returns { bg, color } hex strings, or
+ * null if detection isn't confident enough (caller should fall back to the
+ * default style). Never throws — returns null on any failure, including a
+ * tainted (cross-origin) canvas.
+ */
+function detectBubbleColors(img, bbox) {
+  try {
+    const nw = img.naturalWidth  || img.width  || img.offsetWidth  || 1;
+    const nh = img.naturalHeight || img.height || img.offsetHeight || 1;
+    const sx = Math.max(0, (bbox.x / 100) * nw);
+    const sy = Math.max(0, (bbox.y / 100) * nh);
+    const sw = Math.max(1, Math.min((bbox.w / 100) * nw, nw - sx));
+    const sh = Math.max(1, Math.min((bbox.h / 100) * nh, nh - sy));
+    // Coarse sample — this is a rough color estimate, not a pixel-perfect one.
+    const cw = Math.min(sw, 160), ch = Math.min(sh, 160);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = cw; canvas.height = ch;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cw, ch);
+    const data = ctx.getImageData(0, 0, cw, ch).data; // throws SecurityError if tainted
+
+    // Quantized-color histogram: bucket by rounded RGB, but keep the un-quantized
+    // sums so each bucket's reported color is the true average of its members.
+    const buckets = new Map();
+    let totalPixels = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const key = `${Math.round(r / COLOR_QUANTIZE_STEP)},${Math.round(g / COLOR_QUANTIZE_STEP)},${Math.round(b / COLOR_QUANTIZE_STEP)}`;
+      let bucket = buckets.get(key);
+      if (!bucket) { bucket = { r: 0, g: 0, b: 0, count: 0 }; buckets.set(key, bucket); }
+      bucket.r += r; bucket.g += g; bucket.b += b; bucket.count++;
+      totalPixels++;
+    }
+    if (!totalPixels) return null;
+
+    const sorted = [...buckets.values()]
+      .map(b => ({ r: Math.round(b.r / b.count), g: Math.round(b.g / b.count), b: Math.round(b.b / b.count), count: b.count }))
+      .filter(b => b.count / totalPixels >= COLOR_MIN_BUCKET_SHARE)
+      .sort((a, b) => b.count - a.count);
+    if (!sorted.length) return null;
+
+    const bg = sorted[0];
+    if (sorted.length > 1) {
+      const gap = (bg.count - sorted[1].count) / bg.count;
+      if (gap < COLOR_CONFIDENCE_GAP) return null; // ambiguous majority — likely textured/busy background
+    }
+
+    // Text color candidate: the most-contrasting remaining bucket against bg.
+    let textCandidate = null, bestDist = 0;
+    for (let i = 1; i < sorted.length; i++) {
+      const c = sorted[i];
+      const dist = Math.hypot(c.r - bg.r, c.g - bg.g, c.b - bg.b);
+      if (dist > bestDist) { bestDist = dist; textCandidate = c; }
+    }
+    if (!textCandidate || bestDist < COLOR_MIN_TEXT_CONTRAST) return null; // no confidently-contrasting text color
+
+    const toHex = (v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0');
+    return {
+      bg:    `#${toHex(bg.r)}${toHex(bg.g)}${toHex(bg.b)}`,
+      color: `#${toHex(textCandidate.r)}${toHex(textCandidate.g)}${toHex(textCandidate.b)}`,
+    };
+  } catch (e) {
+    return null; // tainted canvas (cross-origin without CORS) — best-effort feature, just skip it
+  }
+}
+
 // ── hasher ───────────────────────────────────────────────────────────────────
 
 const CHUNK_SIZE = 64 * 1024;
@@ -329,12 +411,18 @@ class FixedOverlayLayer {
     const r = img.getBoundingClientRect();
     const iw = r.width  || img.naturalWidth;
     const ih = r.height || img.naturalHeight;
-    const left = r.left + window.scrollX + (bbox.x / 100) * iw;
-    const top  = r.top  + window.scrollY + (bbox.y / 100) * ih;
-    bubble.style.left      = `${left}px`;
-    bubble.style.top       = `${top}px`;
-    bubble.style.width     = `${(bbox.w / 100) * iw}px`;
-    bubble.style.minHeight = `${(bbox.h / 100) * ih}px`;
+    const left    = r.left + window.scrollX + (bbox.x / 100) * iw;
+    const topOrig = r.top  + window.scrollY + (bbox.y / 100) * ih;
+    const h = (bbox.h / 100) * ih;
+    bubble.style.left  = `${left}px`;
+    bubble.style.width = `${(bbox.w / 100) * iw}px`;
+    if (_overlayMode === 'side-by-side') {
+      bubble.style.top       = `${topOrig + h + SIDE_BY_SIDE_GAP_PX}px`;
+      bubble.style.minHeight = '';
+    } else {
+      bubble.style.top       = `${topOrig}px`;
+      bubble.style.minHeight = `${h}px`;
+    }
   }
 
   _createBubble(ann) {
@@ -1402,11 +1490,17 @@ class OverlayRenderer {
     // Kakao uses padding-top ratio so rect.height may be 0 — fallback to naturalHeight
     const iw = img.naturalWidth  || rect.width  || img.offsetWidth  || 375;
     const ih = img.naturalHeight || rect.height || img.offsetHeight || 500;
-    bubble.style.left      = `${(bbox.x / 100) * iw}px`;
-    bubble.style.top       = `${(bbox.y / 100) * ih}px`;
-    bubble.style.width     = `${(bbox.w / 100) * iw}px`;
-    bubble.style.minHeight = `${(bbox.h / 100) * ih}px`;
-    bubble.style.maxWidth  = `${iw - (bbox.x / 100) * iw}px`;
+    const x = (bbox.x / 100) * iw, h = (bbox.h / 100) * ih;
+    bubble.style.left     = `${x}px`;
+    bubble.style.width    = `${(bbox.w / 100) * iw}px`;
+    bubble.style.maxWidth = `${iw - x}px`;
+    if (_overlayMode === 'side-by-side') {
+      bubble.style.top       = `${(bbox.y / 100) * ih + h + SIDE_BY_SIDE_GAP_PX}px`;
+      bubble.style.minHeight = '';
+    } else {
+      bubble.style.top       = `${(bbox.y / 100) * ih}px`;
+      bubble.style.minHeight = `${h}px`;
+    }
   }
 
   _repositionForWrapper(wrapper) {
@@ -2198,6 +2292,15 @@ function findAdapter() { return ADAPTERS.find(a => a.detect()); }
 let bootCleanup = null;
 let _wtEnabled  = true;
 
+// Persisted display-mode setting (extension/popup/settings.html): 'overlay'
+// (translation drawn on top of the original region, the default) or
+// 'side-by-side' (drawn just below it instead). Read live by _positionBubble
+// in both renderer classes, so a change takes effect for newly (re)positioned
+// bubbles without needing to re-instantiate anything.
+const OVERLAY_MODE_KEY = 'wt:overlay-mode';
+let _overlayMode = 'overlay';
+const SIDE_BY_SIDE_GAP_PX = 6; // gap between the original region and the side-by-side caption
+
 function bootForPage() {
   bootCleanup?.();
   bootCleanup = null;
@@ -2499,10 +2602,14 @@ function bootForPage() {
     onDone: async (job) => {
       const imageHash = await hashImage(job.imageEl);
       const existing  = job.existingAnnKey ? allAnnotations.find(a => annKeyOf(a) === job.existingAnnKey) : null;
+      // Auto color-match only for brand-new translations — resize-triggered
+      // re-runs keep whatever style the annotation already has.
+      const matched = !existing ? detectBubbleColors(job.imageEl, job.bbox) : null;
+      const style = existing?.style || (matched ? { ...DEFAULT_STYLE, bg: matched.bg, color: matched.color } : DEFAULT_STYLE);
       const annotation = {
         imageHash, imageIndex: job.imageIndex, bbox: job.bbox,
         originalText: job.originalText, translatedText: job.translatedText,
-        style: existing?.style || DEFAULT_STYLE,
+        style,
         language: existing?.language || 'vi',
         createdAt: existing?.createdAt || new Date().toISOString(),
       };
@@ -2854,9 +2961,19 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-chrome.storage.local.get({ 'wt:enabled': true }, (result) => {
+chrome.storage.local.get({ 'wt:enabled': true, [OVERLAY_MODE_KEY]: 'overlay' }, (result) => {
   _wtEnabled = !!result['wt:enabled'];
+  _overlayMode = result[OVERLAY_MODE_KEY] === 'side-by-side' ? 'side-by-side' : 'overlay';
   if (_wtEnabled) bootForPage();
+});
+
+// Live-apply if the setting changes while this tab stays open (e.g. changed
+// in the settings page in another tab) — affects newly (re)positioned
+// bubbles, not ones already on screen until they're next touched.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && OVERLAY_MODE_KEY in changes) {
+    _overlayMode = changes[OVERLAY_MODE_KEY].newValue === 'side-by-side' ? 'side-by-side' : 'overlay';
+  }
 });
 
 })();
