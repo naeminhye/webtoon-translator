@@ -2385,99 +2385,6 @@ function showStorageWarning(usedBytes, quotaBytes) {
 const STORY_CONTEXT_KEY_PREFIX = 'wt:story-context:';
 const _storyContextInFlight = new Map(); // "site:titleId" -> Promise, dedupes concurrent lazy-fetch triggers
 
-// Naver's list page renders its genre-tag/author/etc. markup client-side
-// (React) — a plain fetch() only gets the server HTML, which doesn't contain
-// it at all (confirmed against a real page: "View Page Source" has no trace
-// of the tag markup, only DevTools' post-hydration Elements panel does). A
-// hidden same-origin iframe actually loads and executes the page like a real
-// browser tab, so its contentDocument reflects the true rendered DOM.
-const STORY_CONTEXT_RENDER_TIMEOUT_MS = 8000;
-
-/**
- * Loads `url` in a hidden same-origin iframe, waits for `waitForSelector` to
- * appear in it (polling — there's no event for "React finished hydrating"),
- * and resolves with its contentDocument. Removes the iframe before resolving
- * either way. Rejects on load failure or STORY_CONTEXT_RENDER_TIMEOUT_MS
- * timeout (e.g. blocked by X-Frame-Options, or the selector never appears).
- */
-function fetchRenderedDocument(url, waitForSelector) {
-  return new Promise((resolve, reject) => {
-    const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'position:fixed; left:-99999px; top:0; width:1200px; height:2000px; border:0; visibility:hidden;';
-
-    let settled = false, pollTimer = null;
-    const finish = (result, err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutTimer);
-      clearInterval(pollTimer);
-      iframe.remove();
-      err ? reject(err) : resolve(result);
-    };
-
-    const timeoutTimer = setTimeout(
-      () => finish(null, new Error(`Timed out waiting for ${waitForSelector} to render`)),
-      STORY_CONTEXT_RENDER_TIMEOUT_MS
-    );
-
-    iframe.addEventListener('load', () => {
-      let doc;
-      try { doc = iframe.contentDocument; } catch (e) { finish(null, e); return; }
-      if (!doc) { finish(null, new Error('iframe contentDocument unavailable')); return; }
-      pollTimer = setInterval(() => {
-        if (doc.querySelector(waitForSelector)) finish(doc);
-      }, 200);
-    });
-    iframe.addEventListener('error', () => finish(null, new Error(`iframe failed to load ${url}`)));
-
-    document.body.appendChild(iframe);
-    iframe.src = url;
-  });
-}
-
-/** First non-empty text (or attribute value, if `attr` given) from the first selector that matches. */
-function _firstMatchText(doc, selectors, attr) {
-  for (const sel of selectors) {
-    const el = doc.querySelector(sel);
-    if (!el) continue;
-    const val = (attr ? el.getAttribute(attr) : el.textContent)?.trim();
-    if (val) return val;
-  }
-  return undefined;
-}
-
-/** All non-empty text values across every selector's matches, deduped, in document order. */
-function _allMatchTexts(doc, selectors) {
-  const out = new Set();
-  for (const sel of selectors) {
-    doc.querySelectorAll(sel).forEach(el => {
-      const t = el.textContent?.trim();
-      if (t) out.add(t);
-    });
-  }
-  return [...out];
-}
-
-// Naver's age-rating badge isn't reliably reachable via a stable class name or
-// an <img alt> (verified against a real list page — no alt/class carried the
-// rating text at all), so match it by its own text content instead: it's
-// always one of a small, fixed set of Korean labels.
-const AGE_RATING_PATTERN = /^(전체 이용가|\d{1,2}세\s*이용가)$/;
-
-/** First leaf element (no children) whose trimmed text matches `pattern` exactly. */
-function _firstTextMatching(doc, pattern) {
-  const walker = doc.createTreeWalker(doc.body || doc, NodeFilter.SHOW_ELEMENT);
-  let node = walker.currentNode;
-  while (node) {
-    if (node.children.length === 0) {
-      const t = node.textContent?.trim();
-      if (t && pattern.test(t)) return t;
-    }
-    node = walker.nextNode();
-  }
-  return undefined;
-}
-
 /**
  * Lazily fetches + caches Story Context for a title, keyed by site+titleId.
  * Never re-fetches once cached (no expiry in v1 — synopsis/tags/author rarely
@@ -2566,72 +2473,46 @@ class NaverAdapter {
   }
 
   /**
-   * Fetches + parses the title's info/list page (not the chapter page) for
-   * Story Context — see getStoryContext() above for the caching wrapper that
-   * calls this. `tab` (weekday) isn't derivable from the chapter URL and
-   * isn't required — Naver serves the full list page (synopsis/tags/author)
-   * without it.
+   * Fetches Story Context from Naver's own title-info JSON API (not the list
+   * page's HTML at all — found via the network tab: the list page itself
+   * calls this same endpoint client-side to render its title header). Same-
+   * origin, returns clean structured JSON, so no HTML/selector parsing, no
+   * hidden-iframe rendering, no client-side-rendering timing concerns — all
+   * of which the two previous approaches (fetch()+DOMParser, then a
+   * rendered-iframe fallback once the tag data turned out to be client-
+   * rendered) needed to work around. `tab`/`week` isn't required — titleId
+   * alone is enough.
    *
-   * Naver's list page renders tags/author/etc. client-side (React) — a plain
-   * fetch() only gets the server HTML, which doesn't contain that markup at
-   * all (confirmed: "View Page Source" on a real list page has no trace of
-   * it, only DevTools' post-hydration Elements panel does). Uses
-   * fetchRenderedDocument() (hidden same-origin iframe, real browser
-   * execution) instead, waiting for the title heading to appear as the
-   * "hydration is done enough" signal before extracting everything else.
-   *
-   * SELECTOR CAVEAT: title/synopsis use `og:*` meta tags, which are far more
-   * stable than Naver's hashed CSS-module class names; tags/author/age
-   * rating use selectors verified against real rendered HTML (see comments
-   * below) but those hashed class suffixes (e.g. `TagGroup__tag--xu0OH`)
-   * can still churn across Naver deploys — matched via `[class*="..."]`
-   * (ignores the suffix) plus an href-based fallback where possible. Every
-   * field is independently best-effort per REQUIREMENTS #5 — a field that
-   * fails to match logs a console.warn and is left undefined rather than
-   * blocking the others or throwing.
+   * Every field is still independently best-effort per REQUIREMENTS #5 — a
+   * field missing from the response logs a console.warn and is left
+   * undefined rather than throwing or blocking the others.
    */
   async fetchStoryContext(titleId) {
-    const url = `https://comic.naver.com/webtoon/list?titleId=${encodeURIComponent(titleId)}`;
-    const doc = await fetchRenderedDocument(url, '[class*="EpisodeListInfo__title"]');
-    // Small settle delay — the title heading rendering first doesn't guarantee
-    // the tag/author markup below it has painted in the same tick.
-    await new Promise(r => setTimeout(r, 400));
+    const url = `https://comic.naver.com/api/article/list/info?titleId=${encodeURIComponent(titleId)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
+    const json = await res.json();
 
     const ctx = { site: SITES.NAVER, titleId, fetchedAt: new Date().toISOString() };
 
-    ctx.title = _firstMatchText(doc, ['meta[property="og:title"]'], 'content')
-             || _firstMatchText(doc, ['title']);
-    if (!ctx.title) console.warn('[WebtoonTranslate] StoryContext(naver): title selector matched nothing');
+    ctx.title = json.titleName || undefined;
+    if (!ctx.title) console.warn('[WebtoonTranslate] StoryContext(naver): titleName missing from API response');
 
-    ctx.synopsis = _firstMatchText(doc, ['meta[property="og:description"]'], 'content')
-                || _firstMatchText(doc, ['.EpisodeListInfo__summary--Jd1WG', '.info_area .summary', '.detail .summary']);
-    if (!ctx.synopsis) console.warn('[WebtoonTranslate] StoryContext(naver): synopsis selector matched nothing');
+    ctx.synopsis = json.synopsis || undefined;
+    if (!ctx.synopsis) console.warn('[WebtoonTranslate] StoryContext(naver): synopsis missing from API response');
 
-    // Verified against a real list page: genre tags are `<a class="TagGroup__tag--xxxxx" href=".../webtoon?tab=genre&genre=ACTION">#액션</a>`.
-    // `[class*="TagGroup__tag"]` ignores the hashed CSS-module suffix (churns
-    // across Naver deploys); the href fallback requires "&genre=" specifically
-    // so it doesn't also match the unrelated top-nav "장르" (Genre) tab link,
-    // which is just `/webtoon?tab=genre` with no "&genre=".
-    ctx.tags = _allMatchTexts(doc, [
-      'a[class*="TagGroup__tag"]',
-      'a[href*="&genre="]',
-    ]).map(t => t.replace(/^#/, ''));
-    if (!ctx.tags.length) console.warn('[WebtoonTranslate] StoryContext(naver): tags selectors matched nothing');
+    ctx.tags = Array.isArray(json.curationTagList)
+      ? json.curationTagList.map(t => t.tagName).filter(Boolean)
+      : [];
+    if (!ctx.tags.length) console.warn('[WebtoonTranslate] StoryContext(naver): curationTagList missing/empty in API response');
 
-    // Verified: author/artist is `<a class="ContentMetaInfo__link--xxxxx" href=".../community/u/...">`.
-    ctx.author = _allMatchTexts(doc, [
-      'a[class*="ContentMetaInfo__link"]',
-      'a[href*="/community/u/"]',
-    ]).join(', ') || undefined;
-    if (!ctx.author) console.warn('[WebtoonTranslate] StoryContext(naver): author selectors matched nothing');
+    ctx.author = Array.isArray(json.communityArtists)
+      ? json.communityArtists.map(a => a.name).filter(Boolean).join(', ') || undefined
+      : undefined;
+    if (!ctx.author) console.warn('[WebtoonTranslate] StoryContext(naver): communityArtists missing/empty in API response');
 
-    // No stable class/alt carries the age-rating text on a real list page (an
-    // <img alt> match turned out to be a false positive — an unrelated poster
-    // image whose alt text happened to contain "세") — match by the badge's
-    // own text content instead, which is always one of a small fixed set of
-    // Korean labels (see AGE_RATING_PATTERN).
-    ctx.ageRating = _firstTextMatching(doc, AGE_RATING_PATTERN);
-    if (!ctx.ageRating) console.warn('[WebtoonTranslate] StoryContext(naver): age rating selectors matched nothing');
+    ctx.ageRating = json.age?.description || undefined;
+    if (!ctx.ageRating) console.warn('[WebtoonTranslate] StoryContext(naver): age.description missing from API response');
 
     console.log('[WebtoonTranslate] StoryContext(naver) fetched:', ctx);
     return ctx;
