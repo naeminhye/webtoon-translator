@@ -17,6 +17,23 @@ const MSG    = {
   CROP_IMAGE:        'CROP_IMAGE',
 };
 
+// Background opacity for the translation caption box — a fully-opaque overlay
+// hides the original art entirely (no way to compare against source text or
+// catch a bad OCR/translation). Needs visual tuning against real panels: light
+// backgrounds vs. dark/stylized-text panels (e.g. colored SFX) may want
+// different values; hold-to-peek is the primary fix for the latter case.
+const OVERLAY_BG_OPACITY = 0.88;
+
+/** '#rrggbb' (or '#rgb') -> 'rgba(r, g, b, alpha)'. Non-hex input passes through unchanged. */
+function hexToRgba(hex, alpha) {
+  if (typeof hex !== 'string' || !hex.startsWith('#')) return hex;
+  const h = hex.slice(1);
+  const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+  const r = parseInt(full.slice(0, 2), 16), g = parseInt(full.slice(2, 4), 16), b = parseInt(full.slice(4, 6), 16);
+  if ([r, g, b].some(Number.isNaN)) return hex;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 // ── hasher ───────────────────────────────────────────────────────────────────
 
 const CHUNK_SIZE = 64 * 1024;
@@ -327,14 +344,12 @@ class FixedOverlayLayer {
     b.dataset.bboxX  = ann.bbox.x; b.dataset.bboxY = ann.bbox.y;
     b.dataset.bboxW  = ann.bbox.w; b.dataset.bboxH = ann.bbox.h;
     b.style.position  = 'absolute';
-    b.style.boxShadow = 'none';
     if (ann.style) {
       const s = ann.style;
       b.style.fontSize   = `${s.fontSize || 20}px`;
       b.style.fontWeight = s.bold   ? 'bold'   : 'normal';
       b.style.fontStyle  = s.italic ? 'italic' : 'normal';
       b.style.color      = s.color  || '#1a1a2e';
-      b.style.background = s.noBg   ? 'transparent' : (s.bg || 'rgba(255,255,255,0.95)');
       if (s.stroke && s.strokeColor) {
         b.style.textShadow = strokeTextShadow(s.strokeColor, s.strokeWidth || 1);
       } else {
@@ -347,8 +362,15 @@ class FixedOverlayLayer {
       }
       if (s.rotate) b.style.transform = `rotate(${s.rotate}deg)`;
     }
+    // The colored/background "chrome" lives on the inner span, sized to fit the
+    // translated text — not on the outer bubble (which stays sized to the full
+    // selected bbox as an invisible hit-area) — so the caption reads like a
+    // tight subtitle box instead of a rectangle covering the whole speech bubble.
     const span = document.createElement('span');
+    span.className = 'wt-bubble-text';
     span.textContent = ann.translatedText;
+    const s = ann.style || {};
+    span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', OVERLAY_BG_OPACITY);
     b.appendChild(span);
     return b;
   }
@@ -801,8 +823,9 @@ class JobManager {
    * @param findOverlap     (bbox, imageIndex, excludeAnnKey) => ratio (0-1) against existing jobs/annotations
    * @param confirmOverlap  async (screenPos) => boolean — "still create a new job here?"
    * @param onTooSmall      (job) => void — bbox is below the OCR-viable natural-pixel floor
+   * @param onQueueChange   () => void — active/queued counts changed (for a live badge, etc.)
    */
-  constructor({ runOcr, runTranslate, onStatusChange, onDone, findOverlap, confirmOverlap, onTooSmall }) {
+  constructor({ runOcr, runTranslate, onStatusChange, onDone, findOverlap, confirmOverlap, onTooSmall, onQueueChange }) {
     this._runOcr         = runOcr;
     this._runTranslate    = runTranslate;
     this._onStatusChange  = onStatusChange;
@@ -810,6 +833,7 @@ class JobManager {
     this._findOverlap     = findOverlap;
     this._confirmOverlap  = confirmOverlap;
     this._onTooSmall      = onTooSmall;
+    this._onQueueChange   = onQueueChange;
 
     this.jobs           = new Map(); // id -> job
     this._queue          = [];        // pending job ids (FIFO)
@@ -839,6 +863,7 @@ class JobManager {
     this._onStatusChange(job);
     this._queue.push(job.id);
     this._pump();
+    this._onQueueChange?.();
     return job;
   }
 
@@ -850,6 +875,7 @@ class JobManager {
     this.jobs.delete(jobId);
     this._onStatusChange({ ...job, status: 'removed' });
     this._pump();
+    this._onQueueChange?.();
   }
 
   retry(jobId) {
@@ -861,6 +887,7 @@ class JobManager {
     this._onStatusChange(job);
     this._queue.push(job.id);
     this._pump();
+    this._onQueueChange?.();
   }
 
   activeCount()  { return this._active.size; }
@@ -877,6 +904,7 @@ class JobManager {
 
   async _process(job) {
     this._active.add(job.id);
+    this._onQueueChange?.();
     try {
       job.status = 'ocr';
       this._onStatusChange(job);
@@ -905,6 +933,10 @@ class JobManager {
     } finally {
       this._active.delete(job.id);
       this._pump();
+      // Fires after the job truly stops occupying a slot — onDone (above) runs
+      // while it's still counted active, so a badge relying only on that
+      // callback would stay stuck one job over-count after this job finishes.
+      this._onQueueChange?.();
     }
   }
 
@@ -1266,14 +1298,12 @@ class OverlayRenderer {
     b.dataset.bboxY   = ann.bbox.y;
     b.dataset.bboxW   = ann.bbox.w;
     b.dataset.bboxH   = ann.bbox.h;
-    b.style.boxShadow = 'none';
     if (ann.style) {
       const s = ann.style;
       b.style.fontSize   = `${s.fontSize || 20}px`;
       b.style.fontWeight = s.bold   ? 'bold'   : 'normal';
       b.style.fontStyle  = s.italic ? 'italic' : 'normal';
       b.style.color      = s.color  || '#1a1a2e';
-      b.style.background = s.noBg   ? 'transparent' : (s.bg || 'rgba(255,255,255,0.95)');
       if (s.stroke && s.strokeColor) {
         b.style.textShadow = strokeTextShadow(s.strokeColor, s.strokeWidth || 1);
       } else {
@@ -1289,8 +1319,12 @@ class OverlayRenderer {
       }
       if (s.rotate) b.style.transform = `rotate(${s.rotate}deg)`;
     }
+    // See FixedOverlayLayer._createBubble for why background lives on the span.
     const span = document.createElement('span');
+    span.className = 'wt-bubble-text';
     span.textContent = ann.translatedText;
+    const s = ann.style || {};
+    span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', OVERLAY_BG_OPACITY);
     b.appendChild(span);
     return b;
   }
@@ -2387,7 +2421,8 @@ function bootForPage() {
     findOverlap:   findOverlapForBbox,
     confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'Vùng này có vẻ trùng với bản dịch đã có. Vẫn tạo bản dịch mới ở đây?'),
     onTooSmall: () => showToast('Vùng chọn quá nhỏ để nhận diện chữ — hãy kéo/chọn một vùng lớn hơn', '#f59e0b'),
-    onStatusChange: (job) => { jobOverlayRenderer.render(job); updateJobBadge(); },
+    onQueueChange: updateJobBadge,
+    onStatusChange: (job) => jobOverlayRenderer.render(job),
     onDone: async (job) => {
       const imageHash = await hashImage(job.imageEl);
       const existing  = job.existingAnnKey ? allAnnotations.find(a => annKeyOf(a) === job.existingAnnKey) : null;
@@ -2410,7 +2445,6 @@ function bootForPage() {
       if (isKakao) fixedLayer.upsertBubble(job.imageEl, annotation);
       else renderer.upsertBubble(job.imageEl, annotation);
       jobOverlayRenderer.remove(job.id);
-      updateJobBadge();
       panel.update(allAnnotations);
       updateProgressBar();
     },
@@ -2506,7 +2540,43 @@ function bootForPage() {
     await createJobFromSelection({ bbox: newBbox, imageEl: img, imageIndex: imgIndex, existingAnnKey: annKey });
   }
 
+  // ── hold-to-peek ─────────────────────────────────────────────────────────
+  // Holding a bubble down fades it out so the original art underneath is
+  // visible — a quick-glance comparison, not the click-to-edit toolbar. A
+  // genuine tap (released before the hold delay) still opens the toolbar as
+  // before; a real hold suppresses the click that would otherwise follow
+  // pointerup so peeking doesn't also pop the toolbar open.
+  const HOLD_TO_PEEK_DELAY_MS = 120; // below the ~150ms "must feel instant" budget
+  let _peek = null; // { bubble, timer, active }
+  let _suppressNextBubbleClick = false;
+
+  function endPeek() {
+    if (!_peek) return;
+    clearTimeout(_peek.timer);
+    if (_peek.active) {
+      _peek.bubble.classList.remove('wt-peeking');
+      _suppressNextBubbleClick = true;
+    }
+    _peek = null;
+  }
+
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest('.wt-bubble-toolbar, .wt-bubble-edit-textarea, .wt-detect-preview, .wt-resize-handle')) return;
+    const bubble = e.target.closest('.wt-translation-bubble');
+    if (!bubble) return;
+    endPeek();
+    const timer = setTimeout(() => {
+      bubble.classList.add('wt-peeking');
+      if (_peek) _peek.active = true;
+    }, HOLD_TO_PEEK_DELAY_MS);
+    _peek = { bubble, timer, active: false };
+  });
+  document.addEventListener('pointerup', endPeek);
+  document.addEventListener('pointercancel', endPeek);
+
   document.addEventListener('click', (e) => {
+    if (_suppressNextBubbleClick) { _suppressNextBubbleClick = false; return; }
     if (e.target.closest('.wt-bubble-toolbar, .wt-bubble-edit-textarea, .wt-detect-preview')) return;
 
     const bubble = e.target.closest('.wt-translation-bubble');

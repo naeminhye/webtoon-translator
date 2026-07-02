@@ -241,29 +241,42 @@
 
 /* ── Translation bubbles ───────────────────────────────────────────────── */
 
+/* The outer bubble is an invisible hit-area sized to the full selected bbox
+   (needed for click-to-edit/resize and positioning) — it has no background
+   of its own. The visible "caption" is the inner .wt-bubble-text span,
+   sized to fit its content so it reads like a subtitle box instead of a
+   rectangle covering the whole original speech bubble. */
 .wt-translation-bubble {
   position: absolute;
   z-index: 200;  /* above .wt-selector-overlay (z-index:100) */
-  background: rgba(255, 255, 255, 0.95);
   color: #1a1a2e;
   font-family: 'Noto Sans', 'Be Vietnam Pro', system-ui, sans-serif;
   font-size: 13px;
   line-height: 1.45;
-  padding: 4px 8px;
-  border-radius: 4px;
-  box-shadow: none;
   display: flex;
   align-items: center;
   justify-content: center;
   text-align: center;
-  overflow: hidden;
-  pointer-events: none;  /* overridden to auto below so bubbles stay double-click-editable */
+  pointer-events: none;  /* overridden to auto below so bubbles stay click-editable */
   cursor: default;
-  word-break: break-word;
-  white-space: pre-wrap;
   /* width/height set by JS from bbox — do NOT add width/fit-content here */
   box-sizing: border-box;
   animation: wt-fade-in 0.15s ease;
+  /* Hold-to-peek fade — kept short, this is a quick glance, not a transition. */
+  transition: opacity 0.12s ease;
+}
+
+.wt-translation-bubble.wt-peeking { opacity: 0 !important; }
+
+.wt-bubble-text {
+  display: inline-block;
+  max-width: 100%;
+  padding: 4px 8px;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  word-break: break-word;
+  white-space: pre-wrap;
+  box-sizing: border-box;
 }
 
 @keyframes wt-fade-in {
