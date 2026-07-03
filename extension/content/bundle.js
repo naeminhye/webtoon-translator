@@ -2315,7 +2315,6 @@ class LlmTestPopover {
       applyBtn.textContent = 'Applying…';
       try {
         await onApply(lastReply);
-        showToast('✓ Applied LLM translation to region.');
         this.dismiss();
       } catch (err) {
         applyBtn.disabled = false;
@@ -2691,10 +2690,8 @@ class OverlayRenderer {
 // __DEV_TOOLS_BLOCK_START__
 
 class SidePanel {
-  constructor({ onJump, onDelete, onEdit }) {
+  constructor({ onJump }) {
     this._onJump   = onJump;
-    this._onDelete = onDelete;
-    this._onEdit   = onEdit;
     this._visible  = false;
     this._images   = [];
     this._el       = null;
@@ -2791,70 +2788,13 @@ class SidePanel {
         const key = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
         row.dataset.annKey = key;
 
+        // Read-only list — no inline edit/delete here; use the overlay's own
+        // bubble toolbar (click a bubble on the page) for that.
         row.innerHTML = `
-          <div class="wt-sp-row-actions">
-            <button class="wt-sp-row-edit" title="Edit translation">✏</button>
-            <button class="wt-sp-row-del"  title="Delete translation">Delete</button>
-          </div>
           <div class="wt-sp-row-text">${ann.translatedText}</div>
-          ${ann.originalText ? `<div class="wt-sp-row-orig">${ann.originalText}</div>` : ''}
-          <div class="wt-sp-row-edit-wrap hidden">
-            <textarea class="wt-sp-row-textarea" rows="3">${ann.translatedText}</textarea>
-            <div class="wt-sp-row-edit-btns">
-              <button class="wt-sp-row-save">Save</button>
-              <button class="wt-sp-row-cancel">Cancel</button>
-            </div>
-          </div>`;
+          ${ann.originalText ? `<div class="wt-sp-row-orig">${ann.originalText}</div>` : ''}`;
 
-        const textEl   = row.querySelector('.wt-sp-row-text');
-        const editWrap = row.querySelector('.wt-sp-row-edit-wrap');
-        const textarea = row.querySelector('.wt-sp-row-textarea');
-
-        const openEditMode = () => {
-          textEl.classList.add('hidden');
-          editWrap.classList.remove('hidden');
-          textarea.focus();
-          textarea.select();
-        };
-
-        row.querySelector('.wt-sp-row-edit').addEventListener('click', (e) => {
-          e.stopPropagation();
-          openEditMode();
-        });
-
-        row.querySelector('.wt-sp-row-cancel').addEventListener('click', (e) => {
-          e.stopPropagation();
-          textarea.value = ann.translatedText;
-          editWrap.classList.add('hidden');
-          textEl.classList.remove('hidden');
-        });
-
-        row.querySelector('.wt-sp-row-save').addEventListener('click', (e) => {
-          e.stopPropagation();
-          const next = { ...ann, translatedText: textarea.value };
-          textEl.textContent = textarea.value;
-          editWrap.classList.add('hidden');
-          textEl.classList.remove('hidden');
-          this._onEdit?.(next);
-        });
-
-        textarea.addEventListener('keydown', (e) => {
-          e.stopPropagation(); // prevent site-level key handlers from firing
-          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-            e.preventDefault();
-            row.querySelector('.wt-sp-row-save').click();
-          } else if (e.key === 'Escape') {
-            row.querySelector('.wt-sp-row-cancel').click();
-          }
-        });
-
-        row.querySelector('.wt-sp-row-del').addEventListener('click', (e) => {
-          e.stopPropagation();
-          this._onDelete?.(ann);
-        });
-
-        row.addEventListener('click', (e) => {
-          if (e.target.closest('.wt-sp-row-actions, .wt-sp-row-edit-wrap')) return;
+        row.addEventListener('click', () => {
           const img    = this._images[imgIdx];
           const bubble = document.querySelector(`[data-ann-key="${key}"]`);
           if (bubble && !bubble.classList.contains('wt-fixed-bubble')) {
@@ -2866,11 +2806,9 @@ class SidePanel {
           } else if (bubble) {
             bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
           } else {
-            openEditMode();
             return;
           }
           this._onJump?.(ann, img);
-          openEditMode();
         });
         section.appendChild(row);
       }
@@ -3781,37 +3719,8 @@ function bootForPage() {
         setTimeout(() => b.classList.remove('wt-bubble-highlight'), 1500);
       }
     },
-    onEdit: async (ann) => {
-      await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [ann] } });
-      // Update in-memory list so a re-render reflects the change
-      const idx = allAnnotations.findIndex(a =>
-        `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` ===
-        `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`
-      );
-      if (idx >= 0) allAnnotations[idx] = ann;
-      // Refresh the bubble on the page
-      const img = images[ann.imageIndex ?? 0];
-      if (img) {
-        if (isKakao) { fixedLayer.removeBubble(`${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`); fixedLayer.upsertBubble(img, ann); }
-        else { renderer.upsertBubble(img, ann); }
-      }
-    },
-    onDelete: async (ann) => {
-      const annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
-      await sendToBackground({ type: MSG.DELETE_ANNOTATION, payload: { ...meta, annKey } });
-      if (isKakao) fixedLayer.removeBubble(annKey);
-      else {
-        const img = images[ann.imageIndex ?? 0];
-        if (img) renderer.removeBubble(img, annKey);
-        else document.querySelector(`[data-ann-key="${annKey}"]`)?.remove();
-      }
-      allAnnotations  = allAnnotations.filter(a =>
-        `${a.imageHash}::${a.bbox.x.toFixed(1)}::${a.bbox.y.toFixed(1)}` !== annKey
-      );
-      annotationCount = allAnnotations.length;
-      panel?.update(allAnnotations);
-      updateProgressBar();
-    },
+    // No onEdit/onDelete — the list is read-only; use the overlay's own
+    // bubble toolbar (click a bubble on the page) to edit or delete.
   }) : null;
   let allAnnotations = [];
 
