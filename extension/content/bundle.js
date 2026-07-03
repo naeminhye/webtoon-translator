@@ -828,6 +828,16 @@ const AUTO_DETECT_MAX_AREA_RATIO = 0.85; // bbox area / crop area — reject if 
 // outline instead of relying on color distance — automatically engages for
 // this case too. Needs tuning against real large-bubble screenshots to make
 // sure legitimately huge bubbles don't get rejected.
+//
+// Real-world case that motivated requiring BOTH dimensions (not just one) to
+// exceed this: a wide rectangular narration box (636x382, common for
+// caption-style dialogue that spans most of a panel's width) was rejected
+// because its width alone crossed the cap, even though its height was
+// entirely ordinary. A background-color leak balloons in BOTH directions
+// (it's the fill spreading outward, not a legitimately wide-but-short box),
+// so requiring both dimensions to be oversized still catches that case
+// (verified against the original ~900x1050 leaked-region report) while no
+// longer flagging a box that's just wide OR just tall.
 const AUTO_DETECT_MAX_REGION_DIM_PX = AUTO_DETECT_CROP_RADIUS * 2.5;
 const AUTO_DETECT_MAX_ASPECT     = 5;
 const AUTO_DETECT_MIN_ASPECT     = 0.2;
@@ -1002,7 +1012,7 @@ class BubbleAutoDetector {
     if (rw < AUTO_DETECT_MIN_W || rh < AUTO_DETECT_MIN_H) return { valid: false, reason: 'too-small' };
     const areaRatio = (rw * rh) / (cw * ch);
     if (areaRatio > AUTO_DETECT_MAX_AREA_RATIO) return { valid: false, reason: 'leaked-into-background' };
-    if (rw > AUTO_DETECT_MAX_REGION_DIM_PX || rh > AUTO_DETECT_MAX_REGION_DIM_PX) return { valid: false, reason: 'leaked-into-background' };
+    if (rw > AUTO_DETECT_MAX_REGION_DIM_PX && rh > AUTO_DETECT_MAX_REGION_DIM_PX) return { valid: false, reason: 'leaked-into-background' };
     const aspect = rw / rh;
     if (aspect > AUTO_DETECT_MAX_ASPECT || aspect < AUTO_DETECT_MIN_ASPECT) return { valid: false, reason: 'bad-aspect-ratio' };
     const density = region.filledPixels / (rw * rh);
@@ -1526,7 +1536,13 @@ function minAreaRectAngle(contourPoints) {
 function _classifyPostOcr(text, confidence, skewAngle) {
   const base = { skewAngle, ocrConfidence: confidence, text };
 
-  if (confidence < DIFFICULTY_LOW_CONFIDENCE_THRESHOLD) {
+  // confidence is null when the OCR provider didn't report one (e.g.
+  // OCR.space) — `null < DIFFICULTY_LOW_CONFIDENCE_THRESHOLD` would otherwise
+  // evaluate true (null coerces to 0 for `<`), wrongly routing a genuinely
+  // correct OCR read (unknown confidence, not low confidence) to 'vision'.
+  // Unknown confidence just skips this check and falls through to the
+  // text-only rules below.
+  if (confidence != null && confidence < DIFFICULTY_LOW_CONFIDENCE_THRESHOLD) {
     return { ...base, tier: DIFFICULTY_TIERS.VISION, reason: 'low-ocr-confidence' };
   }
 
