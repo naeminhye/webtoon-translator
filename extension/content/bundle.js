@@ -3489,50 +3489,29 @@ async function autoTranslate(text) {
  * manual "Test LLM" preview button only (see LlmTestPopover) — never called
  * from the automatic translation pipeline (autoTranslate above).
  *
- * No hardcoded provider list exists elsewhere in the codebase (checked), and
- * the settings UI intentionally uses a free-text "provider/model" field
- * instead of inventing one — so this only recognizes the two prefixes named
- * in that field's placeholder ("openai/…" and "anthropic/…"); anything else
- * throws a clear error rather than guessing a request shape.
+ * Provider/model are stored as two separate settings values (not a combined
+ * "provider/model" string — the Settings UI now uses a constrained Provider
+ * dropdown + free-text Model field, see settings.html/js). The dropdown's
+ * options and the actual request shape both come from the shared adapter
+ * registry (extension/shared/llm-adapters.js, loaded as a content script
+ * before this file — see manifest.json), so they can't drift apart.
  */
 async function callByokLlm(prompt) {
-  const s = await chrome.storage.local.get({ 'wt:byok-key': '', 'wt:byok-model': '' });
-  const apiKey        = s['wt:byok-key'];
-  const providerModel = s['wt:byok-model'];
+  const s = await chrome.storage.local.get({
+    'wt:byok-key':      '',
+    'wt:byok-provider': '',
+    'wt:byok-model':    '',
+  });
+  const apiKey     = s['wt:byok-key'];
+  const providerId = s['wt:byok-provider'];
+  const model      = s['wt:byok-model'];
   if (!apiKey) throw new Error('No BYOK API key set — add one in Settings');
-  if (!providerModel) throw new Error('No provider/model set — add one in Settings (e.g. "openai/gpt-4o")');
+  if (!providerId) throw new Error('No provider selected — pick one in Settings');
+  if (!model) throw new Error('No model set — add one in Settings');
 
-  const slash    = providerModel.indexOf('/');
-  const provider = slash === -1 ? providerModel : providerModel.slice(0, slash);
-  const model    = slash === -1 ? providerModel : providerModel.slice(slash + 1);
-
-  if (provider === 'openai') {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error?.message || `OpenAI HTTP ${res.status}`);
-    return data.choices?.[0]?.message?.content ?? '';
-  }
-
-  if (provider === 'anthropic') {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ model, max_tokens: 1024, messages: [{ role: 'user', content: prompt }] }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error?.message || `Anthropic HTTP ${res.status}`);
-    return data.content?.[0]?.text ?? '';
-  }
-
-  throw new Error(`Unsupported provider "${provider}" — this preview button currently supports "openai/<model>" or "anthropic/<model>"`);
+  const adapter = getLlmAdapter(providerId);
+  if (!adapter) throw new Error(`Unknown provider "${providerId}" — pick one from the Settings dropdown`);
+  return adapter.callApi(apiKey, model, prompt);
 }
 
 function _cropCanvas(img, bbox) {

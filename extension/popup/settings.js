@@ -5,6 +5,7 @@ const TRANSLATE_PROVIDER_KEY = 'wt:translate-provider';
 const TRANSLATE_LANG_KEY     = 'wt:translate-lang';
 const DEEPL_KEY_STR          = 'wt:deepl-key';
 const BYOK_KEY_STR           = 'wt:byok-key';
+const BYOK_PROVIDER_KEY      = 'wt:byok-provider';
 const BYOK_MODEL_STR         = 'wt:byok-model';
 const OVERLAY_MODE_KEY       = 'wt:overlay-mode';
 
@@ -49,6 +50,7 @@ async function initTranslationSettings() {
     [TRANSLATE_LANG_KEY]:     'vi',
     [DEEPL_KEY_STR]:          '',
     [BYOK_KEY_STR]:           '',
+    [BYOK_PROVIDER_KEY]:      '',
     [BYOK_MODEL_STR]:         '',
   });
 
@@ -74,7 +76,40 @@ async function initTranslationSettings() {
   $('target-lang').value = stored[TRANSLATE_LANG_KEY];
   if (stored[DEEPL_KEY_STR]) $('deepl-key').value = stored[DEEPL_KEY_STR];
   if (stored[BYOK_KEY_STR]) $('byok-key').value = stored[BYOK_KEY_STR];
-  if (stored[BYOK_MODEL_STR]) $('byok-model').value = stored[BYOK_MODEL_STR];
+
+  // Provider dropdown is populated from the shared adapter registry
+  // (extension/shared/llm-adapters.js) — never a separately hardcoded list —
+  // so a new adapter registered there appears here automatically.
+  const providerSelect = $('byok-provider');
+  providerSelect.innerHTML = WT_LLM_ADAPTERS
+    .map(a => `<option value="${a.id}">${a.label}</option>`)
+    .join('');
+
+  let byokProvider = stored[BYOK_PROVIDER_KEY];
+  let byokModel    = stored[BYOK_MODEL_STR];
+  // Migrate a pre-existing combined "provider/model" string (the old single
+  // free-text field) into the two new separate fields, once, on first load.
+  if (!byokProvider && byokModel.includes('/')) {
+    const slash = byokModel.indexOf('/');
+    byokProvider = byokModel.slice(0, slash);
+    byokModel    = byokModel.slice(slash + 1);
+    await chrome.storage.local.set({ [BYOK_PROVIDER_KEY]: byokProvider, [BYOK_MODEL_STR]: byokModel });
+  }
+  if (!byokProvider) byokProvider = WT_LLM_ADAPTERS[0]?.id || '';
+
+  function applyByokProviderPlaceholder(providerId) {
+    const adapter = getLlmAdapter(providerId);
+    $('byok-model').placeholder = adapter?.modelPlaceholder || '';
+  }
+
+  providerSelect.value = byokProvider;
+  applyByokProviderPlaceholder(byokProvider);
+  if (byokModel) $('byok-model').value = byokModel;
+
+  providerSelect.addEventListener('change', async (e) => {
+    await chrome.storage.local.set({ [BYOK_PROVIDER_KEY]: e.target.value });
+    applyByokProviderPlaceholder(e.target.value);
+  });
 
   radios.forEach(r => r.addEventListener('change', async () => {
     await chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: r.value });
@@ -93,9 +128,10 @@ async function initTranslationSettings() {
   });
 
   $('save-byok-key').addEventListener('click', async () => {
-    const key = $('byok-key').value.trim();
-    const model = $('byok-model').value.trim();
-    await chrome.storage.local.set({ [BYOK_KEY_STR]: key, [BYOK_MODEL_STR]: model });
+    const key      = $('byok-key').value.trim();
+    const provider = $('byok-provider').value;
+    const model    = $('byok-model').value.trim();
+    await chrome.storage.local.set({ [BYOK_KEY_STR]: key, [BYOK_PROVIDER_KEY]: provider, [BYOK_MODEL_STR]: model });
     $('byok-key-saved').classList.remove('hidden');
     setTimeout(() => $('byok-key-saved').classList.add('hidden'), 2500);
   });
