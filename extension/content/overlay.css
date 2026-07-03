@@ -48,8 +48,12 @@
 .wt-detect-preview {
   position: absolute;
   z-index: 150; /* above .wt-selector-overlay (100), below resize handles (300) */
-  border: 2px solid rgba(34, 197, 94, 0.9);
-  background: rgba(34, 197, 94, 0.12);
+  /* Same indigo as .wt-selection-rect (the manual drag-select box) and
+     .wt-resize-handle — this box's own handles were already indigo, so this
+     used to be a two-tone box; now the drag-select and edit/resize boxes
+     read as one consistent color instead of purple vs. green. */
+  border: 2px solid rgba(99, 102, 241, 0.9);
+  background: rgba(99, 102, 241, 0.12);
   border-radius: 2px;
   cursor: move;
   box-sizing: border-box;

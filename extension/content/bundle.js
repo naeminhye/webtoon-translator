@@ -61,7 +61,6 @@ function hexToRgba(hex, alpha) {
 const AUTO_FIT_MAX_FONT_SIZE   = 20;   // search seed — the app's prior fixed default; NOT a hard ceiling, see fitTextToBox's dynamicMax
 const AUTO_FIT_ABSOLUTE_MAX_FONT_SIZE = 48; // sane ceiling so a short line in a huge bubble can't blow up to an absurd size; needs visual tuning
 const AUTO_FIT_MIN_FONT_SIZE   = 13;   // absolute floor — readability wins over fitting; needs visual tuning against real panels
-const AUTO_FIT_COMFORT_FONT_SIZE = 16; // below this, prefer a taller box over a cramped font — see fitAndExpand
 const AUTO_FIT_LINE_HEIGHT     = 1.45; // matches .wt-bubble-text's CSS line-height — kept for reference/docs only; measurement below reads it from real CSS, doesn't assume it
 const AUTO_FIT_MAX_EXPAND_RATIO         = 2.5; // height fallback never grows the box past this multiple of its original bbox height
 const AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC = 0.5; // ...or this fraction of the viewport height, whichever is smaller
@@ -167,25 +166,24 @@ function fitTextToBox(text, boxWidthPx, boxHeightPx, styleOpts = {}) {
 }
 
 /**
- * fitTextToBox() plus the box-height-expansion fallback: if the text still
- * overflows at the font-size floor, grow the box's height (never its width —
- * webtoons read vertically, so vertical growth is less disruptive) up to a
- * cap. If even the capped height isn't enough, returns clipped: true so the
- * caller can render a "show more" affordance instead of silently cutting text.
- *
- * Also treats "only fits by shrinking below AUTO_FIT_COMFORT_FONT_SIZE" as
- * worth trying to expand for, not just outright overflow — the OCR bbox is
- * sized to the (often short) original text, so a longer Vietnamese
- * translation can legitimately fit at a cramped size on a tight box while
- * the speech bubble around it still has plenty of unused room below.
- * Preferring a taller box over a maxed-out-small font reads better even
- * when nothing technically "overflowed". Only takes the expanded result if
- * it actually buys a bigger font — a purely width-limited fit won't improve
- * from extra height, so there's no point growing the box for nothing.
+ * fitTextToBox() plus a box-height-expansion fallback of LAST RESORT: grows
+ * the box's height (never its width — webtoons read vertically, so vertical
+ * growth is less disruptive) only when the text doesn't fit even at
+ * AUTO_FIT_MIN_FONT_SIZE within the ORIGINAL box (primary.overflow) — i.e.
+ * the bbox is genuinely too small for the translation, not merely "could
+ * look more comfortable at a bigger size". A grown box is a plain taller
+ * rectangle, not the bubble's real (often oval) outline, so it visibly
+ * spills past the drawn speech bubble — worth it when there's truly no
+ * smaller font left to try, not worth risking otherwise. Whenever the text
+ * fits within the original box at ANY size down to the floor, that's used
+ * as-is, even if cramped — a legible, in-bounds caption beats a bigger font
+ * that overflows the bubble. If even the capped expanded height isn't
+ * enough, returns clipped: true so the caller can render a "show more"
+ * affordance instead of silently cutting text.
  */
 function fitAndExpand(text, boxWidthPx, boxHeightPx, styleOpts) {
   const primary = fitTextToBox(text, boxWidthPx, boxHeightPx, styleOpts);
-  if (!primary.overflow && primary.fontSize >= AUTO_FIT_COMFORT_FONT_SIZE) {
+  if (!primary.overflow) {
     return { fontSize: primary.fontSize, boxHeightPx, clipped: false };
   }
 
@@ -194,24 +192,18 @@ function fitAndExpand(text, boxWidthPx, boxHeightPx, styleOpts) {
     window.innerHeight * AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC
   );
   if (maxExpandedH <= boxHeightPx) {
-    return primary.overflow
-      ? { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx, clipped: true }
-      : { fontSize: primary.fontSize, boxHeightPx, clipped: false };
+    return { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx, clipped: true };
   }
 
   const expanded = fitTextToBox(text, boxWidthPx, maxExpandedH, styleOpts);
-  const expandedIsBetter = !expanded.overflow && (primary.overflow || expanded.fontSize > primary.fontSize);
-  if (expandedIsBetter) {
+  if (!expanded.overflow) {
     // Grow only as much as this font size actually needs, not the full cap.
     // totalTextHeight is already the full border-box height (real DOM
     // measurement, padding included) — no manual padding add-back needed.
     const neededH = Math.max(boxHeightPx, expanded.totalTextHeight);
     return { fontSize: expanded.fontSize, boxHeightPx: Math.min(neededH, maxExpandedH), clipped: false };
   }
-  if (primary.overflow) {
-    return { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx: maxExpandedH, clipped: true };
-  }
-  return { fontSize: primary.fontSize, boxHeightPx, clipped: false };
+  return { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx: maxExpandedH, clipped: true };
 }
 
 /**
