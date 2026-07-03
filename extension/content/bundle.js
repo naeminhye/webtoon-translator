@@ -2927,6 +2927,19 @@ async function getStoryContext(adapter, site, titleId) {
   return promise;
 }
 
+// Converts a stored target-language code (e.g. 'vi', 'zh-CN' — same codes
+// used by the Target Language <select> in settings.html) into an English
+// display name for the LLM instruction, via the built-in Intl API rather
+// than a second hardcoded code->name list that could drift out of sync with
+// that dropdown's options.
+function targetLanguageDisplayName(langCode) {
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'language' }).of(langCode) || langCode;
+  } catch {
+    return langCode;
+  }
+}
+
 // ── LLM prompt formatting (manual "Test LLM" preview only, see LlmTestPopover) ──
 // Plain string formatting (title + tags + synopsis + OCR text) — no template
 // engine and no LLM-based compression, consistent with the earlier decision to
@@ -2934,14 +2947,20 @@ async function getStoryContext(adapter, site, titleId) {
 // aren't built yet, so they're intentionally omitted here rather than stubbed
 // with placeholder text; nothing built from this function is wired into the
 // automatic translation pipeline (see autoTranslate()) — it only feeds the
-// manual per-region preview/test popover.
-function formatLlmPrompt(storyContext, ocrText) {
+// manual per-region preview/test popover. Only one call site exists (the
+// "Test LLM" button handler below), so adding the targetLang param here can't
+// unexpectedly change behavior anywhere else.
+function formatLlmPrompt(storyContext, ocrText, targetLang) {
   const lines = [];
   if (storyContext?.title)          lines.push(`Title: ${storyContext.title}`);
   if (storyContext?.tags?.length)   lines.push(`Tags: ${storyContext.tags.join(', ')}`);
   if (storyContext?.synopsis)       lines.push(`Synopsis: ${storyContext.synopsis}`);
   lines.push('');
-  lines.push('Translate the following webtoon dialogue/narration text:');
+  lines.push(
+    `Translate the following Korean webtoon dialogue/narration into ${targetLanguageDisplayName(targetLang)}. ` +
+    'Output ONLY the translated text itself — no alternatives, no explanation, no markdown formatting. ' +
+    'Choose the single most natural and contextually appropriate translation.'
+  );
   lines.push(ocrText);
   return lines.join('\n');
 }
@@ -4299,7 +4318,10 @@ function bootForPage() {
         const ocrText = ann?.originalText || '';
         const btnRect = btn.getBoundingClientRect();
         const storyContext = await getStoryContext(adapter, meta.site, meta.titleId);
-        const prompt = formatLlmPrompt(storyContext, ocrText);
+        // Same 'wt:translate-lang' value the Target Language dropdown in
+        // settings.html writes — reused here rather than a second setting.
+        const { 'wt:translate-lang': targetLang } = await chrome.storage.local.get({ 'wt:translate-lang': 'vi' });
+        const prompt = formatLlmPrompt(storyContext, ocrText, targetLang);
         llmTestPopover.show({ x: btnRect.left + window.scrollX, y: btnRect.bottom + window.scrollY + 6 }, prompt);
       });
     })();
