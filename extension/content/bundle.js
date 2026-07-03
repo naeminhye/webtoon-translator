@@ -459,10 +459,11 @@ async function hashImage(img) {
 // All drag coords are converted back to % of the target image.
 
 class FixedOverlayLayer {
-  constructor({ onSelect, onClick, getImages }) {
+  constructor({ onSelect, onClick, getImages, onReload }) {
     this._onSelect  = onSelect;
     this._onClick   = onClick;   // ({ img, clickX, clickY, imgRect, imageIndex }) — fired on click (no drag), same contract as BBoxSelector
     this._getImages = getImages || null; // live image list — survives lazy-load/remount
+    this._onReload  = onReload;  // (annotation, img, buttonEl) — re-translate this region, see bootForPage's retranslateAnnotation
     this._el        = null;
     this._images    = [];
     this._active    = false;
@@ -758,6 +759,7 @@ class FixedOverlayLayer {
     const s = ann.style || {};
     span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', OVERLAY_BG_OPACITY);
     b.appendChild(span);
+    b.appendChild(createBubbleReloadButton(this._onReload, ann, img));
 
     const r  = img.getBoundingClientRect();
     const iw = r.width  || img.naturalWidth;
@@ -2252,7 +2254,13 @@ class LlmTestPopover {
     this._onOutside = null;
   }
 
-  show(screenPos, prompt) {
+  /**
+   * onApply(replyText) — optional async callback that writes the LLM's reply
+   * into the region's displayed translation (see applyTranslatedText in
+   * bootForPage). Omitted/no-op leaves this purely a read-only preview, same
+   * as before this button existed.
+   */
+  show(screenPos, prompt, onApply) {
     this.dismiss();
     const box = document.createElement('div');
     box.className = 'wt-llm-popover';
@@ -2266,14 +2274,20 @@ class LlmTestPopover {
       <textarea class="wt-llm-popover-prompt" readonly spellcheck="false">${escapeHtml(prompt)}</textarea>
       <button type="button" class="wt-llm-popover-send">Send to LLM</button>
       <div class="wt-llm-popover-result hidden"></div>
+      <button type="button" class="wt-llm-popover-apply hidden">Apply to region</button>
     `;
     document.body.appendChild(box);
     this._el = box;
+    let lastReply = null;
 
     box.querySelector('.wt-llm-popover-close').addEventListener('click', () => this.dismiss());
 
+    const applyBtn = box.querySelector('.wt-llm-popover-apply');
+
     box.querySelector('.wt-llm-popover-send').addEventListener('click', async (e) => {
       e.stopPropagation();
+      lastReply = null;
+      applyBtn.classList.add('hidden');
       const resultEl = box.querySelector('.wt-llm-popover-result');
       resultEl.classList.remove('hidden', 'wt-llm-popover-error');
       resultEl.classList.add('wt-llm-popover-loading');
@@ -2282,10 +2296,31 @@ class LlmTestPopover {
         const reply = await callByokLlm(prompt);
         resultEl.classList.remove('wt-llm-popover-loading');
         resultEl.textContent = reply;
+        lastReply = reply;
+        if (onApply && reply) applyBtn.classList.remove('hidden');
       } catch (err) {
         resultEl.classList.remove('wt-llm-popover-loading');
         resultEl.classList.add('wt-llm-popover-error');
         resultEl.textContent = `Error: ${err?.message || err}`;
+      }
+    });
+
+    // Applies the raw LLM reply as-is to the region's saved translation —
+    // still never mutates anything until the user explicitly clicks this;
+    // the region keeps its prior (e.g. Google-translated) text until then.
+    applyBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!onApply || !lastReply) return;
+      applyBtn.disabled = true;
+      applyBtn.textContent = 'Applying…';
+      try {
+        await onApply(lastReply);
+        showToast('✓ Applied LLM translation to region.');
+        this.dismiss();
+      } catch (err) {
+        applyBtn.disabled = false;
+        applyBtn.textContent = 'Apply to region';
+        showToast(`✗ Apply failed: ${err?.message || err}`, '#ef4444');
       }
     });
 
@@ -2441,11 +2476,34 @@ class BBoxSelector {
   }
 }
 
+/**
+ * Small "re-translate" button appended to every finished bubble (regardless
+ * of which translation API produced it — Google, DeepL, or an applied LLM
+ * test result), shown on hover via CSS (see .wt-bubble-reload in
+ * overlay.css). Shared by OverlayRenderer and FixedOverlayLayer's
+ * _createBubble so the two near-identical bubble-DOM builders don't each
+ * carry their own copy of this wiring.
+ */
+function createBubbleReloadButton(onReload, ann, img) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'wt-bubble-reload';
+  btn.title = 'Re-translate this region';
+  btn.innerHTML = BUBBLE_RELOAD_ICON;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation(); // don't also open the click-to-open edit/resize/delete toolbar
+    if (btn.disabled) return;
+    onReload?.(ann, img, btn);
+  });
+  return btn;
+}
+
 // ── OverlayRenderer ───────────────────────────────────────────────────────────
 
 class OverlayRenderer {
-  constructor() {
+  constructor({ onReload } = {}) {
     this.imageState      = new Map();
+    this._onReload       = onReload; // (annotation, img, buttonEl) — re-translate this region, see bootForPage's retranslateAnnotation
     this._resizeObserver = new ResizeObserver(entries => {
       for (const e of entries) this._repositionForWrapper(e.target);
     });
@@ -2557,6 +2615,7 @@ class OverlayRenderer {
     const s = ann.style || {};
     span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', OVERLAY_BG_OPACITY);
     b.appendChild(span);
+    b.appendChild(createBubbleReloadButton(this._onReload, ann, img));
 
     const rect = img.getBoundingClientRect();
     const iw = img.naturalWidth  || rect.width  || img.offsetWidth  || 375;
@@ -3577,6 +3636,10 @@ const BT_DELETE_ICON = `<svg viewBox="0 0 24 24" width="13" height="13" fill="no
 // Manual per-region "Test LLM" prompt-preview button (see LlmTestPopover) —
 // only shown when BYOK is the selected Translation API and a key is set.
 const BT_LLM_ICON    = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4v3a4 4 0 0 0-2 3.46V19a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3v-6.54A4 4 0 0 0 16 9V6a4 4 0 0 0-4-4z"/><path d="M9 12h.01M15 12h.01"/></svg>`;
+// Small per-bubble "re-translate" button, shown on hover over any finished
+// bubble (Google/DeepL or LLM alike) — see .wt-bubble-reload in overlay.css
+// and the onReload callback wired into OverlayRenderer/FixedOverlayLayer.
+const BUBBLE_RELOAD_ICON = `<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`;
 
 function buildToggleButton() {
   const btn = document.createElement('button');
@@ -3702,10 +3765,10 @@ function bootForPage() {
   const meta = adapter.getChapterMeta();
   console.log('[WebtoonTranslate] Active:', meta);
 
-  const renderer    = new OverlayRenderer();
+  const renderer    = new OverlayRenderer({ onReload: retranslateAnnotation });
   const isKakao     = adapter.usesFixedOverlay === true;
   const fixedLayer  = isKakao
-    ? new FixedOverlayLayer({ onSelect: createJobFromSelection, onClick: handleAutoDetectClick, getImages: () => images })
+    ? new FixedOverlayLayer({ onSelect: createJobFromSelection, onClick: handleAutoDetectClick, getImages: () => images, onReload: retranslateAnnotation })
     : null;
 
   const panel    = __DEV_TOOLS__ ? new SidePanel({
@@ -3946,6 +4009,38 @@ function bootForPage() {
     annotationCount--;
     panel?.update(allAnnotations);
     updateProgressBar();
+  }
+
+  // Overwrites a saved annotation's translatedText (same save+re-render shape
+  // startInlineEdit's finish(save) uses) and re-renders its bubble. Shared by
+  // the per-bubble reload button (retranslateAnnotation, below) and the LLM
+  // Test popover's "Apply to region" button.
+  async function applyTranslatedText(annKey, img, newText) {
+    const existing = allAnnotations.find(a => annKeyOf(a) === annKey);
+    if (!existing) return;
+    const updated = { ...existing, translatedText: newText };
+    await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [updated] } });
+    _upsertAnnotation(updated);
+    if (isKakao) fixedLayer.upsertBubble(img, updated);
+    else renderer.upsertBubble(img, updated);
+    panel?.update(allAnnotations);
+  }
+
+  // Re-runs translation for an already-saved region using whatever Translation
+  // API is currently configured (autoTranslate — Google/DeepL, same as the
+  // automatic pipeline; BYOK isn't wired into autoTranslate, see its own
+  // comment) — this is the hover "reload" button shown on every bubble, not
+  // specific to LLM-produced translations.
+  async function retranslateAnnotation(ann, img, btnEl) {
+    if (btnEl) { btnEl.disabled = true; btnEl.classList.add('wt-bubble-reload-spinning'); }
+    try {
+      const newText = await autoTranslate(ann.originalText);
+      if (newText) await applyTranslatedText(annKeyOf(ann), img, newText);
+    } catch (err) {
+      showToast(`Re-translate failed: ${err?.message || err}`, '#ef4444');
+    } finally {
+      if (btnEl) { btnEl.disabled = false; btnEl.classList.remove('wt-bubble-reload-spinning'); }
+    }
   }
 
   // Overlap vs. pending/processing jobs and already-saved annotations on the same
@@ -4322,7 +4417,11 @@ function bootForPage() {
         // settings.html writes — reused here rather than a second setting.
         const { 'wt:translate-lang': targetLang } = await chrome.storage.local.get({ 'wt:translate-lang': 'vi' });
         const prompt = formatLlmPrompt(storyContext, ocrText, targetLang);
-        llmTestPopover.show({ x: btnRect.left + window.scrollX, y: btnRect.bottom + window.scrollY + 6 }, prompt);
+        llmTestPopover.show(
+          { x: btnRect.left + window.scrollX, y: btnRect.bottom + window.scrollY + 6 },
+          prompt,
+          (replyText) => applyTranslatedText(annKey, img, replyText)
+        );
       });
     })();
   });

@@ -319,6 +319,19 @@
 }
 .wt-llm-popover-result.wt-llm-popover-loading { color: #64748b; font-style: italic; }
 .wt-llm-popover-result.wt-llm-popover-error   { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+.wt-llm-popover-apply {
+  align-self: flex-end;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: #16a34a;
+  color: #fff;
+}
+.wt-llm-popover-apply:hover      { background: #15803d; }
+.wt-llm-popover-apply:disabled   { cursor: default; opacity: 0.7; }
 
 .wt-bubble-edit-textarea {
   position: absolute;
@@ -398,6 +411,38 @@
 }
 .wt-bubble-expand-toggle:hover { background: rgba(30, 41, 59, 0.92); }
 .wt-bubble-clipped.wt-bubble-expanded { z-index: 210; } /* float above neighboring bubbles while expanded */
+
+/* Per-bubble "re-translate" button — every finished bubble gets one
+   (Google/DeepL or an applied LLM result alike), revealed on hover so it
+   doesn't clutter the normal reading view. */
+.wt-bubble-reload {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(30, 41, 59, 0.75);
+  color: #fff;
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  z-index: 2;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+.wt-translation-bubble:hover .wt-bubble-reload { opacity: 1; }
+.wt-bubble-reload:hover   { background: rgba(30, 41, 59, 0.92); }
+.wt-bubble-reload:disabled { cursor: default; opacity: 0.6 !important; }
+.wt-bubble-reload-spinning svg { animation: wt-spin 0.8s linear infinite; }
+
+@keyframes wt-spin {
+  to { transform: rotate(360deg); }
+}
 
 @keyframes wt-fade-in {
   from { opacity: 0; transform: translateY(2px); }
