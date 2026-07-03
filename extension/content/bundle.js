@@ -2952,8 +2952,43 @@ function sendToBackground(message, retries = 3) {
 }
 
 // ── OCR ───────────────────────────────────────────────────────────────────────
+// A flood-fill bubble's bbox is the RECTANGLE circumscribing an often
+// round/oval/irregular shape — for round bubbles that rectangle extends well
+// beyond the actual text into empty background and (sometimes) the bubble's
+// outline stroke. Tesseract misreads that margin's curves/edge-artifacts as
+// stray characters, garbling the real text. This never shows up for
+// rectangular bubbles, whose bbox already hugs the text tightly.
+//
+// Fix: shrink the bbox toward its own center by a fixed percentage on each
+// side before it's used to crop the OCR input image — a separate, OCR-only
+// crop step. This must NOT touch the bbox used for anything else (overlay
+// render bounds, waist-splitting, validity checks, the persisted
+// annotation) — those still need the full bubble extent. Deliberately not
+// the same constant as AUTO_FIT_WIDTH_MARGIN/AUTO_FIT_HEIGHT_MARGIN (the
+// oval-overflow fix for rendering TRANSLATED text back into the bubble) —
+// that's a different concern (output rendering vs. OCR input cropping).
+//
+// Coarse by design: a uniform inset assumes margin is roughly evenly
+// distributed around the text, which won't hold for bubbles where the text
+// sits hard against the boundary on one side — if that shows up in testing,
+// the next-step fix is detecting the actual dark-pixel text cluster inside
+// the bubble instead of a uniform percentage.
+const OCR_CROP_INSET_PCT = 0.175; // % of width/height trimmed from EACH side (e.g. 0.175 = 17.5%/side, ~35% off each dimension total); start 15-20%/side per spec, needs visual tuning against real bubble screenshots of varying shapes
+
+/** Shrinks a %-of-image bbox toward its own center for the OCR crop only — see the OCR section note above. */
+function _insetBboxForOcr(bbox) {
+  const insetX = bbox.w * OCR_CROP_INSET_PCT;
+  const insetY = bbox.h * OCR_CROP_INSET_PCT;
+  return {
+    x: bbox.x + insetX,
+    y: bbox.y + insetY,
+    w: Math.max(0, bbox.w - 2 * insetX),
+    h: Math.max(0, bbox.h - 2 * insetY),
+  };
+}
 
 async function ocrRegion(img, bbox) {
+  const cropBbox = _insetBboxForOcr(bbox);
   // Fast path: draw the already-loaded DOM image directly.
   // blob: URLs (Kakao) are same-origin → never tainted.
   // CDN images without crossOrigin attr may taint the canvas → SecurityError.
@@ -2961,20 +2996,26 @@ async function ocrRegion(img, bbox) {
   // fetch cross-origin freely and do the crop there.
   let dataUrl = null;
   try {
-    dataUrl = _cropCanvas(img, bbox);
+    dataUrl = _cropCanvas(img, cropBbox);
   } catch (e) {
     if (!(e instanceof DOMException) || e.name !== 'SecurityError') throw e;
   }
 
   const res = await sendToBackground({
     type: MSG.OCR_REGION,
-    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox },
+    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox: cropBbox },
   });
   if (!res?.ok) throw new Error(res?.error || 'OCR failed');
   return { text: res.text, confidence: res.confidence };
 }
 
-async function ocrRegionStitched(img, bbox, images) {
+async function ocrRegionStitched(img, rawBbox, images) {
+  // Inset once, up front — applies to the whole selection, including the
+  // cross-panel overflow math below, so a region straddling two stacked
+  // panel images gets the same margin trim on every side as a single-panel
+  // one. See the OCR section note above for why this is a deliberate
+  // simplification rather than insetting only the in-panel portion.
+  const bbox = _insetBboxForOcr(rawBbox);
   const idx        = images.indexOf(img);
   const bottomEdge = bbox.y + bbox.h;  // may exceed 100 when user drags past image bottom
   const topEdge    = bbox.y;           // may be < 0 when user drags past image top
@@ -3008,7 +3049,8 @@ async function ocrRegionStitched(img, bbox, images) {
     }
   }
 
-  if (clips.length === 1) return ocrRegion(img, bbox);
+  // rawBbox, not bbox — ocrRegion applies its own inset; insetting twice would over-crop.
+  if (clips.length === 1) return ocrRegion(img, rawBbox);
 
   // Try client-side stitching (same-origin/blob images)
   const dataUrl = stitchClips(clips);
@@ -3030,13 +3072,15 @@ async function ocrRegionStitched(img, bbox, images) {
 
 async function ocrClips(clips) {
   // clips from FixedOverlayLayer: {img, bbox: {x,y,w,h}}
-  // Convert to internal {img, x, y, w, h, dispW} format
+  // Convert to internal {img, x, y, w, h, dispW} format, insetting each
+  // clip's bbox for the OCR crop (see the OCR section note above).
   const items = clips.map(c => {
     const r = c.img.getBoundingClientRect();
+    const cropBbox = _insetBboxForOcr(c.bbox);
     return {
       img:   c.img,
-      x:     c.bbox.x, y: c.bbox.y, w: c.bbox.w, h: c.bbox.h,
-      dispW: (c.bbox.w / 100) * r.width,
+      x:     cropBbox.x, y: cropBbox.y, w: cropBbox.w, h: cropBbox.h,
+      dispW: (cropBbox.w / 100) * r.width,
     };
   });
 
