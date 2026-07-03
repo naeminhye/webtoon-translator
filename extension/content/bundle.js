@@ -956,7 +956,15 @@ class BubbleAutoDetector {
     for (const r of regions) {
       const v = this._isValidRegion(r, cw, ch);
       if (!v.valid) { firstFailReason = firstFailReason || v.reason; continue; }
-      bboxes.push(this._regionToBbox(r, sx, segments.canvasTopFrameY, nw, nh));
+      const bbox = this._regionToBbox(r, sx, segments.canvasTopFrameY, nw, nh);
+      // Difficulty-classifier signal, computed here while the mask is still in
+      // scope (it isn't kept around once detect() returns). Reuses the
+      // merged region's mask even for a waist-split half, since halves share
+      // the same underlying canvas/mask — just a tighter minX/minY/maxX/maxY.
+      // Callers must strip this before persisting `bbox` as an annotation —
+      // it's debug/routing metadata, not part of the BBox shape.
+      bbox.skewAngle = minAreaRectAngle(extractRegionContour(region.mask, cw, r));
+      bboxes.push(bbox);
     }
     return { bboxes, firstFailReason };
   }
@@ -1560,6 +1568,28 @@ async function classifyDifficulty(regionContour, ocrRunner) {
   return result;
 }
 
+/**
+ * Shadow-mode variant used by the live detect -> OCR flow (see JobManager's
+ * runOcr wiring), where OCR has ALREADY run for real translation purposes —
+ * unlike classifyDifficulty, this never decides whether to call OCR, and
+ * takes an already-computed `skewAngle` rather than raw contour points: the
+ * flood-fill mask/contour only exists transiently inside
+ * BubbleAutoDetector._extractBboxes (where the angle gets computed and
+ * attached to the bbox), long before this runs — by the time OCR finishes,
+ * the mask itself is out of scope. Exists purely to produce
+ * [DifficultyClassifier] logs for tuning; never affects what OCR or
+ * translation actually does. `skewAngle` is null for manually drag-selected
+ * regions (no flood-fill contour was ever computed for those).
+ */
+function logDifficultyClassificationShadow(skewAngle, text, confidence) {
+  const angle = skewAngle ?? 0;
+  const result = angle > DIFFICULTY_SKEW_ANGLE_THRESHOLD_DEG
+    ? { tier: DIFFICULTY_TIERS.VISION, reason: 'high-skew-angle', skewAngle: angle, ocrConfidence: confidence, text }
+    : _classifyPostOcr(text, confidence, angle);
+  _logDifficultyClassification(result);
+  return result;
+}
+
 // ── DetectionPreview ─────────────────────────────────────────────────────────
 // Adjustable bounding-box preview shown after a successful auto-detect, so the
 // user can correct the region before it's sent into the OCR pipeline.
@@ -1812,7 +1842,7 @@ class JobManager {
     this._ocrChainTail   = Promise.resolve(); // serializes OCR across jobs
   }
 
-  async create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey = null }) {
+  async create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey = null, skewAngle = null }) {
     const { w: natW, h: natH } = bboxNaturalSize(bbox, imageEl);
     if (natW < MIN_OCR_NATURAL_PX || natH < MIN_OCR_NATURAL_PX) {
       this._onTooSmall?.({ bbox, imageEl, imageIndex, natW, natH });
@@ -1826,6 +1856,7 @@ class JobManager {
     const job = {
       id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       bbox, imageEl, imageIndex, clips, existingAnnKey,
+      skewAngle, // difficulty-classifier signal from auto-detect; null for manual drag-select (no flood-fill contour to measure) — see runOcr's shadow-mode classification call
       status: 'queued', // queued -> ocr -> translating -> done | error
       originalText: '', translatedText: '', errorMessage: '',
       cancelled: false, createdAt: Date.now(),
@@ -2940,7 +2971,7 @@ async function ocrRegion(img, bbox) {
     payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox },
   });
   if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-  return res.text;
+  return { text: res.text, confidence: res.confidence };
 }
 
 async function ocrRegionStitched(img, bbox, images) {
@@ -2987,14 +3018,14 @@ async function ocrRegionStitched(img, bbox, images) {
       payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return res.text;
+    return { text: res.text, confidence: res.confidence };
   }
 
   // Cross-origin: send to background for fetch+stitch
   const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src, bbox: { x, y, w, h }, dispW: dw }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return res.text;
+  return { text: res.text, confidence: res.confidence };
 }
 
 async function ocrClips(clips) {
@@ -3017,13 +3048,13 @@ async function ocrClips(clips) {
       payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return res.text;
+    return { text: res.text, confidence: res.confidence };
   }
   // Cross-origin: background fetch+stitch
   const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src, bbox: { x, y, w, h }, dispW }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return res.text;
+  return { text: res.text, confidence: res.confidence };
 }
 
 // Stitch multiple image clips vertically into one canvas.
@@ -3554,7 +3585,7 @@ function bootForPage() {
   let _storyContextRequestedThisPageLoad = false; // only fetch/log once per page load, not on every OCR request
 
   const jobManager = new JobManager({
-    runOcr:        (job) => {
+    runOcr:        async (job) => {
       // Lazy trigger point: first OCR/translation request for this title,
       // once per page load (repeat scans on the same page don't re-trigger
       // it — cached reads are silent past the first one now, by request).
@@ -3566,7 +3597,21 @@ function bootForPage() {
         _storyContextRequestedThisPageLoad = true;
         getStoryContext(adapter, meta.site, meta.titleId);
       }
-      return job.clips ? ocrClips(job.clips) : ocrRegionStitched(job.imageEl, job.bbox, images);
+      const { text, confidence } = job.clips
+        ? await ocrClips(job.clips)
+        : await ocrRegionStitched(job.imageEl, job.bbox, images);
+      // Shadow-mode difficulty classification: logs [DifficultyClassifier] for
+      // every real region so thresholds can be tuned against actual
+      // screenshots, WITHOUT changing what OCR/translation actually does yet
+      // (no pipeline routing exists — see extension/content/bundle.js's
+      // Difficulty Classifier section). Tesseract/OCR.space confidence is
+      // 0-100 (or absent for OCR.space); the classifier's thresholds are 0-1.
+      logDifficultyClassificationShadow(
+        job.skewAngle,
+        text,
+        typeof confidence === 'number' ? confidence / 100 : null
+      );
+      return text;
     },
     runTranslate:  (job) => autoTranslate(job.originalText),
     findOverlap:   findOverlapForBbox,
@@ -3606,12 +3651,17 @@ function bootForPage() {
   });
 
   async function createJobFromSelection({ bbox, imageEl, imageIndex, clips, existingAnnKey }) {
+    // skewAngle (auto-detect only — see BubbleAutoDetector._extractBboxes) is
+    // routing metadata for the difficulty classifier, not part of the BBox
+    // shape saved with an annotation — strip it here, the one choke point
+    // both auto-detect and manual drag-select job creation funnel through.
+    const { skewAngle, ...cleanBbox } = bbox;
     const rect = imageEl.getBoundingClientRect();
     const screenPos = {
-      x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
-      y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
+      x: rect.left + window.scrollX + (cleanBbox.x / 100) * rect.width,
+      y: rect.top  + window.scrollY + (cleanBbox.y / 100) * rect.height,
     };
-    return jobManager.create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey });
+    return jobManager.create({ bbox: cleanBbox, imageEl, imageIndex, clips, screenPos, existingAnnKey, skewAngle });
   }
 
   // Shared click-to-detect handler — used by both BBoxSelector (normal sites)
