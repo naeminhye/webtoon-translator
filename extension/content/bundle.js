@@ -3980,8 +3980,33 @@ function bootForPage() {
       <button type="button" class="wt-bt-resize" title="Chỉnh khung">${BT_RESIZE_ICON}</button>
       <button type="button" class="wt-bt-delete" title="Xoá">${BT_DELETE_ICON}</button>
     `;
-    toolbar.style.left = bubble.style.left;
-    toolbar.style.top  = `${parseFloat(bubble.style.top) - 32}px`;
+    // `bubble` is an invisible hit-area sized to the FULL selected bbox — the
+    // visible caption is the inner .wt-bubble-text span, which auto-fit sizes
+    // to its own content and centers within that bbox (see .wt-translation-
+    // bubble's comment), so it's often much smaller/lower than the bbox's own
+    // top-left. Anchor to the span's real rendered position instead of
+    // bubble.style.left/top so the toolbar sits right above the visible text,
+    // not off at the top of a much taller bbox.
+    //
+    // Computed as a viewport-space DELTA (span rect minus bubble rect) added
+    // on top of bubble.style.left/top, rather than converting the span's
+    // rect to a page-absolute value directly — OverlayRenderer positions
+    // bubbles in page-absolute px (adds scrollX/scrollY) but
+    // FixedOverlayLayer (Kakao/Ridi) positions them wrapper-relative (no
+    // scroll offset); this code is shared by both, and a plain rect
+    // difference is correct either way since it never assumes which
+    // convention is in play.
+    const span = bubble.querySelector('.wt-bubble-text');
+    let anchorLeft = parseFloat(bubble.style.left);
+    let anchorTop  = parseFloat(bubble.style.top);
+    if (span) {
+      const bubbleRect = bubble.getBoundingClientRect();
+      const spanRect   = span.getBoundingClientRect();
+      anchorLeft += spanRect.left - bubbleRect.left;
+      anchorTop  += spanRect.top  - bubbleRect.top;
+    }
+    toolbar.style.left = `${anchorLeft}px`;
+    toolbar.style.top  = `${anchorTop - 32}px`;
     bubble.parentElement.appendChild(toolbar);
     _activeToolbar = { bubble, el: toolbar };
 
