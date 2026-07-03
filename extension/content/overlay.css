@@ -244,6 +244,94 @@
 .wt-bubble-toolbar button:hover  { background: #eef2ff; color: #4338ca; }
 .wt-bubble-toolbar button:active { transform: scale(0.92); }
 .wt-bubble-toolbar .wt-bt-delete:hover { background: #fef2f2; color: #b91c1c; }
+.wt-bubble-toolbar .wt-bt-llm-test:hover { background: #eef2ff; color: #6d28d9; }
+
+/* ── LLM prompt preview/test popover (manual, per-region, BYOK only) ──────── */
+
+.wt-llm-popover {
+  position: absolute;
+  z-index: 99999;
+  width: 320px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+  padding: 12px;
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wt-llm-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.wt-llm-popover-title { font-size: 12px; font-weight: 600; color: #1e293b; }
+.wt-llm-popover-close {
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px;
+}
+.wt-llm-popover-close:hover { color: #475569; }
+.wt-llm-popover-prompt {
+  width: 100%;
+  min-height: 120px;
+  max-height: 220px;
+  resize: vertical;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #334155;
+  background: #f8fafc;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+.wt-llm-popover-send {
+  align-self: flex-end;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: #6366f1;
+  color: #fff;
+}
+.wt-llm-popover-send:hover { background: #4f46e5; }
+.wt-llm-popover-result {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #1e293b;
+  background: #f8fafc;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.wt-llm-popover-result.wt-llm-popover-loading { color: #64748b; font-style: italic; }
+.wt-llm-popover-result.wt-llm-popover-error   { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+.wt-llm-popover-apply {
+  align-self: flex-end;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: #16a34a;
+  color: #fff;
+}
+.wt-llm-popover-apply:hover      { background: #15803d; }
+.wt-llm-popover-apply:disabled   { cursor: default; opacity: 0.7; }
 
 .wt-bubble-edit-textarea {
   position: absolute;
@@ -323,6 +411,38 @@
 }
 .wt-bubble-expand-toggle:hover { background: rgba(30, 41, 59, 0.92); }
 .wt-bubble-clipped.wt-bubble-expanded { z-index: 210; } /* float above neighboring bubbles while expanded */
+
+/* Per-bubble "re-translate" button — every finished bubble gets one
+   (Google/DeepL or an applied LLM result alike), revealed on hover so it
+   doesn't clutter the normal reading view. */
+.wt-bubble-reload {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(30, 41, 59, 0.75);
+  color: #fff;
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  z-index: 2;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+.wt-translation-bubble:hover .wt-bubble-reload { opacity: 1; }
+.wt-bubble-reload:hover   { background: rgba(30, 41, 59, 0.92); }
+.wt-bubble-reload:disabled { cursor: default; opacity: 0.6 !important; }
+.wt-bubble-reload-spinning svg { animation: wt-spin 0.8s linear infinite; }
+
+@keyframes wt-spin {
+  to { transform: rotate(360deg); }
+}
 
 @keyframes wt-fade-in {
   from { opacity: 0; transform: translateY(2px); }
@@ -983,67 +1103,6 @@ body.wt-panel-open #wt-toggle-btn {
 .wt-sp-row:hover { background: #f8fafc; }
 .wt-sp-row:active { background: #f1f5f9; }
 
-.wt-sp-row-actions {
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  display: none;
-  gap: 2px;
-  align-items: center;
-}
-.wt-sp-row:hover .wt-sp-row-actions { display: flex; }
-
-.wt-sp-row-edit,
-.wt-sp-row-del {
-  border: none;
-  background: transparent;
-  color: #94a3b8;
-  font-size: 11px;
-  line-height: 1;
-  padding: 3px 5px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.wt-sp-row-edit:hover { color: #6366f1; background: #eef2ff; }
-.wt-sp-row-del { font-size: 11px; padding: 3px 7px; border-radius: 4px; }
-.wt-sp-row-del:hover  { color: #ef4444; background: #fef2f2; }
-
-.wt-sp-row-edit-wrap {
-  margin-top: 6px;
-}
-.wt-sp-row-textarea {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid #c7d2fe;
-  border-radius: 6px;
-  font-size: 12px;
-  font-family: system-ui, sans-serif;
-  color: #1e293b;
-  resize: vertical;
-  outline: none;
-  box-sizing: border-box;
-}
-.wt-sp-row-textarea:focus { border-color: #6366f1; }
-.wt-sp-row-edit-btns {
-  display: flex;
-  gap: 4px;
-  margin-top: 4px;
-  justify-content: flex-end;
-}
-.wt-sp-row-save,
-.wt-sp-row-cancel {
-  padding: 4px 10px;
-  border-radius: 5px;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  border: none;
-}
-.wt-sp-row-save   { background: #6366f1; color: #fff; }
-.wt-sp-row-save:hover { background: #4f46e5; }
-.wt-sp-row-cancel { background: #f1f5f9; color: #64748b; }
-.wt-sp-row-cancel:hover { background: #e2e8f0; }
-
 .wt-sp-row-text {
   font-size: 13px;
   color: #1e293b;
@@ -1054,12 +1113,14 @@ body.wt-panel-open #wt-toggle-btn {
   overflow: hidden;
 }
 
+/* Original (source-language) text — sized up from its old 11px so Korean
+   text is actually legible at a glance, not just present for reference. */
 .wt-sp-row-orig {
-  font-size: 11px;
-  color: #94a3b8;
-  margin-top: 3px;
+  font-size: 15px;
+  color: #64748b;
+  margin-top: 4px;
   display: -webkit-box;
-  -webkit-line-clamp: 1;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }

@@ -16,7 +16,10 @@
     "https://api.ocr.space/*",
     "https://translate.googleapis.com/*",
     "https://api-free.deepl.com/*",
-    "https://api.deepl.com/*"
+    "https://api.deepl.com/*",
+    "https://api.openai.com/*",
+    "https://api.anthropic.com/*",
+    "https://generativelanguage.googleapis.com/*"
   ],
 
   "content_security_policy": {
@@ -41,7 +44,7 @@
         "https://page.kakao.com/content/*",
         "https://www.bomtoon.com/viewer/*"
       ],
-      "js": ["content/bundle.js"],
+      "js": ["shared/llm-adapters.js", "content/bundle.js"],
       "css": ["content/overlay.css"],
       "run_at": "document_idle"
     }
