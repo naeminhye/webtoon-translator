@@ -1680,6 +1680,51 @@ class DetectionPreview {
       applyPx(bboxPct);
 
       const cleanups = [];
+
+      // fixed mode positions the box in VIEWPORT coordinates (position:fixed),
+      // snapshotting origin() = img.getBoundingClientRect() only once, at
+      // whatever scroll position was current when show() was called. The box
+      // itself never moves on scroll (that's what position:fixed does), but
+      // the underlying image is normal in-flow content and DOES scroll — so
+      // without re-syncing, the box visually detaches from the panel
+      // underneath it the moment the page scrolls.
+      //
+      // NOT done via readPct()+applyPx(): readPct() divides by origin() at
+      // the moment it's called, which — by the time a scroll/resize listener
+      // fires — is already the NEW (post-scroll) rect, so it would silently
+      // bake the scroll delta into the "restored" percentage instead of
+      // preserving the box's true position relative to the image. Instead,
+      // track the image's rect/dims explicitly and apply the raw geometric
+      // delta directly to the box's own pixel styles: shifts left/top by how
+      // much the image's origin moved (handles scroll) and scales
+      // left/top/width/height by how much the image's own size changed
+      // (handles a responsive-layout window resize), without ever
+      // round-tripping through a percentage.
+      if (fixed) {
+        let lastOrigin = origin();
+        let lastDims   = dims();
+        const resync = () => {
+          const newOrigin = origin();
+          const newDims   = dims();
+          const scaleX = newDims.iw / lastDims.iw;
+          const scaleY = newDims.ih / lastDims.ih;
+          const relLeft = parseFloat(box.style.left) - lastOrigin.left;
+          const relTop  = parseFloat(box.style.top)  - lastOrigin.top;
+          box.style.left   = `${newOrigin.left + relLeft * scaleX}px`;
+          box.style.top    = `${newOrigin.top  + relTop  * scaleY}px`;
+          box.style.width  = `${parseFloat(box.style.width)  * scaleX}px`;
+          box.style.height = `${parseFloat(box.style.height) * scaleY}px`;
+          lastOrigin = newOrigin;
+          lastDims   = newDims;
+        };
+        window.addEventListener('scroll', resync, { passive: true, capture: true });
+        window.addEventListener('resize', resync, { passive: true });
+        cleanups.push(() => {
+          window.removeEventListener('scroll', resync, { capture: true });
+          window.removeEventListener('resize', resync);
+        });
+      }
+
       ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].forEach(pos => {
         const h = document.createElement('div');
         h.className = `wt-resize-handle wt-rh-${pos}`;
