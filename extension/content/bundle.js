@@ -831,7 +831,19 @@ const AUTO_DETECT_MAX_AREA_RATIO = 0.85; // bbox area / crop area — reject if 
 const AUTO_DETECT_MAX_REGION_DIM_PX = AUTO_DETECT_CROP_RADIUS * 2.5;
 const AUTO_DETECT_MAX_ASPECT     = 5;
 const AUTO_DETECT_MIN_ASPECT     = 0.2;
-const AUTO_DETECT_MIN_FILL_DENSITY = 0.55; // filledPixels / own-bbox-area — a solid oval/rounded-rect bubble is ~0.7-0.9; an irregular leaked fragment (e.g. part of a connector fused with unrelated art) is much sparser within its own bbox
+// filledPixels / own-bbox-area — a solid oval/rounded-rect bubble is
+// ~0.7-0.9; an irregular leaked fragment (e.g. part of a connector fused
+// with unrelated art) is much sparser within its own bbox. But a legitimate
+// bubble shape that isn't a single convex oval — e.g. two lobes joined by a
+// smooth (not sharply pinched) curve, which findWaistSplit's narrower
+// bottleneck check doesn't treat as a real waist to split on — has more
+// empty bbox area (two corner-voids instead of one, plus the concave join
+// itself) and comes out lower than a plain oval's. Real-world case that
+// motivated lowering this from 0.55: a two-lobed bubble (381x439,
+// filledPixels 85497) measured ~0.511 density and was legitimately a single
+// detectable bubble, not a leaked fragment. Needs tuning against more real
+// screenshots of both non-oval bubble shapes and genuinely sparse leaks.
+const AUTO_DETECT_MIN_FILL_DENSITY = 0.45;
 
 class BubbleAutoDetector {
   /**
@@ -2998,6 +3010,21 @@ function sendToBackground(message, retries = 3) {
 // accordingly. Still needs tuning against more real screenshots.
 const OCR_CROP_INSET_PCT = 0.08; // % of width/height trimmed from EACH side (e.g. 0.08 = 8%/side, ~16% off each dimension total)
 
+// A box that dips only marginally past an image's true edge (e.g. a
+// hand-resized box that overshoots by a fraction of a percent into the
+// selector overlay's 80px drag-tolerance zone) doesn't necessarily mean the
+// dialogue actually continues into the next panel — but the grab-amount
+// formula below (grabH) has a generous ~40%-of-image-height floor regardless
+// of how small the overflow is, so triggering on ANY overflow, however
+// trivial, can staple a large chunk of unrelated next-panel content onto an
+// otherwise perfectly legible crop and confuse Tesseract into misreading the
+// whole thing (found via real-world testing: a resized box that barely
+// crossed the boundary came back with garbage digits instead of its two
+// perfectly legible lines of dialogue). Only overflow past this threshold is
+// treated as "genuinely needs the next panel" — needs tuning against real
+// cross-panel screenshots (both marginal-dip and real multi-panel cases).
+const OCR_CROSS_PANEL_OVERFLOW_THRESHOLD_PCT = 3;
+
 /** Shrinks a %-of-image bbox toward its own center for the OCR crop only — see the OCR section note above. */
 function _insetBboxForOcr(bbox) {
   const insetX = bbox.w * OCR_CROP_INSET_PCT;
@@ -3076,8 +3103,10 @@ async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true
   const primaryY = Math.max(0, bbox.y);
   const clips = [{ img, x: bbox.x, y: primaryY, w: bbox.w, h: Math.max(1, primaryH), dispW }];
 
-  // Bottom cross-panel: only when user explicitly dragged past image boundary (bottomEdge > 100)
-  if (bottomEdge > 100 && idx >= 0 && idx < images.length - 1) {
+  // Bottom cross-panel: only when the overflow past the image boundary is
+  // meaningful (see OCR_CROSS_PANEL_OVERFLOW_THRESHOLD_PCT above), not a
+  // marginal dip that doesn't actually need next-panel content.
+  if (bottomEdge > 100 + OCR_CROSS_PANEL_OVERFLOW_THRESHOLD_PCT && idx >= 0 && idx < images.length - 1) {
     const nextImg = images[idx + 1];
     if (nextImg.src && !nextImg.src.startsWith('data:')) {
       const nextDispW = (bbox.w / 100) * (nextImg.getBoundingClientRect().width || imgDispW);
@@ -3087,8 +3116,9 @@ async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true
     }
   }
 
-  // Top cross-panel: only when user explicitly dragged above image top (topEdge < 0)
-  if (topEdge < 0 && idx > 0) {
+  // Top cross-panel: only when the overflow past the image top is
+  // meaningful (see OCR_CROSS_PANEL_OVERFLOW_THRESHOLD_PCT above).
+  if (topEdge < -OCR_CROSS_PANEL_OVERFLOW_THRESHOLD_PCT && idx > 0) {
     const prevImg = images[idx - 1];
     if (prevImg.src && !prevImg.src.startsWith('data:')) {
       const prevDispW = (bbox.w / 100) * (prevImg.getBoundingClientRect().width || imgDispW);

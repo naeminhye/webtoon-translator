@@ -17,24 +17,17 @@ let workerPromise = null;
 // Dialogue crops are short, isolated snippets — not full documents/paragraphs,
 // which is what Tesseract's own default page-segmentation mode assumes.
 
-/** Builds a string of code points [start, end] inclusive — used below to spell out Hangul ranges without a giant literal in source. */
-function _charRange(start, end) {
-  let s = '';
-  for (let cp = start; cp <= end; cp++) s += String.fromCodePoint(cp);
-  return s;
-}
-
-// Restricts recognition to characters that can plausibly appear in webtoon
-// dialogue, so background/bubble-outline noise can't get misread as stray
-// Latin letters or symbols (e.g. past observed garbage like "14 [", "2001 {").
-// Digits are intentionally kept (real numbers do appear in dialogue) — only
-// Latin letters and odd symbols are excluded by omission. Adjust the ranges/
-// punctuation below if legitimate characters turn out excluded during testing.
-const OCR_CHAR_WHITELIST =
-  _charRange(0x3131, 0x318E) +  // Hangul Compatibility Jamo (standalone ㄱ, ㅏ, etc.)
-  _charRange(0xAC00, 0xD7A3) +  // precomposed Hangul syllables
-  '0123456789' +
-  '.,?!…~"\'“”‘’';
+// tessedit_char_whitelist was tried here to restrict recognition to Hangul +
+// digits + dialogue punctuation, but Tesseract's whitelist/blacklist
+// mechanism does NOT function under OEM.LSTM_ONLY (confirmed: tesseract-ocr/
+// tesseract#751 — "Blacklist and whitelist unsupported with LSTM (4.0)"; also
+// tesseract-ocr/tesseract#998) — it's silently ignored, not an error, so it
+// looked harmless in testing but never actually filtered anything. Switching
+// to the legacy engine to make it work isn't viable here: the bundled WASM
+// core is LSTM-only (tesseract-core-simd-lstm.wasm.js — no legacy support
+// compiled in), and shipping a second core just for this would be a much
+// bigger change. Left unimplemented rather than kept as dead/misleading
+// config — revisit if a legacy-capable core is ever bundled.
 
 const OCR_UPSCALE_FACTOR = 2; // multiplier applied to the final crop right before Tesseract sees it (see _upscaleForOcr) — very small/blurry source crops may benefit from more (e.g. 3x), but that needs visual/accuracy testing to confirm, not just assumed
 
@@ -115,7 +108,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       // not a short dialogue snippet.
       await worker.setParameters({
         tessedit_pageseg_mode: message.payload.isSingleLine ? Tesseract.PSM.SINGLE_LINE : Tesseract.PSM.SINGLE_BLOCK,
-        tessedit_char_whitelist: OCR_CHAR_WHITELIST,
       });
       const upscaledDataUrl = await _upscaleForOcr(message.payload.dataUrl, OCR_UPSCALE_FACTOR);
       const { data } = await worker.recognize(upscaledDataUrl);
