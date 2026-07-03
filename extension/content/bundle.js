@@ -1367,6 +1367,199 @@ function _maskSubRegion(mask, w, x0, y0, x1, y1) {
   return { minX, minY, maxX, maxY, filledPixels };
 }
 
+// ── Difficulty Classifier (heuristic router: OCR text -> translation tier) ───
+// Not every line needs an LLM to translate well. This sits between region
+// detection/OCR and translation, and routes each region into one of four
+// tiers, each meant for a different (separately-implemented) pipeline:
+//   easy/medium -> machine translation only (medium == easy for now, no MTPE
+//                  tier yet), hard -> LLM translation, vision -> Vision LLM
+//                  on the cropped image (OCR skipped entirely for this tier).
+// v1 is deliberately "dumb": string matching + confidence thresholds, no real
+// Korean NLP/grammar analysis. A wrong tier just sends a line through a
+// slightly more/less expensive pipeline than ideal — not catastrophic — so
+// every threshold below is a named, tunable constant meant to be adjusted
+// after reviewing a batch of real screenshots against the [DifficultyClassifier]
+// console logs this module emits.
+
+const DIFFICULTY_SKEW_ANGLE_THRESHOLD_DEG  = 15;   // minAreaRect rotation (0-90, abs) beyond this -> too skewed to OCR reliably; needs tuning against real angled/phone-screen panel screenshots
+const DIFFICULTY_LOW_CONFIDENCE_THRESHOLD  = 0.6;  // OCR confidence (0-1) below this -> unreliable text, fall back to vision
+const DIFFICULTY_SHORT_TEXT_MAX_CHARS      = 5;    // char count at/under this counts as "very short" (e.g. a single SFX or interjection)
+const DIFFICULTY_HIGH_CONFIDENCE_THRESHOLD = 0.85; // OCR confidence (0-1) required, alongside short text, to call a line 'easy'
+
+const DIFFICULTY_TIERS = { EASY: 'easy', MEDIUM: 'medium', HARD: 'hard', VISION: 'vision' };
+
+// Sentence-ending honorific markers — a strong signal of formal/polite speech
+// register, which machine translation tends to flatten. Extend as needed.
+const DIFFICULTY_HONORIFIC_MARKERS = ['습니다', '입니다', '세요', '였습니다', '겠습니다'];
+
+// Stylized punctuation clusters common in webtoon dialogue (trailing off,
+// emphasis, tone) that machine translation tends to mishandle. Extend as needed.
+const DIFFICULTY_STYLIZED_PUNCTUATION_MARKERS = ['…', '~', '‼', '？！'];
+
+/**
+ * Derives boundary ("contour") points from a flood-fill region's fill mask —
+ * any filled pixel with at least one empty (or out-of-bounds) 4-neighbor.
+ * `mask`/`w` are floodFillBBox's returned `mask` and the canvas width it was
+ * computed against (also valid for a waist-split half, since those reuse the
+ * same mask/canvas, just a tighter minX/minY/maxX/maxY). Order doesn't matter
+ * — minAreaRectAngle's convex-hull step sorts points itself — so this is a
+ * boundary POINT SET, not an ordered polygon trace.
+ *
+ * floodFillBBox itself only returns a fill mask + axis-aligned bbox, not a
+ * contour; this is the missing piece needed to compute a true minimum-area
+ * (rotated) bounding rectangle instead of the axis-aligned one.
+ */
+function extractRegionContour(mask, w, region) {
+  const { minX, minY, maxX, maxY } = region;
+  const points = [];
+  for (let y = minY; y <= maxY; y++) {
+    const base = y * w;
+    for (let x = minX; x <= maxX; x++) {
+      const idx = base + x;
+      if (!mask[idx]) continue;
+      const isBoundary =
+        x === minX || x === maxX || y === minY || y === maxY ||
+        !mask[idx - 1] || !mask[idx + 1] || !mask[idx - w] || !mask[idx + w];
+      if (isBoundary) points.push({ x, y });
+    }
+  }
+  return points;
+}
+
+/** Andrew's monotone-chain convex hull. Returns hull points in CCW order (length may be < 3 for degenerate/collinear input). */
+function _convexHull(points) {
+  const pts = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop(); lower.pop();
+  return lower.concat(upper);
+}
+
+/**
+ * Minimum-area bounding rectangle via rotating calipers: for each convex-hull
+ * edge, treats that edge's direction as one rectangle axis and measures the
+ * axis-aligned extent of every hull point in that rotated frame, keeping
+ * whichever edge yields the smallest-area rectangle. Returns that rectangle's
+ * rotation relative to horizontal, normalized to 0-90 degrees (absolute value)
+ * — a rectangle's rotation is ambiguous mod 90° (which side is "width" vs.
+ * "height"), and only how far off-horizontal it is matters here, not direction.
+ */
+function minAreaRectAngle(contourPoints) {
+  if (!contourPoints || contourPoints.length < 3) return 0;
+  const hull = _convexHull(contourPoints);
+  if (hull.length < 3) return 0;
+
+  let minArea = Infinity, bestAngleRad = 0;
+  for (let i = 0; i < hull.length; i++) {
+    const p1 = hull[i], p2 = hull[(i + 1) % hull.length];
+    const edgeAngleRad = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+    const cos = Math.cos(-edgeAngleRad), sin = Math.sin(-edgeAngleRad);
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of hull) {
+      const rx = p.x * cos - p.y * sin;
+      const ry = p.x * sin + p.y * cos;
+      if (rx < minX) minX = rx; if (rx > maxX) maxX = rx;
+      if (ry < minY) minY = ry; if (ry > maxY) maxY = ry;
+    }
+    const area = (maxX - minX) * (maxY - minY);
+    if (area < minArea) { minArea = area; bestAngleRad = edgeAngleRad; }
+  }
+
+  // Fold into [0, 90) with true modulo (NOT abs-then-%, which mishandles
+  // negative angles and — since a rectangle's two perpendicular edge
+  // directions are 90° apart and both tie for minimal area — would make the
+  // reported angle flip unpredictably between theta and 90-theta depending on
+  // which tied edge the loop above happened to keep).
+  const angleDeg = bestAngleRad * 180 / Math.PI;
+  return ((angleDeg % 90) + 90) % 90;
+}
+
+/** Post-OCR tier rules (skew already checked, OCR already ran) — see classifyDifficulty for the full flow and rule order/rationale. */
+function _classifyPostOcr(text, confidence, skewAngle) {
+  const base = { skewAngle, ocrConfidence: confidence, text };
+
+  if (confidence < DIFFICULTY_LOW_CONFIDENCE_THRESHOLD) {
+    return { ...base, tier: DIFFICULTY_TIERS.VISION, reason: 'low-ocr-confidence' };
+  }
+
+  // Computed once — reused by the 'easy' check's negative condition below and
+  // the 'hard' check, so a honorific line never accidentally qualifies as easy.
+  const hasHonorific = DIFFICULTY_HONORIFIC_MARKERS.some(m => text.includes(m));
+
+  if (text.length <= DIFFICULTY_SHORT_TEXT_MAX_CHARS &&
+      confidence > DIFFICULTY_HIGH_CONFIDENCE_THRESHOLD &&
+      !hasHonorific) {
+    return { ...base, tier: DIFFICULTY_TIERS.EASY, reason: 'short-high-confidence' };
+  }
+
+  if (hasHonorific) {
+    return { ...base, tier: DIFFICULTY_TIERS.HARD, reason: 'honorific-detected' };
+  }
+
+  const hasStylizedPunctuation = DIFFICULTY_STYLIZED_PUNCTUATION_MARKERS.some(m => text.includes(m));
+  if (hasStylizedPunctuation) {
+    return { ...base, tier: DIFFICULTY_TIERS.HARD, reason: 'stylized-punctuation' };
+  }
+
+  return { ...base, tier: DIFFICULTY_TIERS.MEDIUM, reason: 'default' };
+}
+
+function _logDifficultyClassification(result) {
+  console.log('[DifficultyClassifier]', {
+    text: result.text,
+    confidence: result.ocrConfidence,
+    tier: result.tier,
+    reason: result.reason,
+    skewAngle: result.skewAngle,
+  });
+}
+
+/**
+ * Single entry point for difficulty classification. Owns the decision of
+ * whether OCR runs at all:
+ *   1. Computes skew angle from `regionContour` (boundary points from the
+ *      region's flood-fill mask — see extractRegionContour — NOT the
+ *      axis-aligned bbox) via minAreaRectAngle. If it exceeds
+ *      DIFFICULTY_SKEW_ANGLE_THRESHOLD_DEG, returns tier 'vision' immediately
+ *      WITHOUT calling `ocrRunner` — Tesseract is skipped entirely for
+ *      high-skew regions (e.g. angled phone-screen panels).
+ *   2. Otherwise calls `ocrRunner()` (may be async; expected to resolve to
+ *      `{ text, confidence }` with confidence in 0-1) and applies the
+ *      post-OCR rules — see _classifyPostOcr.
+ * Every result (early-exit or not) is logged via _logDifficultyClassification
+ * for later tuning.
+ *
+ * @param {{x:number,y:number}[]} regionContour - boundary points, e.g. from extractRegionContour(region.mask, canvasWidth, region)
+ * @param {() => ({text:string,confidence:number}|Promise<{text:string,confidence:number}>)} ocrRunner
+ * @returns {Promise<{tier:string, reason:string, skewAngle:number, ocrConfidence:number|null, text:string|null}>}
+ */
+async function classifyDifficulty(regionContour, ocrRunner) {
+  const skewAngle = minAreaRectAngle(regionContour);
+
+  if (skewAngle > DIFFICULTY_SKEW_ANGLE_THRESHOLD_DEG) {
+    const result = { tier: DIFFICULTY_TIERS.VISION, reason: 'high-skew-angle', skewAngle, ocrConfidence: null, text: null };
+    _logDifficultyClassification(result);
+    return result;
+  }
+
+  const { text, confidence } = await ocrRunner();
+  const result = _classifyPostOcr(text, confidence, skewAngle);
+  _logDifficultyClassification(result);
+  return result;
+}
+
 // ── DetectionPreview ─────────────────────────────────────────────────────────
 // Adjustable bounding-box preview shown after a successful auto-detect, so the
 // user can correct the region before it's sent into the OCR pipeline.
