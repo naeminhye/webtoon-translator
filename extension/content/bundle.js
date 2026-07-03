@@ -1620,7 +1620,24 @@ function logDifficultyClassificationShadow(skewAngle, text, confidence) {
 
 // ── DetectionPreview ─────────────────────────────────────────────────────────
 // Adjustable bounding-box preview shown after a successful auto-detect, so the
-// user can correct the region before it's sent into the OCR pipeline.
+// user can correct the region before it's sent into the OCR pipeline. Also
+// reused by startBubbleResize to adjust an EXISTING annotation's box.
+
+// A bubble can visually span two stacked panel images (webtoons scroll
+// vertically) — both the initial manual drag-select (BBoxSelector/
+// FixedOverlayLayer's multi-image overlap check) and auto-detect
+// (BubbleAutoDetector's y<0 / y+h>100 convention, consumed by
+// ocrRegionStitched's cross-panel grab) already support this. The move/resize
+// handles below used to hard-clamp the box to the CURRENT single image's own
+// [top, top+height] bounds, with no way to drag it into a neighboring
+// panel — so a box created spanning two panels could never be resized to
+// still cover both. This allowance lets the box's top/bottom extend past the
+// image's own edge by up to this fraction of the image's height, matching
+// ocrRegionStitched's own cross-panel grab cap (grabH capped at 60% of image
+// height) — no point letting the UI reach further than OCR would actually
+// fetch from the neighboring panel. Horizontal (left/right) stays clamped to
+// the current image's own width — panels stack vertically, not side-by-side.
+const CROSS_PANEL_DRAG_ALLOWANCE_FRAC = 0.6;
 
 class DetectionPreview {
   constructor() {
@@ -1785,9 +1802,10 @@ class DetectionPreview {
       const iw = img.offsetWidth || img.naturalWidth;
       const ih = img.offsetHeight || img.naturalHeight;
       const o = origin();
+      const vAllowance = ih * CROSS_PANEL_DRAG_ALLOWANCE_FRAC;
       const w = parseFloat(box.style.width), h = parseFloat(box.style.height);
       const l = Math.max(o.left, Math.min(o.left + iw - w, origLeft + (e.clientX - startX)));
-      const t = Math.max(o.top,  Math.min(o.top  + ih - h, origTop  + (e.clientY - startY)));
+      const t = Math.max(o.top - vAllowance,  Math.min(o.top + ih - h + vAllowance, origTop  + (e.clientY - startY)));
       box.style.left = `${l}px`;
       box.style.top  = `${t}px`;
     };
@@ -1827,8 +1845,9 @@ class DetectionPreview {
       if (pos.includes('w')) { w = Math.max(AUTO_DETECT_MIN_W, origW - dx); l = Math.min(origLeft + origW - AUTO_DETECT_MIN_W, origLeft + dx); }
       if (pos.includes('n')) { h = Math.max(AUTO_DETECT_MIN_H, origH - dy); t = Math.min(origTop  + origH - AUTO_DETECT_MIN_H, origTop  + dy); }
 
+      const vAllowance = ih * CROSS_PANEL_DRAG_ALLOWANCE_FRAC;
       l = Math.max(o.left, Math.min(o.left + iw - w, l));
-      t = Math.max(o.top,  Math.min(o.top  + ih - h, t));
+      t = Math.max(o.top - vAllowance,  Math.min(o.top + ih - h + vAllowance, t));
 
       box.style.left   = `${l}px`;
       box.style.top    = `${t}px`;
