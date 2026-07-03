@@ -250,7 +250,7 @@ function applyAutoFit(b, span, ann, boxWidthPx, boxHeightPx, applyMargin = true)
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'wt-bubble-expand-toggle';
-    toggle.title = 'Xem đầy đủ bản dịch';
+    toggle.title = 'View full translation';
     toggle.textContent = '⋯';
     toggle.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2080,7 +2080,7 @@ class JobManager {
       job.originalText = ocrText || '';
       if (!ocrText) {
         job.status = 'error';
-        job.errorMessage = 'Không tìm thấy chữ trong vùng này';
+        job.errorMessage = 'No text found in this region';
         this._onStatusChange(job);
         return;
       }
@@ -2144,13 +2144,13 @@ class JobOverlayRenderer {
     el.className = `wt-job-overlay wt-job-${job.status}${this._isKakao ? ' wt-job-fixed' : ''}`;
     el.dataset.status = job.status;
 
-    const labels = { queued: 'Đang chờ…', ocr: 'Đang quét chữ…', translating: 'Đang dịch…' };
-    const label = job.status === 'error' ? (job.errorMessage || 'Lỗi') : (labels[job.status] || '');
+    const labels = { queued: 'Pending…', ocr: 'Scanning text…', translating: 'Translating…' };
+    const label = job.status === 'error' ? (job.errorMessage || 'Error') : (labels[job.status] || '');
     const cancellable = job.status !== 'error';
     el.innerHTML = `
       <span class="wt-job-spinner"></span>
       <span class="wt-job-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
-      <button type="button" class="${cancellable ? 'wt-job-cancel' : 'wt-job-dismiss'}" title="${cancellable ? 'Huỷ' : 'Bỏ qua'}">&#10005;</button>
+      <button type="button" class="${cancellable ? 'wt-job-cancel' : 'wt-job-dismiss'}" title="${cancellable ? 'Cancel' : 'Dismiss'}">&#10005;</button>
     `;
     el.querySelector('.wt-job-cancel, .wt-job-dismiss').addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2209,8 +2209,8 @@ class ConfirmPopup {
       box.innerHTML = `
         <div class="wt-confirm-msg">${escapeHtml(message)}</div>
         <div class="wt-confirm-actions">
-          <button type="button" class="wt-confirm-no">Huỷ</button>
-          <button type="button" class="wt-confirm-yes">Vẫn tạo</button>
+          <button type="button" class="wt-confirm-no">Cancel</button>
+          <button type="button" class="wt-confirm-yes">Create anyway</button>
         </div>`;
       document.body.appendChild(box);
       const finish = (v) => {
@@ -2228,6 +2228,70 @@ class ConfirmPopup {
   }
 
   dismiss() { this._el?.remove(); this._el = null; }
+}
+
+/**
+ * Popover for previewing/testing the LLM prompt for a single region. Opened
+ * only by an explicit click on a region's "Test LLM" button (see
+ * .wt-bt-llm-test in the bubble toolbar) — never auto-opened, since regions
+ * are OCR'd/translated concurrently (MAX_CONCURRENT_JOBS at once) and an
+ * auto-popping modal per region would fight that flow.
+ *
+ * This is a preview/inspection tool only: "Send to LLM" calls the user's BYOK
+ * provider and displays the raw reply here, but never writes it back into the
+ * region's saved translation — the region keeps showing its normal
+ * Google/DeepL-translated result regardless of what happens in this popover.
+ */
+class LlmTestPopover {
+  constructor() { this._el = null; }
+
+  dismiss() {
+    this._el?.remove();
+    this._el = null;
+    if (this._onOutside) document.removeEventListener('mousedown', this._onOutside);
+    this._onOutside = null;
+  }
+
+  show(screenPos, prompt) {
+    this.dismiss();
+    const box = document.createElement('div');
+    box.className = 'wt-llm-popover';
+    box.style.left = `${screenPos.x}px`;
+    box.style.top  = `${screenPos.y}px`;
+    box.innerHTML = `
+      <div class="wt-llm-popover-header">
+        <span class="wt-llm-popover-title">LLM Prompt Preview</span>
+        <button type="button" class="wt-llm-popover-close" title="Close">&#10005;</button>
+      </div>
+      <textarea class="wt-llm-popover-prompt" readonly spellcheck="false">${escapeHtml(prompt)}</textarea>
+      <button type="button" class="wt-llm-popover-send">Send to LLM</button>
+      <div class="wt-llm-popover-result hidden"></div>
+    `;
+    document.body.appendChild(box);
+    this._el = box;
+
+    box.querySelector('.wt-llm-popover-close').addEventListener('click', () => this.dismiss());
+
+    box.querySelector('.wt-llm-popover-send').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const resultEl = box.querySelector('.wt-llm-popover-result');
+      resultEl.classList.remove('hidden', 'wt-llm-popover-error');
+      resultEl.classList.add('wt-llm-popover-loading');
+      resultEl.textContent = 'Sending…';
+      try {
+        const reply = await callByokLlm(prompt);
+        resultEl.classList.remove('wt-llm-popover-loading');
+        resultEl.textContent = reply;
+      } catch (err) {
+        resultEl.classList.remove('wt-llm-popover-loading');
+        resultEl.classList.add('wt-llm-popover-error');
+        resultEl.textContent = `Error: ${err?.message || err}`;
+      }
+    });
+
+    this._onOutside = (e) => { if (!box.contains(e.target)) this.dismiss(); };
+    setTimeout(() => document.addEventListener('mousedown', this._onOutside), 0);
+  }
 }
 
 // ── BBoxSelector ─────────────────────────────────────────────────────────────
@@ -2863,6 +2927,25 @@ async function getStoryContext(adapter, site, titleId) {
   return promise;
 }
 
+// ── LLM prompt formatting (manual "Test LLM" preview only, see LlmTestPopover) ──
+// Plain string formatting (title + tags + synopsis + OCR text) — no template
+// engine and no LLM-based compression, consistent with the earlier decision to
+// keep Story Context assembly simple. Character memory / chapter summary
+// aren't built yet, so they're intentionally omitted here rather than stubbed
+// with placeholder text; nothing built from this function is wired into the
+// automatic translation pipeline (see autoTranslate()) — it only feeds the
+// manual per-region preview/test popover.
+function formatLlmPrompt(storyContext, ocrText) {
+  const lines = [];
+  if (storyContext?.title)          lines.push(`Title: ${storyContext.title}`);
+  if (storyContext?.tags?.length)   lines.push(`Tags: ${storyContext.tags.join(', ')}`);
+  if (storyContext?.synopsis)       lines.push(`Synopsis: ${storyContext.synopsis}`);
+  lines.push('');
+  lines.push('Translate the following webtoon dialogue/narration text:');
+  lines.push(ocrText);
+  return lines.join('\n');
+}
+
 // ── Adapters ──────────────────────────────────────────────────────────────────
 
 class NaverAdapter {
@@ -3391,12 +3474,65 @@ async function autoTranslate(text) {
     return data.translations[0].text;
   }
 
-  // Google Translate (unofficial free endpoint)
+  // Google Translate (unofficial free endpoint) — also the fallback for
+  // 'byok', which isn't wired into this automatic pipeline yet (see
+  // callByokLlm/LlmTestPopover for the manual per-region preview instead).
   const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   return data[0].map(s => s[0]).join('');
+}
+
+/**
+ * Calls the user's BYOK LLM with a prompt built by formatLlmPrompt(), for the
+ * manual "Test LLM" preview button only (see LlmTestPopover) — never called
+ * from the automatic translation pipeline (autoTranslate above).
+ *
+ * No hardcoded provider list exists elsewhere in the codebase (checked), and
+ * the settings UI intentionally uses a free-text "provider/model" field
+ * instead of inventing one — so this only recognizes the two prefixes named
+ * in that field's placeholder ("openai/…" and "anthropic/…"); anything else
+ * throws a clear error rather than guessing a request shape.
+ */
+async function callByokLlm(prompt) {
+  const s = await chrome.storage.local.get({ 'wt:byok-key': '', 'wt:byok-model': '' });
+  const apiKey        = s['wt:byok-key'];
+  const providerModel = s['wt:byok-model'];
+  if (!apiKey) throw new Error('No BYOK API key set — add one in Settings');
+  if (!providerModel) throw new Error('No provider/model set — add one in Settings (e.g. "openai/gpt-4o")');
+
+  const slash    = providerModel.indexOf('/');
+  const provider = slash === -1 ? providerModel : providerModel.slice(0, slash);
+  const model    = slash === -1 ? providerModel : providerModel.slice(slash + 1);
+
+  if (provider === 'openai') {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `OpenAI HTTP ${res.status}`);
+    return data.choices?.[0]?.message?.content ?? '';
+  }
+
+  if (provider === 'anthropic') {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model, max_tokens: 1024, messages: [{ role: 'user', content: prompt }] }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `Anthropic HTTP ${res.status}`);
+    return data.content?.[0]?.text ?? '';
+  }
+
+  throw new Error(`Unsupported provider "${provider}" — this preview button currently supports "openai/<model>" or "anthropic/<model>"`);
 }
 
 function _cropCanvas(img, bbox) {
@@ -3440,6 +3576,9 @@ const SCAN_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" s
 const BT_EDIT_ICON   = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
 const BT_RESIZE_ICON = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`;
 const BT_DELETE_ICON = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`;
+// Manual per-region "Test LLM" prompt-preview button (see LlmTestPopover) —
+// only shown when BYOK is the selected Translation API and a key is set.
+const BT_LLM_ICON    = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4v3a4 4 0 0 0-2 3.46V19a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3v-6.54A4 4 0 0 0 16 9V6a4 4 0 0 0-4-4z"/><path d="M9 12h.01M15 12h.01"/></svg>`;
 
 function buildToggleButton() {
   const btn = document.createElement('button');
@@ -3655,7 +3794,7 @@ function bootForPage() {
     if (isKakao) return;
     chrome.storage.local.get({ [SCAN_HINT_KEY]: false }).then((stored) => {
       if (stored[SCAN_HINT_KEY]) return;
-      showToast('💡 Click để tự động nhận diện bubble, hoặc kéo để chọn vùng thủ công', '#6366f1', 4500);
+      showToast('💡 Click to auto-detect a bubble, or drag to select a region manually', '#6366f1', 4500);
       chrome.storage.local.set({ [SCAN_HINT_KEY]: true });
     });
   }
@@ -3781,6 +3920,7 @@ function bootForPage() {
   const autoDetector      = new BubbleAutoDetector();
   const detectPreview     = new DetectionPreview(); // reused for post-hoc bbox adjustment (resize action)
   const confirmPopup      = new ConfirmPopup();
+  const llmTestPopover    = new LlmTestPopover();
   const jobOverlayRenderer = new JobOverlayRenderer({
     isKakao,
     onCancel: (jobId) => jobManager.cancel(jobId),
@@ -3839,7 +3979,7 @@ function bootForPage() {
     const active = jobManager.activeCount(), queued = jobManager.queuedCount();
     badge.classList.toggle('wt-job-badge-visible', active + queued > 0);
     badge.querySelector('.wt-job-badge-text').textContent =
-      queued > 0 ? `${active} đang dịch · ${queued} chờ` : `${active} đang dịch`;
+      queued > 0 ? `${active} translating · ${queued} pending` : `${active} translating`;
   }
 
   let _storyContextRequestedThisPageLoad = false; // only fetch/log once per page load, not on every OCR request
@@ -3880,8 +4020,8 @@ function bootForPage() {
     },
     runTranslate:  (job) => autoTranslate(job.originalText),
     findOverlap:   findOverlapForBbox,
-    confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'Vùng này có vẻ trùng với bản dịch đã có. Vẫn tạo bản dịch mới ở đây?'),
-    onTooSmall: () => showToast('Vùng chọn quá nhỏ để nhận diện chữ — hãy kéo/chọn một vùng lớn hơn', '#f59e0b'),
+    confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'This region looks like it overlaps an existing translation. Create a new one here anyway?'),
+    onTooSmall: () => showToast('Selected region is too small to recognize text — drag/select a larger area', '#f59e0b'),
     onQueueChange: updateJobBadge,
     onStatusChange: (job) => jobOverlayRenderer.render(job),
     onDone: async (job) => {
@@ -3991,8 +4131,8 @@ function bootForPage() {
     const toolbar = document.createElement('div');
     toolbar.className = 'wt-detect-toolbar';
     toolbar.innerHTML = `
-      <button type="button" class="wt-detect-confirm" title="Lưu (Enter)">&#10003;</button>
-      <button type="button" class="wt-detect-cancel" title="Huỷ (Esc)">&#10005;</button>
+      <button type="button" class="wt-detect-confirm" title="Save (Enter)">&#10003;</button>
+      <button type="button" class="wt-detect-cancel" title="Cancel (Esc)">&#10005;</button>
     `;
     toolbar.style.left = textarea.style.left;
     toolbar.style.top  = `${parseFloat(textarea.style.top) - 34}px`;
@@ -4112,9 +4252,9 @@ function bootForPage() {
     const toolbar = document.createElement('div');
     toolbar.className = 'wt-bubble-toolbar';
     toolbar.innerHTML = `
-      <button type="button" class="wt-bt-edit" title="Sửa văn bản">${BT_EDIT_ICON}</button>
-      <button type="button" class="wt-bt-resize" title="Chỉnh khung">${BT_RESIZE_ICON}</button>
-      <button type="button" class="wt-bt-delete" title="Xoá">${BT_DELETE_ICON}</button>
+      <button type="button" class="wt-bt-edit" title="Edit text">${BT_EDIT_ICON}</button>
+      <button type="button" class="wt-bt-resize" title="Adjust box">${BT_RESIZE_ICON}</button>
+      <button type="button" class="wt-bt-delete" title="Delete">${BT_DELETE_ICON}</button>
     `;
     // `bubble` is an invisible hit-area sized to the FULL selected bbox — the
     // visible caption is the inner .wt-bubble-text span, which auto-fit sizes
@@ -4159,6 +4299,31 @@ function bootForPage() {
       dismissBubbleToolbar();
       await deleteAnnotation(annKey, img);
     });
+
+    // "Test LLM" is added after the rest of the toolbar so edit/resize/delete
+    // stay instantly usable — this check is async (reads settings) and only
+    // applies when BYOK is the selected Translation API with a key saved.
+    // Never wired into automatic translation; see LlmTestPopover/callByokLlm.
+    (async () => {
+      const s = await chrome.storage.local.get({ 'wt:translate-provider': 'google', 'wt:byok-key': '' });
+      if (s['wt:translate-provider'] !== 'byok' || !s['wt:byok-key']) return;
+      if (_activeToolbar?.el !== toolbar) return; // toolbar dismissed/replaced while we awaited
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'wt-bt-llm-test';
+      btn.title = 'Test LLM prompt';
+      btn.innerHTML = BT_LLM_ICON;
+      toolbar.appendChild(btn);
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const ann = allAnnotations.find(a => annKeyOf(a) === annKey);
+        const ocrText = ann?.originalText || '';
+        const btnRect = btn.getBoundingClientRect();
+        const storyContext = await getStoryContext(adapter, meta.site, meta.titleId);
+        const prompt = formatLlmPrompt(storyContext, ocrText);
+        llmTestPopover.show({ x: btnRect.left + window.scrollX, y: btnRect.bottom + window.scrollY + 6 }, prompt);
+      });
+    })();
   });
 
   // Reposition fixed bubbles/job overlays on scroll (Kakao uses position:absolute relative to page)
@@ -4253,6 +4418,7 @@ function bootForPage() {
     dismissBubbleToolbar();
     detectPreview.dismiss();
     confirmPopup.dismiss();
+    llmTestPopover.dismiss();
     toggleBtn.remove();
     scanBtn.remove();
     panel?.hide();

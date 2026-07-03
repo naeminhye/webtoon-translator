@@ -172,6 +172,10 @@ html, body {
   margin-bottom: 20px;
 }
 
+.engine-grid-3 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
 .engine-card-full {
   grid-column: 1 / -1;
 }
