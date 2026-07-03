@@ -810,6 +810,25 @@ const AUTO_DETECT_PADDING        = 8;   // px padding added to the final bbox
 const AUTO_DETECT_MIN_W          = 20;  // px — reject narrower regions
 const AUTO_DETECT_MIN_H          = 15;  // px — reject shorter regions
 const AUTO_DETECT_MAX_AREA_RATIO = 0.85; // bbox area / crop area — reject if it likely leaked into background
+// AUTO_DETECT_MAX_AREA_RATIO alone misses a specific leak: when a bubble's
+// fill color nearly matches the surrounding page/panel background, the
+// color-tolerance flood fill treats them as one continuous blob and keeps
+// growing the crop (expand-and-retry loop) until it finds SOME other-colored
+// boundary, however far that is — often well past the actual bubble, across
+// blank panel space, even into the next panel. That result is DENSE (passes
+// AUTO_DETECT_MIN_FILL_DENSITY, since it's a solid fill, not a sparse leaked
+// fragment) and can end up well under AUTO_DETECT_MAX_AREA_RATIO once the
+// crop itself has grown large enough to contain it — so neither existing
+// check catches it. This is an absolute cap instead, anchored to the
+// STARTING search radius (not however large the crop has since grown): a
+// real single bubble is rarely bigger than a small multiple of the radius
+// the algorithm considered reasonable to search around the click in the
+// first place. Reuses the 'leaked-into-background' reason (not a new one) so
+// the existing edge-barrier retry below — which stops at the bubble's drawn
+// outline instead of relying on color distance — automatically engages for
+// this case too. Needs tuning against real large-bubble screenshots to make
+// sure legitimately huge bubbles don't get rejected.
+const AUTO_DETECT_MAX_REGION_DIM_PX = AUTO_DETECT_CROP_RADIUS * 2.5;
 const AUTO_DETECT_MAX_ASPECT     = 5;
 const AUTO_DETECT_MIN_ASPECT     = 0.2;
 const AUTO_DETECT_MIN_FILL_DENSITY = 0.55; // filledPixels / own-bbox-area — a solid oval/rounded-rect bubble is ~0.7-0.9; an irregular leaked fragment (e.g. part of a connector fused with unrelated art) is much sparser within its own bbox
@@ -971,6 +990,7 @@ class BubbleAutoDetector {
     if (rw < AUTO_DETECT_MIN_W || rh < AUTO_DETECT_MIN_H) return { valid: false, reason: 'too-small' };
     const areaRatio = (rw * rh) / (cw * ch);
     if (areaRatio > AUTO_DETECT_MAX_AREA_RATIO) return { valid: false, reason: 'leaked-into-background' };
+    if (rw > AUTO_DETECT_MAX_REGION_DIM_PX || rh > AUTO_DETECT_MAX_REGION_DIM_PX) return { valid: false, reason: 'leaked-into-background' };
     const aspect = rw / rh;
     if (aspect > AUTO_DETECT_MAX_ASPECT || aspect < AUTO_DETECT_MIN_ASPECT) return { valid: false, reason: 'bad-aspect-ratio' };
     const density = region.filledPixels / (rw * rh);
