@@ -126,7 +126,8 @@ const TESSERACT_CONFIDENCE_THRESHOLD = 50;
 
 const OCR_TEXT_DARK_THRESHOLD         = 120;  // grayscale luminance (0-255) below this counts as a "dark" (text) pixel; needs tuning — black-on-light only, see note above
 const OCR_TEXT_DILATE_PX              = 2;    // merges individual character strokes into connected line blocks; same separable-dilation algorithm as bundle.js's dilateMask (duplicated here — content script and service worker are separate execution contexts in this codebase, nothing to import between them)
-const OCR_TEXT_MERGE_DISTANCE_PX      = 14;   // gap (px) within which two text blocks (e.g. separate lines of dialogue) are merged into one cluster; needs tuning against real multi-line bubbles
+const OCR_TEXT_MERGE_DISTANCE_PX      = 14;   // gap (px) within which two SMALL text blocks are merged into the cluster; needs tuning against real multi-line bubbles. Large blocks ignore this entirely — see OCR_TEXT_MERGE_SIZE_RATIO
+const OCR_TEXT_MERGE_SIZE_RATIO       = 0.45; // a block whose own bbox area is >= this fraction of the largest block found in the crop is always merged in, regardless of gap distance — fixes irregular line spacing (e.g. a bubble narrowing near its tail) dropping a real, full-size text line just because it sits farther from the rest than OCR_TEXT_MERGE_DISTANCE_PX allows. Only blocks BELOW this ratio still go through the distance check. Needs tuning alongside OCR_TEXT_MERGE_DISTANCE_PX — too low and real noise blobs start qualifying as "large enough"; too high and irregular-spacing lines stop qualifying
 const OCR_TEXT_MIN_CLUSTER_W_PX       = 10;   // px — reject a merged cluster narrower than this as noise, not text
 const OCR_TEXT_MIN_CLUSTER_H_PX       = 8;    // px — reject a merged cluster shorter than this as noise, not text
 const OCR_TEXT_MIN_CLUSTER_AREA_RATIO = 0.02; // merged cluster bbox area / full crop area — reject specks too small relative to the crop to plausibly be the dialogue
@@ -191,30 +192,81 @@ function _componentGap(a, b) {
   return Math.max(dx, dy);
 }
 
-/** Iteratively merges components whose gap is within `mergeDistancePx` (repeats since a merge can bring a third component into range) — turns separate per-line text blocks into one bbox per dialogue. */
-function _mergeNearbyComponents(components, mergeDistancePx) {
-  const groups = components.map(c => ({ ...c }));
-  let merged = true;
-  while (merged) {
-    merged = false;
-    for (let i = 0; i < groups.length && !merged; i++) {
-      for (let j = i + 1; j < groups.length; j++) {
-        if (_componentGap(groups[i], groups[j]) <= mergeDistancePx) {
-          groups[i] = {
-            minX: Math.min(groups[i].minX, groups[j].minX),
-            minY: Math.min(groups[i].minY, groups[j].minY),
-            maxX: Math.max(groups[i].maxX, groups[j].maxX),
-            maxY: Math.max(groups[i].maxY, groups[j].maxY),
-            pixelCount: groups[i].pixelCount + groups[j].pixelCount,
-          };
-          groups.splice(j, 1);
-          merged = true;
-          break;
-        }
+/**
+ * Decides which raw text-block components belong in the final merged
+ * dialogue bbox, and returns that single merged bbox (or null if `components`
+ * is empty). Pure distance-based merging drops real text lines that sit an
+ * irregular distance from the rest of the dialogue — e.g. a bubble that
+ * narrows near its tail, widening the gap before its last line — because a
+ * real, full-size text line sitting far away looks identical to a small,
+ * genuinely-noise blob sitting far away.
+ *
+ * Fix: a block whose own bbox area is >= `sizeRatioThreshold` of the largest
+ * block found in this crop is ALWAYS included, no matter how far it sits
+ * from the rest (it's plausibly a real text line, not noise). Only blocks
+ * below that ratio still go through the gap-distance check — a stray
+ * punctuation mark or partial character close to the cluster likely belongs
+ * to it; one far away is more likely noise. Distance-qualified inclusion is
+ * iterated to a fixed point, since including one small block can bring
+ * another, farther small block within range of the (now bigger) cluster.
+ *
+ * `decisions` (returned for [OcrCropRefine] logging/tuning) records every
+ * candidate block's area ratio, gap-to-cluster, and why it was in/excluded.
+ */
+function _mergeNearbyComponents(components, mergeDistancePx, sizeRatioThreshold) {
+  const blocks = components.map(c => ({
+    ...c,
+    area: (c.maxX - c.minX + 1) * (c.maxY - c.minY + 1),
+  }));
+  const maxBlockArea = Math.max(...blocks.map(b => b.area));
+
+  const included = [];
+  const decisions = [];
+
+  // Pass 1: large-enough blocks are in unconditionally (the single biggest
+  // block always qualifies against itself, so `included` is never empty here).
+  for (const b of blocks) {
+    const areaRatio = b.area / maxBlockArea;
+    if (areaRatio >= sizeRatioThreshold) {
+      included.push(b);
+      decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +areaRatio.toFixed(3), gap: 0, includedBy: 'size', included: true });
+    }
+  }
+
+  // Pass 2: remaining (small) blocks — include only if within gap distance of
+  // an already-included block, iterating since one merge can pull another
+  // small block into range.
+  const remaining = blocks.filter(b => !included.includes(b));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const b of remaining) {
+      if (included.includes(b)) continue;
+      const gap = Math.min(...included.map(o => _componentGap(b, o)));
+      if (gap <= mergeDistancePx) {
+        included.push(b);
+        decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +(b.area / maxBlockArea).toFixed(3), gap, includedBy: 'distance', included: true });
+        changed = true;
       }
     }
   }
-  return groups;
+
+  // Whatever's left never qualified by either rule — noise.
+  for (const b of remaining) {
+    if (included.includes(b)) continue;
+    const gap = Math.min(...included.map(o => _componentGap(b, o)));
+    decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +(b.area / maxBlockArea).toFixed(3), gap, includedBy: null, included: false });
+  }
+
+  if (!included.length) return { merged: null, decisions };
+
+  const merged = included.reduce((acc, b) => ({
+    minX: Math.min(acc.minX, b.minX), minY: Math.min(acc.minY, b.minY),
+    maxX: Math.max(acc.maxX, b.maxX), maxY: Math.max(acc.maxY, b.maxY),
+    pixelCount: acc.pixelCount + b.pixelCount,
+  }), { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, pixelCount: 0 });
+
+  return { merged, decisions };
 }
 
 /**
@@ -252,14 +304,15 @@ async function refineOcrCropToTextCluster(dataUrl) {
       return { dataUrl, source: 'inset-fallback', reason: 'no-dark-pixels' };
     }
 
-    const groups = _mergeNearbyComponents(components, OCR_TEXT_MERGE_DISTANCE_PX);
-    groups.sort((a, b) => b.pixelCount - a.pixelCount); // largest merged cluster = the real dialogue; smaller ones are noise/artifacts
-    const best = groups[0];
+    const { merged: best, decisions } = _mergeNearbyComponents(components, OCR_TEXT_MERGE_DISTANCE_PX, OCR_TEXT_MERGE_SIZE_RATIO);
+    if (!best) {
+      return { dataUrl, source: 'inset-fallback', reason: 'no-dark-pixels', decisions };
+    }
     const bw = best.maxX - best.minX + 1, bh = best.maxY - best.minY + 1;
     const areaRatio = (bw * bh) / (w * h);
 
     if (bw < OCR_TEXT_MIN_CLUSTER_W_PX || bh < OCR_TEXT_MIN_CLUSTER_H_PX || areaRatio < OCR_TEXT_MIN_CLUSTER_AREA_RATIO) {
-      return { dataUrl, source: 'inset-fallback', reason: 'cluster-too-small', bw, bh, areaRatio: +areaRatio.toFixed(3) };
+      return { dataUrl, source: 'inset-fallback', reason: 'cluster-too-small', bw, bh, areaRatio: +areaRatio.toFixed(3), decisions };
     }
 
     const padX = Math.round(bw * OCR_TEXT_CLUSTER_PADDING_FRAC);
@@ -280,7 +333,7 @@ async function refineOcrCropToTextCluster(dataUrl) {
       reader.readAsDataURL(outBlob);
     });
 
-    return { dataUrl: refinedDataUrl, source: 'text-cluster', cropW, cropH, areaRatio: +areaRatio.toFixed(3) };
+    return { dataUrl: refinedDataUrl, source: 'text-cluster', cropW, cropH, areaRatio: +areaRatio.toFixed(3), decisions };
   } catch (e) {
     return { dataUrl, source: 'inset-fallback', reason: 'refine-error', error: e.message || String(e) };
   }
