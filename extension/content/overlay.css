@@ -48,8 +48,12 @@
 .wt-detect-preview {
   position: absolute;
   z-index: 150; /* above .wt-selector-overlay (100), below resize handles (300) */
-  border: 2px solid rgba(34, 197, 94, 0.9);
-  background: rgba(34, 197, 94, 0.12);
+  /* Same indigo as .wt-selection-rect (the manual drag-select box) and
+     .wt-resize-handle — this box's own handles were already indigo, so this
+     used to be a two-tone box; now the drag-select and edit/resize boxes
+     read as one consistent color instead of purple vs. green. */
+  border: 2px solid rgba(99, 102, 241, 0.9);
+  background: rgba(99, 102, 241, 0.12);
   border-radius: 2px;
   cursor: move;
   box-sizing: border-box;
@@ -75,19 +79,24 @@
 .wt-detect-toolbar button {
   width: 26px;
   height: 26px;
-  border: none;
+  border: 1.5px solid transparent;
   border-radius: 6px;
   font-size: 13px;
   font-weight: 700;
   line-height: 1;
   cursor: pointer;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  box-sizing: border-box;
 }
 
-.wt-detect-confirm { background: #22c55e; color: #fff; }
-.wt-detect-confirm:hover { background: #16a34a; }
-.wt-detect-cancel { background: #ef4444; color: #fff; }
-.wt-detect-cancel:hover { background: #dc2626; }
+/* One shared style for both — confirm/cancel differ only by icon, not by an
+   unrelated green/red hue, matching the app's indigo accent used everywhere
+   else (resize handles, focus states, the drag-select/resize box itself).
+   Confirm is the primary (filled) action; cancel is secondary (outlined). */
+.wt-detect-confirm { background: #6366f1; color: #fff; }
+.wt-detect-confirm:hover { background: #4f46e5; }
+.wt-detect-cancel { background: #fff; color: #64748b; border-color: #cbd5e1; }
+.wt-detect-cancel:hover { background: #f1f5f9; color: #475569; }
 
 /* ── Job overlay (concurrent region translation) ──────────────────────── */
 /* Transient status pill shown at a job's bbox while it's queued/running/errored.
@@ -269,8 +278,7 @@
   align-items: center;
   justify-content: center;
   text-align: center;
-  pointer-events: none;  /* overridden to auto below so bubbles stay click-editable */
-  cursor: default;
+  pointer-events: none;  /* overridden to auto below (see the .wt-translation-bubble, .wt-fixed-bubble rule), which also sets the real cursor */
   /* width/height set by JS from bbox — do NOT add width/fit-content here */
   box-sizing: border-box;
   animation: wt-fade-in 0.15s ease;
@@ -321,11 +329,11 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Bubbles show double-click cursor to hint editability */
+/* Clicking a bubble opens the edit/resize/delete toolbar */
 .wt-translation-bubble,
 .wt-fixed-bubble {
   pointer-events: auto;
-  cursor: text;
+  cursor: pointer;
 }
 
 /* ── Input dialog ─────────────────────────────────────────────────────── */
@@ -743,12 +751,16 @@
   outline-offset: 1px;
 }
 
+/* White fill + indigo border (flipped from solid-indigo/white-border) — reads
+   clearly against the box's own indigo border instead of blending into it,
+   same indigo used by .wt-detect-confirm/the box itself for one consistent
+   style rather than a handle color that clashes with its own box. */
 .wt-resize-handle {
   position: absolute;
   width: 10px;
   height: 10px;
-  background: #6366f1;
-  border: 2px solid #fff;
+  background: #fff;
+  border: 2px solid #6366f1;
   border-radius: 2px;
   z-index: 300;
   box-sizing: border-box;

@@ -61,7 +61,6 @@ function hexToRgba(hex, alpha) {
 const AUTO_FIT_MAX_FONT_SIZE   = 20;   // search seed — the app's prior fixed default; NOT a hard ceiling, see fitTextToBox's dynamicMax
 const AUTO_FIT_ABSOLUTE_MAX_FONT_SIZE = 48; // sane ceiling so a short line in a huge bubble can't blow up to an absurd size; needs visual tuning
 const AUTO_FIT_MIN_FONT_SIZE   = 13;   // absolute floor — readability wins over fitting; needs visual tuning against real panels
-const AUTO_FIT_COMFORT_FONT_SIZE = 16; // below this, prefer a taller box over a cramped font — see fitAndExpand
 const AUTO_FIT_LINE_HEIGHT     = 1.45; // matches .wt-bubble-text's CSS line-height — kept for reference/docs only; measurement below reads it from real CSS, doesn't assume it
 const AUTO_FIT_MAX_EXPAND_RATIO         = 2.5; // height fallback never grows the box past this multiple of its original bbox height
 const AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC = 0.5; // ...or this fraction of the viewport height, whichever is smaller
@@ -167,25 +166,24 @@ function fitTextToBox(text, boxWidthPx, boxHeightPx, styleOpts = {}) {
 }
 
 /**
- * fitTextToBox() plus the box-height-expansion fallback: if the text still
- * overflows at the font-size floor, grow the box's height (never its width —
- * webtoons read vertically, so vertical growth is less disruptive) up to a
- * cap. If even the capped height isn't enough, returns clipped: true so the
- * caller can render a "show more" affordance instead of silently cutting text.
- *
- * Also treats "only fits by shrinking below AUTO_FIT_COMFORT_FONT_SIZE" as
- * worth trying to expand for, not just outright overflow — the OCR bbox is
- * sized to the (often short) original text, so a longer Vietnamese
- * translation can legitimately fit at a cramped size on a tight box while
- * the speech bubble around it still has plenty of unused room below.
- * Preferring a taller box over a maxed-out-small font reads better even
- * when nothing technically "overflowed". Only takes the expanded result if
- * it actually buys a bigger font — a purely width-limited fit won't improve
- * from extra height, so there's no point growing the box for nothing.
+ * fitTextToBox() plus a box-height-expansion fallback of LAST RESORT: grows
+ * the box's height (never its width — webtoons read vertically, so vertical
+ * growth is less disruptive) only when the text doesn't fit even at
+ * AUTO_FIT_MIN_FONT_SIZE within the ORIGINAL box (primary.overflow) — i.e.
+ * the bbox is genuinely too small for the translation, not merely "could
+ * look more comfortable at a bigger size". A grown box is a plain taller
+ * rectangle, not the bubble's real (often oval) outline, so it visibly
+ * spills past the drawn speech bubble — worth it when there's truly no
+ * smaller font left to try, not worth risking otherwise. Whenever the text
+ * fits within the original box at ANY size down to the floor, that's used
+ * as-is, even if cramped — a legible, in-bounds caption beats a bigger font
+ * that overflows the bubble. If even the capped expanded height isn't
+ * enough, returns clipped: true so the caller can render a "show more"
+ * affordance instead of silently cutting text.
  */
 function fitAndExpand(text, boxWidthPx, boxHeightPx, styleOpts) {
   const primary = fitTextToBox(text, boxWidthPx, boxHeightPx, styleOpts);
-  if (!primary.overflow && primary.fontSize >= AUTO_FIT_COMFORT_FONT_SIZE) {
+  if (!primary.overflow) {
     return { fontSize: primary.fontSize, boxHeightPx, clipped: false };
   }
 
@@ -194,24 +192,18 @@ function fitAndExpand(text, boxWidthPx, boxHeightPx, styleOpts) {
     window.innerHeight * AUTO_FIT_MAX_EXPAND_VIEWPORT_FRAC
   );
   if (maxExpandedH <= boxHeightPx) {
-    return primary.overflow
-      ? { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx, clipped: true }
-      : { fontSize: primary.fontSize, boxHeightPx, clipped: false };
+    return { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx, clipped: true };
   }
 
   const expanded = fitTextToBox(text, boxWidthPx, maxExpandedH, styleOpts);
-  const expandedIsBetter = !expanded.overflow && (primary.overflow || expanded.fontSize > primary.fontSize);
-  if (expandedIsBetter) {
+  if (!expanded.overflow) {
     // Grow only as much as this font size actually needs, not the full cap.
     // totalTextHeight is already the full border-box height (real DOM
     // measurement, padding included) — no manual padding add-back needed.
     const neededH = Math.max(boxHeightPx, expanded.totalTextHeight);
     return { fontSize: expanded.fontSize, boxHeightPx: Math.min(neededH, maxExpandedH), clipped: false };
   }
-  if (primary.overflow) {
-    return { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx: maxExpandedH, clipped: true };
-  }
-  return { fontSize: primary.fontSize, boxHeightPx, clipped: false };
+  return { fontSize: AUTO_FIT_MIN_FONT_SIZE, boxHeightPx: maxExpandedH, clipped: true };
 }
 
 /**
@@ -818,9 +810,50 @@ const AUTO_DETECT_PADDING        = 8;   // px padding added to the final bbox
 const AUTO_DETECT_MIN_W          = 20;  // px — reject narrower regions
 const AUTO_DETECT_MIN_H          = 15;  // px — reject shorter regions
 const AUTO_DETECT_MAX_AREA_RATIO = 0.85; // bbox area / crop area — reject if it likely leaked into background
+// AUTO_DETECT_MAX_AREA_RATIO alone misses a specific leak: when a bubble's
+// fill color nearly matches the surrounding page/panel background, the
+// color-tolerance flood fill treats them as one continuous blob and keeps
+// growing the crop (expand-and-retry loop) until it finds SOME other-colored
+// boundary, however far that is — often well past the actual bubble, across
+// blank panel space, even into the next panel. That result is DENSE (passes
+// AUTO_DETECT_MIN_FILL_DENSITY, since it's a solid fill, not a sparse leaked
+// fragment) and can end up well under AUTO_DETECT_MAX_AREA_RATIO once the
+// crop itself has grown large enough to contain it — so neither existing
+// check catches it. This is an absolute cap instead, anchored to the
+// STARTING search radius (not however large the crop has since grown): a
+// real single bubble is rarely bigger than a small multiple of the radius
+// the algorithm considered reasonable to search around the click in the
+// first place. Reuses the 'leaked-into-background' reason (not a new one) so
+// the existing edge-barrier retry below — which stops at the bubble's drawn
+// outline instead of relying on color distance — automatically engages for
+// this case too. Needs tuning against real large-bubble screenshots to make
+// sure legitimately huge bubbles don't get rejected.
+//
+// Real-world case that motivated requiring BOTH dimensions (not just one) to
+// exceed this: a wide rectangular narration box (636x382, common for
+// caption-style dialogue that spans most of a panel's width) was rejected
+// because its width alone crossed the cap, even though its height was
+// entirely ordinary. A background-color leak balloons in BOTH directions
+// (it's the fill spreading outward, not a legitimately wide-but-short box),
+// so requiring both dimensions to be oversized still catches that case
+// (verified against the original ~900x1050 leaked-region report) while no
+// longer flagging a box that's just wide OR just tall.
+const AUTO_DETECT_MAX_REGION_DIM_PX = AUTO_DETECT_CROP_RADIUS * 2.5;
 const AUTO_DETECT_MAX_ASPECT     = 5;
 const AUTO_DETECT_MIN_ASPECT     = 0.2;
-const AUTO_DETECT_MIN_FILL_DENSITY = 0.55; // filledPixels / own-bbox-area — a solid oval/rounded-rect bubble is ~0.7-0.9; an irregular leaked fragment (e.g. part of a connector fused with unrelated art) is much sparser within its own bbox
+// filledPixels / own-bbox-area — a solid oval/rounded-rect bubble is
+// ~0.7-0.9; an irregular leaked fragment (e.g. part of a connector fused
+// with unrelated art) is much sparser within its own bbox. But a legitimate
+// bubble shape that isn't a single convex oval — e.g. two lobes joined by a
+// smooth (not sharply pinched) curve, which findWaistSplit's narrower
+// bottleneck check doesn't treat as a real waist to split on — has more
+// empty bbox area (two corner-voids instead of one, plus the concave join
+// itself) and comes out lower than a plain oval's. Real-world case that
+// motivated lowering this from 0.55: a two-lobed bubble (381x439,
+// filledPixels 85497) measured ~0.511 density and was legitimately a single
+// detectable bubble, not a leaked fragment. Needs tuning against more real
+// screenshots of both non-oval bubble shapes and genuinely sparse leaks.
+const AUTO_DETECT_MIN_FILL_DENSITY = 0.45;
 
 class BubbleAutoDetector {
   /**
@@ -877,6 +910,7 @@ class BubbleAutoDetector {
       }
       if (!imageData) return this._fail(debug, 'canvas-tainted');
 
+      smoothSegmentSeams(imageData, segments.list);
       boxBlur3x3(imageData);
 
       const localX = Math.round(cx - sx);
@@ -956,7 +990,19 @@ class BubbleAutoDetector {
     for (const r of regions) {
       const v = this._isValidRegion(r, cw, ch);
       if (!v.valid) { firstFailReason = firstFailReason || v.reason; continue; }
-      bboxes.push(this._regionToBbox(r, sx, segments.canvasTopFrameY, nw, nh));
+      const bbox = this._regionToBbox(r, sx, segments.canvasTopFrameY, nw, nh);
+      // Difficulty-classifier signal, computed here while the mask is still in
+      // scope (it isn't kept around once detect() returns). Reuses the
+      // merged region's mask even for a waist-split half, since halves share
+      // the same underlying canvas/mask — just a tighter minX/minY/maxX/maxY.
+      // Callers must strip this before persisting `bbox` as an annotation —
+      // it's debug/routing metadata, not part of the BBox shape.
+      bbox.skewAngle = minAreaRectAngle(extractRegionContour(region.mask, cw, r));
+      // Marks this bbox as flood-fill-detected (vs. a hand-drawn/hand-resized
+      // one) — gates the OCR-crop inset + text-cluster refinement, which only
+      // make sense for a flood-fill shape's bounding box. See runOcr.
+      bbox.source = 'auto';
+      bboxes.push(bbox);
     }
     return { bboxes, firstFailReason };
   }
@@ -967,6 +1013,7 @@ class BubbleAutoDetector {
     if (rw < AUTO_DETECT_MIN_W || rh < AUTO_DETECT_MIN_H) return { valid: false, reason: 'too-small' };
     const areaRatio = (rw * rh) / (cw * ch);
     if (areaRatio > AUTO_DETECT_MAX_AREA_RATIO) return { valid: false, reason: 'leaked-into-background' };
+    if (rw > AUTO_DETECT_MAX_REGION_DIM_PX && rh > AUTO_DETECT_MAX_REGION_DIM_PX) return { valid: false, reason: 'leaked-into-background' };
     const aspect = rw / rh;
     if (aspect > AUTO_DETECT_MAX_ASPECT || aspect < AUTO_DETECT_MIN_ASPECT) return { valid: false, reason: 'bad-aspect-ratio' };
     const density = region.filledPixels / (rw * rh);
@@ -1080,6 +1127,61 @@ function loadImage(dataUrl) {
     img.onerror = () => reject(new Error('Failed to load cropped image'));
     img.src = dataUrl;
   });
+}
+
+// A bubble spanning two stacked panel <img> elements gets its click-to-detect
+// crop composited from BOTH source images (_buildVerticalSegments +
+// _composeSegments). Real-world case: on Kakao, flood-fill stopped at the
+// exact seam between the two composited images — touchesEdge:false (i.e. it
+// believed it had found the bubble's true boundary, not that it ran out of
+// search radius) — even though the crop had plenty of room left to keep
+// growing into the neighboring image, and the bubble's own drawn outline is
+// continuous across that seam. Two separately-served image files depicting
+// "the same" continuous artwork can differ slightly in color/brightness
+// (different compression, whatever encoding each was served with) — a real
+// discontinuity the color-tolerance flood fill reads as a wall, even though
+// boxBlur3x3's radius-1 smoothing (aimed at JPEG ringing, not a real
+// brightness step between two files) isn't strong enough to bridge it.
+// Coarse mitigation: blur a wider band centered on each segment seam more
+// aggressively than the rest of the crop, specifically to smooth over that
+// discontinuity before flood-fill sees it. Only ever runs for a multi-segment
+// composite (segments.length > 1, i.e. an actual cross-panel click) — a
+// same-single-image detection (the overwhelming majority of clicks) is
+// completely unaffected. Needs tuning against more real cross-panel
+// screenshots — too small and it won't bridge the seam; too large and it
+// could blur away real text/bubble edges that happen to sit close to it.
+const SEAM_BLUR_RADIUS_PX = 5;
+
+/** Vertical-only box blur (blurs across the horizontal seam, not along it) over rows [centerY-radius, centerY+radius). See SEAM_BLUR_RADIUS_PX above. */
+function _blurSeamBand(imageData, centerY, radius) {
+  const { data, width: w, height: h } = imageData;
+  const yStart = Math.max(0, centerY - radius);
+  const yEnd   = Math.min(h - 1, centerY + radius - 1);
+  if (yStart > yEnd) return;
+  const src = new Uint8ClampedArray(data);
+  for (let y = yStart; y <= yEnd; y++) {
+    for (let x = 0; x < w; x++) {
+      let rSum = 0, gSum = 0, bSum = 0, n = 0;
+      for (let dy = -radius; dy <= radius; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= h) continue;
+        const i = (ny * w + x) * 4;
+        rSum += src[i]; gSum += src[i + 1]; bSum += src[i + 2];
+        n++;
+      }
+      const i = (y * w + x) * 4;
+      data[i] = rSum / n; data[i + 1] = gSum / n; data[i + 2] = bSum / n;
+    }
+  }
+}
+
+/** Smooths every segment-join seam in a composited multi-image crop — see SEAM_BLUR_RADIUS_PX above. No-op for a single-segment (same-image) crop. */
+function smoothSegmentSeams(imageData, segmentList) {
+  if (segmentList.length < 2) return;
+  // Every segment after the first one starts at a real seam (destY).
+  for (let i = 1; i < segmentList.length; i++) {
+    _blurSeamBand(imageData, segmentList[i].destY, SEAM_BLUR_RADIUS_PX);
+  }
 }
 
 /** In-place 3x3 box blur (radius 1) — smooths JPEG ringing artifacts around bubble edges. */
@@ -1367,9 +1469,247 @@ function _maskSubRegion(mask, w, x0, y0, x1, y1) {
   return { minX, minY, maxX, maxY, filledPixels };
 }
 
+// ── Difficulty Classifier (heuristic router: OCR text -> translation tier) ───
+// Not every line needs an LLM to translate well. This sits between region
+// detection/OCR and translation, and routes each region into one of four
+// tiers, each meant for a different (separately-implemented) pipeline:
+//   easy/medium -> machine translation only (medium == easy for now, no MTPE
+//                  tier yet), hard -> LLM translation, vision -> Vision LLM
+//                  on the cropped image (OCR skipped entirely for this tier).
+// v1 is deliberately "dumb": string matching + confidence thresholds, no real
+// Korean NLP/grammar analysis. A wrong tier just sends a line through a
+// slightly more/less expensive pipeline than ideal — not catastrophic — so
+// every threshold below is a named, tunable constant meant to be adjusted
+// after reviewing a batch of real screenshots against the [DifficultyClassifier]
+// console logs this module emits.
+
+const DIFFICULTY_SKEW_ANGLE_THRESHOLD_DEG  = 15;   // minAreaRect rotation (0-90, abs) beyond this -> too skewed to OCR reliably; needs tuning against real angled/phone-screen panel screenshots
+const DIFFICULTY_LOW_CONFIDENCE_THRESHOLD  = 0.6;  // OCR confidence (0-1) below this -> unreliable text, fall back to vision
+const DIFFICULTY_SHORT_TEXT_MAX_CHARS      = 5;    // char count at/under this counts as "very short" (e.g. a single SFX or interjection)
+const DIFFICULTY_HIGH_CONFIDENCE_THRESHOLD = 0.85; // OCR confidence (0-1) required, alongside short text, to call a line 'easy'
+
+const DIFFICULTY_TIERS = { EASY: 'easy', MEDIUM: 'medium', HARD: 'hard', VISION: 'vision' };
+
+// Sentence-ending honorific markers — a strong signal of formal/polite speech
+// register, which machine translation tends to flatten. Extend as needed.
+const DIFFICULTY_HONORIFIC_MARKERS = ['습니다', '입니다', '세요', '였습니다', '겠습니다'];
+
+// Stylized punctuation clusters common in webtoon dialogue (trailing off,
+// emphasis, tone) that machine translation tends to mishandle. Extend as needed.
+const DIFFICULTY_STYLIZED_PUNCTUATION_MARKERS = ['…', '~', '‼', '？！'];
+
+/**
+ * Derives boundary ("contour") points from a flood-fill region's fill mask —
+ * any filled pixel with at least one empty (or out-of-bounds) 4-neighbor.
+ * `mask`/`w` are floodFillBBox's returned `mask` and the canvas width it was
+ * computed against (also valid for a waist-split half, since those reuse the
+ * same mask/canvas, just a tighter minX/minY/maxX/maxY). Order doesn't matter
+ * — minAreaRectAngle's convex-hull step sorts points itself — so this is a
+ * boundary POINT SET, not an ordered polygon trace.
+ *
+ * floodFillBBox itself only returns a fill mask + axis-aligned bbox, not a
+ * contour; this is the missing piece needed to compute a true minimum-area
+ * (rotated) bounding rectangle instead of the axis-aligned one.
+ */
+function extractRegionContour(mask, w, region) {
+  const { minX, minY, maxX, maxY } = region;
+  const points = [];
+  for (let y = minY; y <= maxY; y++) {
+    const base = y * w;
+    for (let x = minX; x <= maxX; x++) {
+      const idx = base + x;
+      if (!mask[idx]) continue;
+      const isBoundary =
+        x === minX || x === maxX || y === minY || y === maxY ||
+        !mask[idx - 1] || !mask[idx + 1] || !mask[idx - w] || !mask[idx + w];
+      if (isBoundary) points.push({ x, y });
+    }
+  }
+  return points;
+}
+
+/** Andrew's monotone-chain convex hull. Returns hull points in CCW order (length may be < 3 for degenerate/collinear input). */
+function _convexHull(points) {
+  const pts = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop(); lower.pop();
+  return lower.concat(upper);
+}
+
+/**
+ * Minimum-area bounding rectangle via rotating calipers: for each convex-hull
+ * edge, treats that edge's direction as one rectangle axis and measures the
+ * axis-aligned extent of every hull point in that rotated frame, keeping
+ * whichever edge yields the smallest-area rectangle. Returns that rectangle's
+ * rotation relative to horizontal, normalized to 0-90 degrees (absolute value)
+ * — a rectangle's rotation is ambiguous mod 90° (which side is "width" vs.
+ * "height"), and only how far off-horizontal it is matters here, not direction.
+ */
+function minAreaRectAngle(contourPoints) {
+  if (!contourPoints || contourPoints.length < 3) return 0;
+  const hull = _convexHull(contourPoints);
+  if (hull.length < 3) return 0;
+
+  let minArea = Infinity, bestAngleRad = 0;
+  for (let i = 0; i < hull.length; i++) {
+    const p1 = hull[i], p2 = hull[(i + 1) % hull.length];
+    const edgeAngleRad = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+    const cos = Math.cos(-edgeAngleRad), sin = Math.sin(-edgeAngleRad);
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of hull) {
+      const rx = p.x * cos - p.y * sin;
+      const ry = p.x * sin + p.y * cos;
+      if (rx < minX) minX = rx; if (rx > maxX) maxX = rx;
+      if (ry < minY) minY = ry; if (ry > maxY) maxY = ry;
+    }
+    const area = (maxX - minX) * (maxY - minY);
+    if (area < minArea) { minArea = area; bestAngleRad = edgeAngleRad; }
+  }
+
+  // Fold into [0, 90) with true modulo (NOT abs-then-%, which mishandles
+  // negative angles and — since a rectangle's two perpendicular edge
+  // directions are 90° apart and both tie for minimal area — would make the
+  // reported angle flip unpredictably between theta and 90-theta depending on
+  // which tied edge the loop above happened to keep).
+  const angleDeg = bestAngleRad * 180 / Math.PI;
+  return ((angleDeg % 90) + 90) % 90;
+}
+
+/** Post-OCR tier rules (skew already checked, OCR already ran) — see classifyDifficulty for the full flow and rule order/rationale. */
+function _classifyPostOcr(text, confidence, skewAngle) {
+  const base = { skewAngle, ocrConfidence: confidence, text };
+
+  // confidence is null when the OCR provider didn't report one (e.g.
+  // OCR.space) — `null < DIFFICULTY_LOW_CONFIDENCE_THRESHOLD` would otherwise
+  // evaluate true (null coerces to 0 for `<`), wrongly routing a genuinely
+  // correct OCR read (unknown confidence, not low confidence) to 'vision'.
+  // Unknown confidence just skips this check and falls through to the
+  // text-only rules below.
+  if (confidence != null && confidence < DIFFICULTY_LOW_CONFIDENCE_THRESHOLD) {
+    return { ...base, tier: DIFFICULTY_TIERS.VISION, reason: 'low-ocr-confidence' };
+  }
+
+  // Computed once — reused by the 'easy' check's negative condition below and
+  // the 'hard' check, so a honorific line never accidentally qualifies as easy.
+  const hasHonorific = DIFFICULTY_HONORIFIC_MARKERS.some(m => text.includes(m));
+
+  if (text.length <= DIFFICULTY_SHORT_TEXT_MAX_CHARS &&
+      confidence > DIFFICULTY_HIGH_CONFIDENCE_THRESHOLD &&
+      !hasHonorific) {
+    return { ...base, tier: DIFFICULTY_TIERS.EASY, reason: 'short-high-confidence' };
+  }
+
+  if (hasHonorific) {
+    return { ...base, tier: DIFFICULTY_TIERS.HARD, reason: 'honorific-detected' };
+  }
+
+  const hasStylizedPunctuation = DIFFICULTY_STYLIZED_PUNCTUATION_MARKERS.some(m => text.includes(m));
+  if (hasStylizedPunctuation) {
+    return { ...base, tier: DIFFICULTY_TIERS.HARD, reason: 'stylized-punctuation' };
+  }
+
+  return { ...base, tier: DIFFICULTY_TIERS.MEDIUM, reason: 'default' };
+}
+
+function _logDifficultyClassification(result) {
+  console.log('[DifficultyClassifier]', {
+    text: result.text,
+    confidence: result.ocrConfidence,
+    tier: result.tier,
+    reason: result.reason,
+    skewAngle: result.skewAngle,
+  });
+}
+
+/**
+ * Single entry point for difficulty classification. Owns the decision of
+ * whether OCR runs at all:
+ *   1. Computes skew angle from `regionContour` (boundary points from the
+ *      region's flood-fill mask — see extractRegionContour — NOT the
+ *      axis-aligned bbox) via minAreaRectAngle. If it exceeds
+ *      DIFFICULTY_SKEW_ANGLE_THRESHOLD_DEG, returns tier 'vision' immediately
+ *      WITHOUT calling `ocrRunner` — Tesseract is skipped entirely for
+ *      high-skew regions (e.g. angled phone-screen panels).
+ *   2. Otherwise calls `ocrRunner()` (may be async; expected to resolve to
+ *      `{ text, confidence }` with confidence in 0-1) and applies the
+ *      post-OCR rules — see _classifyPostOcr.
+ * Every result (early-exit or not) is logged via _logDifficultyClassification
+ * for later tuning.
+ *
+ * @param {{x:number,y:number}[]} regionContour - boundary points, e.g. from extractRegionContour(region.mask, canvasWidth, region)
+ * @param {() => ({text:string,confidence:number}|Promise<{text:string,confidence:number}>)} ocrRunner
+ * @returns {Promise<{tier:string, reason:string, skewAngle:number, ocrConfidence:number|null, text:string|null}>}
+ */
+async function classifyDifficulty(regionContour, ocrRunner) {
+  const skewAngle = minAreaRectAngle(regionContour);
+
+  if (skewAngle > DIFFICULTY_SKEW_ANGLE_THRESHOLD_DEG) {
+    const result = { tier: DIFFICULTY_TIERS.VISION, reason: 'high-skew-angle', skewAngle, ocrConfidence: null, text: null };
+    _logDifficultyClassification(result);
+    return result;
+  }
+
+  const { text, confidence } = await ocrRunner();
+  const result = _classifyPostOcr(text, confidence, skewAngle);
+  _logDifficultyClassification(result);
+  return result;
+}
+
+/**
+ * Shadow-mode variant used by the live detect -> OCR flow (see JobManager's
+ * runOcr wiring), where OCR has ALREADY run for real translation purposes —
+ * unlike classifyDifficulty, this never decides whether to call OCR, and
+ * takes an already-computed `skewAngle` rather than raw contour points: the
+ * flood-fill mask/contour only exists transiently inside
+ * BubbleAutoDetector._extractBboxes (where the angle gets computed and
+ * attached to the bbox), long before this runs — by the time OCR finishes,
+ * the mask itself is out of scope. Exists purely to produce
+ * [DifficultyClassifier] logs for tuning; never affects what OCR or
+ * translation actually does. `skewAngle` is null for manually drag-selected
+ * regions (no flood-fill contour was ever computed for those).
+ */
+function logDifficultyClassificationShadow(skewAngle, text, confidence) {
+  const angle = skewAngle ?? 0;
+  const result = angle > DIFFICULTY_SKEW_ANGLE_THRESHOLD_DEG
+    ? { tier: DIFFICULTY_TIERS.VISION, reason: 'high-skew-angle', skewAngle: angle, ocrConfidence: confidence, text }
+    : _classifyPostOcr(text, confidence, angle);
+  _logDifficultyClassification(result);
+  return result;
+}
+
 // ── DetectionPreview ─────────────────────────────────────────────────────────
 // Adjustable bounding-box preview shown after a successful auto-detect, so the
-// user can correct the region before it's sent into the OCR pipeline.
+// user can correct the region before it's sent into the OCR pipeline. Also
+// reused by startBubbleResize to adjust an EXISTING annotation's box.
+
+// A bubble can visually span two stacked panel images (webtoons scroll
+// vertically) — both the initial manual drag-select (BBoxSelector/
+// FixedOverlayLayer's multi-image overlap check) and auto-detect
+// (BubbleAutoDetector's y<0 / y+h>100 convention, consumed by
+// ocrRegionStitched's cross-panel grab) already support this. The move/resize
+// handles below used to hard-clamp the box to the CURRENT single image's own
+// [top, top+height] bounds, with no way to drag it into a neighboring
+// panel — so a box created spanning two panels could never be resized to
+// still cover both. This allowance lets the box's top/bottom extend past the
+// image's own edge by up to this fraction of the image's height, matching
+// ocrRegionStitched's own cross-panel grab cap (grabH capped at 60% of image
+// height) — no point letting the UI reach further than OCR would actually
+// fetch from the neighboring panel. Horizontal (left/right) stays clamped to
+// the current image's own width — panels stack vertically, not side-by-side.
+const CROSS_PANEL_DRAG_ALLOWANCE_FRAC = 0.6;
 
 class DetectionPreview {
   constructor() {
@@ -1429,6 +1769,51 @@ class DetectionPreview {
       applyPx(bboxPct);
 
       const cleanups = [];
+
+      // fixed mode positions the box in VIEWPORT coordinates (position:fixed),
+      // snapshotting origin() = img.getBoundingClientRect() only once, at
+      // whatever scroll position was current when show() was called. The box
+      // itself never moves on scroll (that's what position:fixed does), but
+      // the underlying image is normal in-flow content and DOES scroll — so
+      // without re-syncing, the box visually detaches from the panel
+      // underneath it the moment the page scrolls.
+      //
+      // NOT done via readPct()+applyPx(): readPct() divides by origin() at
+      // the moment it's called, which — by the time a scroll/resize listener
+      // fires — is already the NEW (post-scroll) rect, so it would silently
+      // bake the scroll delta into the "restored" percentage instead of
+      // preserving the box's true position relative to the image. Instead,
+      // track the image's rect/dims explicitly and apply the raw geometric
+      // delta directly to the box's own pixel styles: shifts left/top by how
+      // much the image's origin moved (handles scroll) and scales
+      // left/top/width/height by how much the image's own size changed
+      // (handles a responsive-layout window resize), without ever
+      // round-tripping through a percentage.
+      if (fixed) {
+        let lastOrigin = origin();
+        let lastDims   = dims();
+        const resync = () => {
+          const newOrigin = origin();
+          const newDims   = dims();
+          const scaleX = newDims.iw / lastDims.iw;
+          const scaleY = newDims.ih / lastDims.ih;
+          const relLeft = parseFloat(box.style.left) - lastOrigin.left;
+          const relTop  = parseFloat(box.style.top)  - lastOrigin.top;
+          box.style.left   = `${newOrigin.left + relLeft * scaleX}px`;
+          box.style.top    = `${newOrigin.top  + relTop  * scaleY}px`;
+          box.style.width  = `${parseFloat(box.style.width)  * scaleX}px`;
+          box.style.height = `${parseFloat(box.style.height) * scaleY}px`;
+          lastOrigin = newOrigin;
+          lastDims   = newDims;
+        };
+        window.addEventListener('scroll', resync, { passive: true, capture: true });
+        window.addEventListener('resize', resync, { passive: true });
+        cleanups.push(() => {
+          window.removeEventListener('scroll', resync, { capture: true });
+          window.removeEventListener('resize', resync);
+        });
+      }
+
       ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].forEach(pos => {
         const h = document.createElement('div');
         h.className = `wt-resize-handle wt-rh-${pos}`;
@@ -1489,9 +1874,10 @@ class DetectionPreview {
       const iw = img.offsetWidth || img.naturalWidth;
       const ih = img.offsetHeight || img.naturalHeight;
       const o = origin();
+      const vAllowance = ih * CROSS_PANEL_DRAG_ALLOWANCE_FRAC;
       const w = parseFloat(box.style.width), h = parseFloat(box.style.height);
       const l = Math.max(o.left, Math.min(o.left + iw - w, origLeft + (e.clientX - startX)));
-      const t = Math.max(o.top,  Math.min(o.top  + ih - h, origTop  + (e.clientY - startY)));
+      const t = Math.max(o.top - vAllowance,  Math.min(o.top + ih - h + vAllowance, origTop  + (e.clientY - startY)));
       box.style.left = `${l}px`;
       box.style.top  = `${t}px`;
     };
@@ -1531,8 +1917,9 @@ class DetectionPreview {
       if (pos.includes('w')) { w = Math.max(AUTO_DETECT_MIN_W, origW - dx); l = Math.min(origLeft + origW - AUTO_DETECT_MIN_W, origLeft + dx); }
       if (pos.includes('n')) { h = Math.max(AUTO_DETECT_MIN_H, origH - dy); t = Math.min(origTop  + origH - AUTO_DETECT_MIN_H, origTop  + dy); }
 
+      const vAllowance = ih * CROSS_PANEL_DRAG_ALLOWANCE_FRAC;
       l = Math.max(o.left, Math.min(o.left + iw - w, l));
-      t = Math.max(o.top,  Math.min(o.top  + ih - h, t));
+      t = Math.max(o.top - vAllowance,  Math.min(o.top + ih - h + vAllowance, t));
 
       box.style.left   = `${l}px`;
       box.style.top    = `${t}px`;
@@ -1619,7 +2006,7 @@ class JobManager {
     this._ocrChainTail   = Promise.resolve(); // serializes OCR across jobs
   }
 
-  async create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey = null }) {
+  async create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey = null, skewAngle = null, source = 'manual' }) {
     const { w: natW, h: natH } = bboxNaturalSize(bbox, imageEl);
     if (natW < MIN_OCR_NATURAL_PX || natH < MIN_OCR_NATURAL_PX) {
       this._onTooSmall?.({ bbox, imageEl, imageIndex, natW, natH });
@@ -1633,6 +2020,8 @@ class JobManager {
     const job = {
       id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       bbox, imageEl, imageIndex, clips, existingAnnKey,
+      skewAngle, // difficulty-classifier signal from auto-detect; null for manual drag-select (no flood-fill contour to measure) — see runOcr's shadow-mode classification call
+      source, // 'auto' (flood-fill detected) | 'manual' (drag-select or hand-resize, default) — gates the OCR-crop inset/text-cluster refinement in runOcr, which only make sense for a flood-fill shape's bbox
       status: 'queued', // queued -> ocr -> translating -> done | error
       originalText: '', translatedText: '', errorMessage: '',
       cancelled: false, createdAt: Date.now(),
@@ -2728,8 +3117,80 @@ function sendToBackground(message, retries = 3) {
 }
 
 // ── OCR ───────────────────────────────────────────────────────────────────────
+// A flood-fill bubble's bbox is the RECTANGLE circumscribing an often
+// round/oval/irregular shape — for round bubbles that rectangle extends well
+// beyond the actual text into empty background and (sometimes) the bubble's
+// outline stroke. Tesseract misreads that margin's curves/edge-artifacts as
+// stray characters, garbling the real text. This never shows up for
+// rectangular bubbles, whose bbox already hugs the text tightly.
+//
+// Fix: shrink the bbox toward its own center by a fixed percentage on each
+// side before it's used to crop the OCR input image — a separate, OCR-only
+// crop step. This must NOT touch the bbox used for anything else (overlay
+// render bounds, waist-splitting, validity checks, the persisted
+// annotation) — those still need the full bubble extent. Deliberately not
+// the same constant as AUTO_FIT_WIDTH_MARGIN/AUTO_FIT_HEIGHT_MARGIN (the
+// oval-overflow fix for rendering TRANSLATED text back into the bubble) —
+// that's a different concern (output rendering vs. OCR input cropping).
+//
+// Coarse by design: a uniform inset assumes margin is roughly evenly
+// distributed around the text, which won't hold for bubbles where the text
+// sits hard against the boundary on one side. This is no longer the only
+// pass — worker.js's refineOcrCropToTextCluster runs a second, precise
+// dark-pixel-cluster pass on top of this crop — so this first pass only
+// needs to knock off the worst of the outline/margin, not get close to the
+// text. Real-world testing found the original 17.5%/side default clipping
+// trailing characters of off-center text (e.g. text sitting at ~91% of the
+// bbox width got its last couple characters cut by an 82.5% right edge),
+// which the second pass can't recover once the pixels are gone — reduced
+// accordingly. Still needs tuning against more real screenshots.
+const OCR_CROP_INSET_PCT = 0.08; // % of width/height trimmed from EACH side (e.g. 0.08 = 8%/side, ~16% off each dimension total)
 
-async function ocrRegion(img, bbox) {
+// A box that dips only marginally past an image's true edge (e.g. a
+// hand-resized box that overshoots by a fraction of a percent into the
+// selector overlay's 80px drag-tolerance zone) doesn't necessarily mean the
+// dialogue actually continues into the next panel — but the grab-amount
+// formula below (grabH) has a generous ~40%-of-image-height floor regardless
+// of how small the overflow is, so triggering on ANY overflow, however
+// trivial, can staple a large chunk of unrelated next-panel content onto an
+// otherwise perfectly legible crop and confuse Tesseract into misreading the
+// whole thing (found via real-world testing: a resized box that barely
+// crossed the boundary came back with garbage digits instead of its two
+// perfectly legible lines of dialogue). Only overflow past this threshold is
+// treated as "genuinely needs the next panel" — needs tuning against real
+// cross-panel screenshots (both marginal-dip and real multi-panel cases).
+const OCR_CROSS_PANEL_OVERFLOW_THRESHOLD_PCT = 3;
+
+/** Shrinks a %-of-image bbox toward its own center for the OCR crop only — see the OCR section note above. */
+function _insetBboxForOcr(bbox) {
+  const insetX = bbox.w * OCR_CROP_INSET_PCT;
+  const insetY = bbox.h * OCR_CROP_INSET_PCT;
+  return {
+    x: bbox.x + insetX,
+    y: bbox.y + insetY,
+    w: Math.max(0, bbox.w - 2 * insetX),
+    h: Math.max(0, bbox.h - 2 * insetY),
+  };
+}
+
+/** Same as _insetBboxForOcr but only shrinks the horizontal (x/w) extent, leaving y/h untouched — see ocrRegionStitched for why a cross-panel-spanning bbox needs this instead. */
+function _insetBboxXOnlyForOcr(bbox) {
+  const insetX = bbox.w * OCR_CROP_INSET_PCT;
+  return { x: bbox.x + insetX, y: bbox.y, w: Math.max(0, bbox.w - 2 * insetX), h: bbox.h };
+}
+
+/**
+ * `applyOcrRefinement` gates the percentage-inset + (worker-side)
+ * text-cluster refinement — both exist to correct for a flood-fill bubble's
+ * bbox extending past its actual text into margin/outline. A manually
+ * drag-selected (or hand-resized) bbox never went through flood-fill — the
+ * user already selected exactly the text they want — so applying either
+ * step there could needlessly shrink/distort an intentionally-sized region.
+ * Defaults to true (auto-detect's existing behavior); callers pass false for
+ * manual regions — see runOcr, which decides this from job.source.
+ */
+async function ocrRegion(img, bbox, applyOcrRefinement = true) {
+  const cropBbox = applyOcrRefinement ? _insetBboxForOcr(bbox) : bbox;
   // Fast path: draw the already-loaded DOM image directly.
   // blob: URLs (Kakao) are same-origin → never tainted.
   // CDN images without crossOrigin attr may taint the canvas → SecurityError.
@@ -2737,20 +3198,36 @@ async function ocrRegion(img, bbox) {
   // fetch cross-origin freely and do the crop there.
   let dataUrl = null;
   try {
-    dataUrl = _cropCanvas(img, bbox);
+    dataUrl = _cropCanvas(img, cropBbox);
   } catch (e) {
     if (!(e instanceof DOMException) || e.name !== 'SecurityError') throw e;
   }
 
   const res = await sendToBackground({
     type: MSG.OCR_REGION,
-    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox },
+    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox: cropBbox, refineCrop: applyOcrRefinement },
   });
   if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-  return res.text;
+  return { text: res.text, confidence: res.confidence };
 }
 
-async function ocrRegionStitched(img, bbox, images) {
+async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true) {
+  // A bubble that visually spans two stacked panel images needs its
+  // cross-panel overflow amount (below) computed from the TRUE selection
+  // extent — shrinking y/h first (as the plain 2-axis inset does) can pull a
+  // borderline overflow back under the 100%/0% trigger entirely, silently
+  // dropping the neighboring panel's portion of the text from the crop
+  // (found via real-world testing: a bubble spanning two panels came back
+  // with zero OCR'd text). So a cross-panel-spanning bbox only gets the
+  // horizontal inset here; the worker-side text-cluster refinement trims
+  // vertical margin AFTER stitching, once both panels' pixels are already
+  // combined into one coordinate space. A single-panel bbox (the common
+  // case) is unaffected and still gets the full 2-axis inset. Manual
+  // regions (applyOcrRefinement false) skip all of this — rawBbox as-is.
+  const crossesPanel = rawBbox.y < 0 || (rawBbox.y + rawBbox.h) > 100;
+  const bbox = !applyOcrRefinement
+    ? rawBbox
+    : (crossesPanel ? _insetBboxXOnlyForOcr(rawBbox) : _insetBboxForOcr(rawBbox));
   const idx        = images.indexOf(img);
   const bottomEdge = bbox.y + bbox.h;  // may exceed 100 when user drags past image bottom
   const topEdge    = bbox.y;           // may be < 0 when user drags past image top
@@ -2762,8 +3239,10 @@ async function ocrRegionStitched(img, bbox, images) {
   const primaryY = Math.max(0, bbox.y);
   const clips = [{ img, x: bbox.x, y: primaryY, w: bbox.w, h: Math.max(1, primaryH), dispW }];
 
-  // Bottom cross-panel: only when user explicitly dragged past image boundary (bottomEdge > 100)
-  if (bottomEdge > 100 && idx >= 0 && idx < images.length - 1) {
+  // Bottom cross-panel: only when the overflow past the image boundary is
+  // meaningful (see OCR_CROSS_PANEL_OVERFLOW_THRESHOLD_PCT above), not a
+  // marginal dip that doesn't actually need next-panel content.
+  if (bottomEdge > 100 + OCR_CROSS_PANEL_OVERFLOW_THRESHOLD_PCT && idx >= 0 && idx < images.length - 1) {
     const nextImg = images[idx + 1];
     if (nextImg.src && !nextImg.src.startsWith('data:')) {
       const nextDispW = (bbox.w / 100) * (nextImg.getBoundingClientRect().width || imgDispW);
@@ -2773,8 +3252,9 @@ async function ocrRegionStitched(img, bbox, images) {
     }
   }
 
-  // Top cross-panel: only when user explicitly dragged above image top (topEdge < 0)
-  if (topEdge < 0 && idx > 0) {
+  // Top cross-panel: only when the overflow past the image top is
+  // meaningful (see OCR_CROSS_PANEL_OVERFLOW_THRESHOLD_PCT above).
+  if (topEdge < -OCR_CROSS_PANEL_OVERFLOW_THRESHOLD_PCT && idx > 0) {
     const prevImg = images[idx - 1];
     if (prevImg.src && !prevImg.src.startsWith('data:')) {
       const prevDispW = (bbox.w / 100) * (prevImg.getBoundingClientRect().width || imgDispW);
@@ -2784,35 +3264,39 @@ async function ocrRegionStitched(img, bbox, images) {
     }
   }
 
-  if (clips.length === 1) return ocrRegion(img, bbox);
+  // rawBbox, not bbox — ocrRegion applies its own inset; insetting twice would over-crop.
+  if (clips.length === 1) return ocrRegion(img, rawBbox, applyOcrRefinement);
 
   // Try client-side stitching (same-origin/blob images)
   const dataUrl = stitchClips(clips);
   if (dataUrl) {
     const res = await sendToBackground({
       type: MSG.OCR_REGION,
-      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
+      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return res.text;
+    return { text: res.text, confidence: res.confidence };
   }
 
   // Cross-origin: send to background for fetch+stitch
   const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src, bbox: { x, y, w, h }, dispW: dw }));
-  const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
+  const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return res.text;
+  return { text: res.text, confidence: res.confidence };
 }
 
-async function ocrClips(clips) {
+async function ocrClips(clips, applyOcrRefinement = true) {
   // clips from FixedOverlayLayer: {img, bbox: {x,y,w,h}}
-  // Convert to internal {img, x, y, w, h, dispW} format
+  // Convert to internal {img, x, y, w, h, dispW} format, insetting each
+  // clip's bbox for the OCR crop (see the OCR section note above) unless
+  // this is a manual region (applyOcrRefinement false) — see runOcr.
   const items = clips.map(c => {
     const r = c.img.getBoundingClientRect();
+    const cropBbox = applyOcrRefinement ? _insetBboxForOcr(c.bbox) : c.bbox;
     return {
       img:   c.img,
-      x:     c.bbox.x, y: c.bbox.y, w: c.bbox.w, h: c.bbox.h,
-      dispW: (c.bbox.w / 100) * r.width,
+      x:     cropBbox.x, y: cropBbox.y, w: cropBbox.w, h: cropBbox.h,
+      dispW: (cropBbox.w / 100) * r.width,
     };
   });
 
@@ -2821,16 +3305,16 @@ async function ocrClips(clips) {
   if (dataUrl) {
     const res = await sendToBackground({
       type: MSG.OCR_REGION,
-      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
+      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return res.text;
+    return { text: res.text, confidence: res.confidence };
   }
   // Cross-origin: background fetch+stitch
   const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src, bbox: { x, y, w, h }, dispW }));
-  const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
+  const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return res.text;
+  return { text: res.text, confidence: res.confidence };
 }
 
 // Stitch multiple image clips vertically into one canvas.
@@ -3361,7 +3845,7 @@ function bootForPage() {
   let _storyContextRequestedThisPageLoad = false; // only fetch/log once per page load, not on every OCR request
 
   const jobManager = new JobManager({
-    runOcr:        (job) => {
+    runOcr:        async (job) => {
       // Lazy trigger point: first OCR/translation request for this title,
       // once per page load (repeat scans on the same page don't re-trigger
       // it — cached reads are silent past the first one now, by request).
@@ -3373,7 +3857,26 @@ function bootForPage() {
         _storyContextRequestedThisPageLoad = true;
         getStoryContext(adapter, meta.site, meta.titleId);
       }
-      return job.clips ? ocrClips(job.clips) : ocrRegionStitched(job.imageEl, job.bbox, images);
+      // Only a flood-fill-detected region needs the OCR-crop inset/text-
+      // cluster refinement (both correct for a bubble shape's bbox extending
+      // past its text) — a manual drag-select or hand-resized bbox is
+      // already exactly what the user wants, so it's sent to OCR unmodified.
+      const applyOcrRefinement = job.source === 'auto';
+      const { text, confidence } = job.clips
+        ? await ocrClips(job.clips, applyOcrRefinement)
+        : await ocrRegionStitched(job.imageEl, job.bbox, images, applyOcrRefinement);
+      // Shadow-mode difficulty classification: logs [DifficultyClassifier] for
+      // every real region so thresholds can be tuned against actual
+      // screenshots, WITHOUT changing what OCR/translation actually does yet
+      // (no pipeline routing exists — see extension/content/bundle.js's
+      // Difficulty Classifier section). Tesseract/OCR.space confidence is
+      // 0-100 (or absent for OCR.space); the classifier's thresholds are 0-1.
+      logDifficultyClassificationShadow(
+        job.skewAngle,
+        text,
+        typeof confidence === 'number' ? confidence / 100 : null
+      );
+      return text;
     },
     runTranslate:  (job) => autoTranslate(job.originalText),
     findOverlap:   findOverlapForBbox,
@@ -3413,12 +3916,20 @@ function bootForPage() {
   });
 
   async function createJobFromSelection({ bbox, imageEl, imageIndex, clips, existingAnnKey }) {
+    // skewAngle/source (auto-detect only — see BubbleAutoDetector._extractBboxes)
+    // are routing metadata (difficulty classifier + OCR-crop refinement gate),
+    // not part of the BBox shape saved with an annotation — strip them here,
+    // the one choke point auto-detect, manual drag-select, AND hand-resize
+    // (startBubbleResize) job creation all funnel through. A bbox with no
+    // `source` (manual drag-select or a hand-resized box — neither ever went
+    // through flood-fill) defaults to 'manual'.
+    const { skewAngle, source = 'manual', ...cleanBbox } = bbox;
     const rect = imageEl.getBoundingClientRect();
     const screenPos = {
-      x: rect.left + window.scrollX + (bbox.x / 100) * rect.width,
-      y: rect.top  + window.scrollY + (bbox.y / 100) * rect.height,
+      x: rect.left + window.scrollX + (cleanBbox.x / 100) * rect.width,
+      y: rect.top  + window.scrollY + (cleanBbox.y / 100) * rect.height,
     };
-    return jobManager.create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey });
+    return jobManager.create({ bbox: cleanBbox, imageEl, imageIndex, clips, screenPos, existingAnnKey, skewAngle, source });
   }
 
   // Shared click-to-detect handler — used by both BBoxSelector (normal sites)
@@ -3605,8 +4116,33 @@ function bootForPage() {
       <button type="button" class="wt-bt-resize" title="Chỉnh khung">${BT_RESIZE_ICON}</button>
       <button type="button" class="wt-bt-delete" title="Xoá">${BT_DELETE_ICON}</button>
     `;
-    toolbar.style.left = bubble.style.left;
-    toolbar.style.top  = `${parseFloat(bubble.style.top) - 32}px`;
+    // `bubble` is an invisible hit-area sized to the FULL selected bbox — the
+    // visible caption is the inner .wt-bubble-text span, which auto-fit sizes
+    // to its own content and centers within that bbox (see .wt-translation-
+    // bubble's comment), so it's often much smaller/lower than the bbox's own
+    // top-left. Anchor to the span's real rendered position instead of
+    // bubble.style.left/top so the toolbar sits right above the visible text,
+    // not off at the top of a much taller bbox.
+    //
+    // Computed as a viewport-space DELTA (span rect minus bubble rect) added
+    // on top of bubble.style.left/top, rather than converting the span's
+    // rect to a page-absolute value directly — OverlayRenderer positions
+    // bubbles in page-absolute px (adds scrollX/scrollY) but
+    // FixedOverlayLayer (Kakao/Ridi) positions them wrapper-relative (no
+    // scroll offset); this code is shared by both, and a plain rect
+    // difference is correct either way since it never assumes which
+    // convention is in play.
+    const span = bubble.querySelector('.wt-bubble-text');
+    let anchorLeft = parseFloat(bubble.style.left);
+    let anchorTop  = parseFloat(bubble.style.top);
+    if (span) {
+      const bubbleRect = bubble.getBoundingClientRect();
+      const spanRect   = span.getBoundingClientRect();
+      anchorLeft += spanRect.left - bubbleRect.left;
+      anchorTop  += spanRect.top  - bubbleRect.top;
+    }
+    toolbar.style.left = `${anchorLeft}px`;
+    toolbar.style.top  = `${anchorTop - 32}px`;
     bubble.parentElement.appendChild(toolbar);
     _activeToolbar = { bubble, el: toolbar };
 

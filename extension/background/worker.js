@@ -104,7 +104,292 @@ const DEV_OCR_SPACE_KEY = '';
 // when a key is available (complex backgrounds, small/stylised text).
 const TESSERACT_CONFIDENCE_THRESHOLD = 50;
 
-async function handleOcr({ dataUrl, imageUrl, bbox }) {
+// ── OCR crop refinement: text-cluster detection within the inset crop ──────
+// The percentage-inset fix (bundle.js's OCR_CROP_INSET_PCT) assumes bubble
+// margin is roughly evenly distributed around the text, which isn't true for
+// lopsided/asymmetric bubble shapes — inset alone can still leave noise on
+// one side while clipping text on the other. This is a second, more precise
+// pass: within the already-inset crop, find the actual dark-pixel text
+// cluster and re-crop tightly to that instead.
+//
+// Runs here (not the content script) because handleOcr is the one place
+// every OCR request funnels through no matter its origin — same-origin
+// direct crop, cross-origin background-fetched crop (fetchAndCrop above), or
+// a stitched multi-panel crop (handleOcrStitch calls back into handleOcr) —
+// so this is the only point guaranteed to have decodable pixels for ALL of
+// them. The content script never sees pixels for the common CDN
+// cross-origin-tainted-canvas case, since cropping already happens over here.
+//
+// Black-text-on-light-background only (task scope) — colored/non-black text
+// won't cross the dark/light split Otsu's method finds (see _otsuThreshold),
+// finds no dark-pixel cluster, and falls straight through to the inset-only
+// crop below (never blocks OCR).
+
+const OCR_TEXT_DILATE_PX              = 2;    // merges individual character strokes into connected line blocks; same separable-dilation algorithm as bundle.js's dilateMask (duplicated here — content script and service worker are separate execution contexts in this codebase, nothing to import between them)
+const OCR_TEXT_MERGE_DISTANCE_PX      = 14;   // gap (px) within which two SMALL text blocks are merged into the cluster; needs tuning against real multi-line bubbles. Large blocks ignore this entirely — see OCR_TEXT_MERGE_SIZE_RATIO
+const OCR_TEXT_MERGE_SIZE_RATIO       = 0.45; // a block whose own bbox area is >= this fraction of the largest block found in the crop is always merged in, regardless of gap distance — fixes irregular line spacing (e.g. a bubble narrowing near its tail) dropping a real, full-size text line just because it sits farther from the rest than OCR_TEXT_MERGE_DISTANCE_PX allows. Only blocks BELOW this ratio still go through the distance check. Needs tuning alongside OCR_TEXT_MERGE_DISTANCE_PX — too low and real noise blobs start qualifying as "large enough"; too high and irregular-spacing lines stop qualifying
+const OCR_TEXT_MIN_CLUSTER_W_PX       = 10;   // px — reject a merged cluster narrower than this as noise, not text
+const OCR_TEXT_MIN_CLUSTER_H_PX       = 8;    // px — reject a merged cluster shorter than this as noise, not text
+const OCR_TEXT_MIN_CLUSTER_AREA_RATIO = 0.02; // merged cluster bbox area / full crop area — reject specks too small relative to the crop to plausibly be the dialogue
+const OCR_TEXT_CLUSTER_PADDING_FRAC   = 0.15; // padding added around the merged cluster (fraction of its own w/h) so glyph descenders/ascenders/anti-aliasing aren't clipped right at the ink edge
+
+/**
+ * Otsu's method: finds the luminance threshold that best splits `luminances`
+ * (one 0-255 value per pixel) into two classes — text vs. background —
+ * minimizing intra-class variance (equivalently, maximizing between-class
+ * variance). Replaces a single fixed tuned constant (the old
+ * OCR_TEXT_DARK_THRESHOLD) with a value computed fresh from THIS crop's own
+ * histogram, so contrast/lighting differences between crops don't need one
+ * constant to fit all of them. Straightforward implementation — doesn't
+ * special-case degenerate (near-uniform, no real bimodal split) histograms
+ * beyond what the algorithm does naturally, consistent with the rest of this
+ * pipeline's "coarse, tune via real screenshots" approach.
+ */
+function _otsuThreshold(luminances) {
+  const histogram = new Array(256).fill(0);
+  for (let i = 0; i < luminances.length; i++) {
+    histogram[Math.min(255, Math.max(0, Math.round(luminances[i])))]++;
+  }
+
+  const total = luminances.length;
+  let sumAll = 0;
+  for (let t = 0; t < 256; t++) sumAll += t * histogram[t];
+
+  let sumBackground = 0, weightBackground = 0, maxBetweenVariance = -Infinity, threshold = 128;
+  for (let t = 0; t < 256; t++) {
+    weightBackground += histogram[t];
+    if (weightBackground === 0) continue;
+    const weightForeground = total - weightBackground;
+    if (weightForeground === 0) break;
+
+    sumBackground += t * histogram[t];
+    const meanBackground = sumBackground / weightBackground;
+    const meanForeground = (sumAll - sumBackground) / weightForeground;
+
+    const betweenVariance = weightBackground * weightForeground * (meanBackground - meanForeground) ** 2;
+    if (betweenVariance > maxBetweenVariance) { maxBetweenVariance = betweenVariance; threshold = t; }
+  }
+  return threshold;
+}
+
+/** Same separable square dilation as bundle.js's dilateMask — see OCR_TEXT_DILATE_PX above for why it's duplicated rather than imported. */
+function _dilateMask(mask, w, h, radius) {
+  const tmp = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let on = 0;
+      for (let dx = -radius; dx <= radius && !on; dx++) {
+        const nx = x + dx;
+        if (nx >= 0 && nx < w && mask[y * w + nx]) on = 1;
+      }
+      tmp[y * w + x] = on;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let on = 0;
+      for (let dy = -radius; dy <= radius && !on; dy++) {
+        const ny = y + dy;
+        if (ny >= 0 && ny < h && tmp[ny * w + x]) on = 1;
+      }
+      out[y * w + x] = on;
+    }
+  }
+  return out;
+}
+
+/** Labels every 4-connected component of `mask` (a binary Uint8Array over a w x h grid). Returns [{minX,minY,maxX,maxY,pixelCount}, ...] — one entry per distinct dark-pixel blob (e.g. one word/line fragment before merging). */
+function _labelConnectedComponents(mask, w, h) {
+  const visited = new Uint8Array(w * h);
+  const components = [];
+  for (let start = 0; start < mask.length; start++) {
+    if (!mask[start] || visited[start]) continue;
+    visited[start] = 1;
+    const stack = [start];
+    let minX = start % w, maxX = minX, minY = (start / w) | 0, maxY = minY, pixelCount = 0;
+    while (stack.length) {
+      const idx = stack.pop();
+      const x = idx % w, y = (idx / w) | 0;
+      pixelCount++;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (x > 0     && mask[idx - 1] && !visited[idx - 1]) { visited[idx - 1] = 1; stack.push(idx - 1); }
+      if (x < w - 1 && mask[idx + 1] && !visited[idx + 1]) { visited[idx + 1] = 1; stack.push(idx + 1); }
+      if (y > 0     && mask[idx - w] && !visited[idx - w]) { visited[idx - w] = 1; stack.push(idx - w); }
+      if (y < h - 1 && mask[idx + w] && !visited[idx + w]) { visited[idx + w] = 1; stack.push(idx + w); }
+    }
+    components.push({ minX, minY, maxX, maxY, pixelCount });
+  }
+  return components;
+}
+
+/** Gap (px) between two component bboxes along whichever axis actually separates them — 0 if they overlap/touch. */
+function _componentGap(a, b) {
+  const dx = Math.max(0, Math.max(a.minX, b.minX) - Math.min(a.maxX, b.maxX) - 1);
+  const dy = Math.max(0, Math.max(a.minY, b.minY) - Math.min(a.maxY, b.maxY) - 1);
+  return Math.max(dx, dy);
+}
+
+/**
+ * Decides which raw text-block components belong in the final merged
+ * dialogue bbox, and returns that single merged bbox (or null if `components`
+ * is empty). Pure distance-based merging drops real text lines that sit an
+ * irregular distance from the rest of the dialogue — e.g. a bubble that
+ * narrows near its tail, widening the gap before its last line — because a
+ * real, full-size text line sitting far away looks identical to a small,
+ * genuinely-noise blob sitting far away.
+ *
+ * Fix: a block whose own bbox area is >= `sizeRatioThreshold` of the largest
+ * block found in this crop is ALWAYS included, no matter how far it sits
+ * from the rest (it's plausibly a real text line, not noise). Only blocks
+ * below that ratio still go through the gap-distance check — a stray
+ * punctuation mark or partial character close to the cluster likely belongs
+ * to it; one far away is more likely noise. Distance-qualified inclusion is
+ * iterated to a fixed point, since including one small block can bring
+ * another, farther small block within range of the (now bigger) cluster.
+ *
+ * `decisions` (returned for [OcrCropRefine] logging/tuning) records every
+ * candidate block's area ratio, gap-to-cluster, and why it was in/excluded.
+ */
+function _mergeNearbyComponents(components, mergeDistancePx, sizeRatioThreshold) {
+  const blocks = components.map(c => ({
+    ...c,
+    area: (c.maxX - c.minX + 1) * (c.maxY - c.minY + 1),
+  }));
+  const maxBlockArea = Math.max(...blocks.map(b => b.area));
+
+  const included = [];
+  const decisions = [];
+
+  // Pass 1: large-enough blocks are in unconditionally (the single biggest
+  // block always qualifies against itself, so `included` is never empty here).
+  for (const b of blocks) {
+    const areaRatio = b.area / maxBlockArea;
+    if (areaRatio >= sizeRatioThreshold) {
+      included.push(b);
+      decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +areaRatio.toFixed(3), gap: 0, includedBy: 'size', included: true });
+    }
+  }
+
+  // Pass 2: remaining (small) blocks — include only if within gap distance of
+  // an already-included block, iterating since one merge can pull another
+  // small block into range.
+  const remaining = blocks.filter(b => !included.includes(b));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const b of remaining) {
+      if (included.includes(b)) continue;
+      const gap = Math.min(...included.map(o => _componentGap(b, o)));
+      if (gap <= mergeDistancePx) {
+        included.push(b);
+        decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +(b.area / maxBlockArea).toFixed(3), gap, includedBy: 'distance', included: true });
+        changed = true;
+      }
+    }
+  }
+
+  // Whatever's left never qualified by either rule — noise.
+  for (const b of remaining) {
+    if (included.includes(b)) continue;
+    const gap = Math.min(...included.map(o => _componentGap(b, o)));
+    decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +(b.area / maxBlockArea).toFixed(3), gap, includedBy: null, included: false });
+  }
+
+  if (!included.length) return { merged: null, decisions };
+
+  const merged = included.reduce((acc, b) => ({
+    minX: Math.min(acc.minX, b.minX), minY: Math.min(acc.minY, b.minY),
+    maxX: Math.max(acc.maxX, b.maxX), maxY: Math.max(acc.maxY, b.maxY),
+    pixelCount: acc.pixelCount + b.pixelCount,
+  }), { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, pixelCount: 0 });
+
+  return { merged, decisions };
+}
+
+/**
+ * Attempts a tighter, text-cluster-based re-crop of `dataUrl` (already the
+ * percentage-inset crop from bundle.js's OCR_CROP_INSET_PCT step). Never
+ * throws and never blocks OCR — on any failure or "nothing found" case, it
+ * returns the ORIGINAL dataUrl unchanged with source: 'inset-fallback' (see
+ * requirement #4 in the task this implements). source: 'text-cluster' means
+ * the tighter crop was used instead.
+ */
+async function refineOcrCropToTextCluster(dataUrl) {
+  if (!dataUrl) return { dataUrl, source: 'inset-fallback', reason: 'no-input' };
+
+  try {
+    const res    = await fetch(dataUrl);
+    const blob   = await res.blob();
+    const bitmap = await createImageBitmap(blob);
+    const w = bitmap.width, h = bitmap.height;
+
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const { data } = ctx.getImageData(0, 0, w, h);
+
+    const luminances = new Float32Array(w * h);
+    for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+      luminances[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    }
+    const otsuThreshold = _otsuThreshold(luminances);
+    const mask = new Uint8Array(w * h);
+    for (let p = 0; p < luminances.length; p++) {
+      if (luminances[p] < otsuThreshold) mask[p] = 1;
+    }
+
+    const dilated    = _dilateMask(mask, w, h, OCR_TEXT_DILATE_PX);
+    const components = _labelConnectedComponents(dilated, w, h);
+    if (!components.length) {
+      return { dataUrl, source: 'inset-fallback', reason: 'no-dark-pixels', otsuThreshold };
+    }
+
+    const { merged: best, decisions } = _mergeNearbyComponents(components, OCR_TEXT_MERGE_DISTANCE_PX, OCR_TEXT_MERGE_SIZE_RATIO);
+    if (!best) {
+      return { dataUrl, source: 'inset-fallback', reason: 'no-dark-pixels', decisions, otsuThreshold };
+    }
+    // Exactly one raw block contributing to the merge is a reasonable proxy
+    // for "this is a single isolated line" (vs. several blocks merged
+    // together, i.e. multi-line dialogue) — used to pick a tighter PSM for
+    // Tesseract (see handleOcr -> tesseractRun). Not perfectly reliable (a
+    // single line can still split into >1 raw block if dilation doesn't
+    // bridge every character gap), just a best-effort signal.
+    const isSingleLine = decisions.filter(d => d.included).length === 1;
+    const bw = best.maxX - best.minX + 1, bh = best.maxY - best.minY + 1;
+    const areaRatio = (bw * bh) / (w * h);
+
+    if (bw < OCR_TEXT_MIN_CLUSTER_W_PX || bh < OCR_TEXT_MIN_CLUSTER_H_PX || areaRatio < OCR_TEXT_MIN_CLUSTER_AREA_RATIO) {
+      return { dataUrl, source: 'inset-fallback', reason: 'cluster-too-small', bw, bh, areaRatio: +areaRatio.toFixed(3), decisions, otsuThreshold, isSingleLine };
+    }
+
+    const padX = Math.round(bw * OCR_TEXT_CLUSTER_PADDING_FRAC);
+    const padY = Math.round(bh * OCR_TEXT_CLUSTER_PADDING_FRAC);
+    const cropX = Math.max(0, best.minX - padX);
+    const cropY = Math.max(0, best.minY - padY);
+    const cropW = Math.min(w, best.maxX + 1 + padX) - cropX;
+    const cropH = Math.min(h, best.maxY + 1 + padY) - cropY;
+
+    const outCanvas = new OffscreenCanvas(cropW, cropH);
+    const outCtx = outCanvas.getContext('2d');
+    outCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+    const outBlob = await outCanvas.convertToBlob({ type: 'image/png' });
+    const refinedDataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Failed to encode refined crop'));
+      reader.readAsDataURL(outBlob);
+    });
+
+    return { dataUrl: refinedDataUrl, source: 'text-cluster', cropW, cropH, areaRatio: +areaRatio.toFixed(3), decisions, otsuThreshold, isSingleLine };
+  } catch (e) {
+    return { dataUrl, source: 'inset-fallback', reason: 'refine-error', error: e.message || String(e) };
+  }
+}
+
+async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
     [OCR_SPACE_KEY_STR]: '',
@@ -118,6 +403,27 @@ async function handleOcr({ dataUrl, imageUrl, bbox }) {
     finalDataUrl = await fetchAndCrop(imageUrl, bbox);
   }
 
+  // Second, more precise crop pass — tighten to the actual text-pixel
+  // cluster within the inset crop above. Falls back to the inset crop
+  // unchanged if nothing valid is found (see refineOcrCropToTextCluster).
+  // Skipped entirely for a manual region (refineCrop false) — the content
+  // script already sent the exact, un-inset user-drawn bbox for those, and
+  // this step assumes a flood-fill bubble shape's margin, which doesn't
+  // apply here (see bundle.js's runOcr for the source: 'auto' | 'manual' gate).
+  // isSingleLine (see refineOcrCropToTextCluster) tells tesseractRun whether
+  // to use a tighter PSM — stays false for manual regions (no refinement
+  // ever ran) and for any refinement fallback case (nothing to base it on),
+  // matching PSM.SINGLE_BLOCK as the safe default per task scope.
+  let isSingleLine = false;
+  if (refineCrop) {
+    const { dataUrl: _refinedDataUrl, ...refineDebug } = await refineOcrCropToTextCluster(finalDataUrl);
+    console.log('[OcrCropRefine]', refineDebug);
+    finalDataUrl = _refinedDataUrl;
+    isSingleLine = refineDebug.isSingleLine === true;
+  } else {
+    console.log('[OcrCropRefine]', { source: 'manual-skip' });
+  }
+
   if (provider === 'ocrspace') {
     if (!ocrKey) {
       return { ok: false, error: 'OCR.space API key not set — open the extension popup to add it.' };
@@ -127,7 +433,7 @@ async function handleOcr({ dataUrl, imageUrl, bbox }) {
 
   // Tesseract — attempt first, then auto-fallback to OCR.space when the
   // result is empty or low-confidence (complex bg, small/stylised text).
-  const tessResult = await tesseractRun(finalDataUrl);
+  const tessResult = await tesseractRun(finalDataUrl, isSingleLine);
   if (tessResult.ok && tessResult.text && (tessResult.confidence ?? 100) >= TESSERACT_CONFIDENCE_THRESHOLD) {
     return tessResult;
   }
@@ -145,7 +451,7 @@ async function handleOcr({ dataUrl, imageUrl, bbox }) {
 
 // ── Multi-image stitch OCR ───────────────────────────────────────────────────────
 
-async function handleOcrStitch({ clips }) {
+async function handleOcrStitch({ clips, refineCrop = true }) {
   // Fetch and crop each clip, normalize to same display scale, stitch vertically, OCR
   const items = await Promise.all(clips.map(async ({ imageUrl, bbox, dispW }) => {
     const res  = await fetch(imageUrl, { credentials: 'omit' });
@@ -190,7 +496,7 @@ async function handleOcrStitch({ clips }) {
     reader.readAsDataURL(blob);
   });
 
-  return handleOcr({ dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } });
+  return handleOcr({ dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop });
 }
 
 // ── OCR Detect: full-image block detection for auto-indicators ────────────────
@@ -243,7 +549,7 @@ function ensureOffscreen() {
   return offscreenReady;
 }
 
-async function tesseractRun(dataUrl) {
+async function tesseractRun(dataUrl, isSingleLine = false) {
   if (!chrome.offscreen?.createDocument) {
     return { ok: false, error: 'Offscreen API unavailable — reload extension (Chrome 109+)' };
   }
@@ -251,7 +557,7 @@ async function tesseractRun(dataUrl) {
   let lastErr = null;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      const res = await chrome.runtime.sendMessage({ type: 'OCR_RUN', payload: { dataUrl } });
+      const res = await chrome.runtime.sendMessage({ type: 'OCR_RUN', payload: { dataUrl, isSingleLine } });
       if (res) return res;
       lastErr = new Error('OCR worker did not respond');
     } catch (err) {

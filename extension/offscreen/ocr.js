@@ -13,6 +13,24 @@ const VENDOR = chrome.runtime.getURL('vendor/tesseract/');
 
 let workerPromise = null;
 
+// ── Tesseract recognition tuning ────────────────────────────────────────────
+// Dialogue crops are short, isolated snippets — not full documents/paragraphs,
+// which is what Tesseract's own default page-segmentation mode assumes.
+
+// tessedit_char_whitelist was tried here to restrict recognition to Hangul +
+// digits + dialogue punctuation, but Tesseract's whitelist/blacklist
+// mechanism does NOT function under OEM.LSTM_ONLY (confirmed: tesseract-ocr/
+// tesseract#751 — "Blacklist and whitelist unsupported with LSTM (4.0)"; also
+// tesseract-ocr/tesseract#998) — it's silently ignored, not an error, so it
+// looked harmless in testing but never actually filtered anything. Switching
+// to the legacy engine to make it work isn't viable here: the bundled WASM
+// core is LSTM-only (tesseract-core-simd-lstm.wasm.js — no legacy support
+// compiled in), and shipping a second core just for this would be a much
+// bigger change. Left unimplemented rather than kept as dead/misleading
+// config — revisit if a legacy-capable core is ever bundled.
+
+const OCR_UPSCALE_FACTOR = 2; // multiplier applied to the final crop right before Tesseract sees it (see _upscaleForOcr) — very small/blurry source crops may benefit from more (e.g. 3x), but that needs visual/accuracy testing to confirm, not just assumed
+
 function broadcast(status, progress, message) {
   try {
     chrome.runtime.sendMessage(
@@ -50,12 +68,49 @@ function getWorker() {
   return workerPromise;
 }
 
+/**
+ * Upscales a data: URL image by `factor` using the canvas's built-in
+ * high-quality (bicubic-equivalent) resampling — the last pixel-level step
+ * before Tesseract sees the crop, run AFTER every region-detection/margin/
+ * refinement step upstream has already picked the final crop, so it never
+ * interferes with any of that earlier pixel analysis.
+ */
+async function _upscaleForOcr(dataUrl, factor) {
+  const res    = await fetch(dataUrl);
+  const blob   = await res.blob();
+  const bitmap = await createImageBitmap(blob);
+
+  const canvas = new OffscreenCanvas(Math.round(bitmap.width * factor), Math.round(bitmap.height * factor));
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+
+  const outBlob = await canvas.convertToBlob({ type: 'image/png' });
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to encode upscaled OCR image'));
+    reader.readAsDataURL(outBlob);
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type !== 'OCR_RUN') return;
   (async () => {
     try {
       const worker = await getWorker();
-      const { data } = await worker.recognize(message.payload.dataUrl);
+      // SINGLE_LINE when the caller knows this crop is one isolated text
+      // block (see worker.js's refineOcrCropToTextCluster/isSingleLine) —
+      // SINGLE_BLOCK (multi-line dialogue) otherwise/by default, since
+      // Tesseract's own default PSM assumes a full multi-paragraph document,
+      // not a short dialogue snippet.
+      await worker.setParameters({
+        tessedit_pageseg_mode: message.payload.isSingleLine ? Tesseract.PSM.SINGLE_LINE : Tesseract.PSM.SINGLE_BLOCK,
+      });
+      const upscaledDataUrl = await _upscaleForOcr(message.payload.dataUrl, OCR_UPSCALE_FACTOR);
+      const { data } = await worker.recognize(upscaledDataUrl);
       broadcast('ready');
       // Webtoon bubbles wrap lines arbitrarily — collapse to one line
       const text = (data.text || '').replace(/\s+/g, ' ').trim();
