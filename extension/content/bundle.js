@@ -910,6 +910,7 @@ class BubbleAutoDetector {
       }
       if (!imageData) return this._fail(debug, 'canvas-tainted');
 
+      smoothSegmentSeams(imageData, segments.list);
       boxBlur3x3(imageData);
 
       const localX = Math.round(cx - sx);
@@ -1126,6 +1127,61 @@ function loadImage(dataUrl) {
     img.onerror = () => reject(new Error('Failed to load cropped image'));
     img.src = dataUrl;
   });
+}
+
+// A bubble spanning two stacked panel <img> elements gets its click-to-detect
+// crop composited from BOTH source images (_buildVerticalSegments +
+// _composeSegments). Real-world case: on Kakao, flood-fill stopped at the
+// exact seam between the two composited images — touchesEdge:false (i.e. it
+// believed it had found the bubble's true boundary, not that it ran out of
+// search radius) — even though the crop had plenty of room left to keep
+// growing into the neighboring image, and the bubble's own drawn outline is
+// continuous across that seam. Two separately-served image files depicting
+// "the same" continuous artwork can differ slightly in color/brightness
+// (different compression, whatever encoding each was served with) — a real
+// discontinuity the color-tolerance flood fill reads as a wall, even though
+// boxBlur3x3's radius-1 smoothing (aimed at JPEG ringing, not a real
+// brightness step between two files) isn't strong enough to bridge it.
+// Coarse mitigation: blur a wider band centered on each segment seam more
+// aggressively than the rest of the crop, specifically to smooth over that
+// discontinuity before flood-fill sees it. Only ever runs for a multi-segment
+// composite (segments.length > 1, i.e. an actual cross-panel click) — a
+// same-single-image detection (the overwhelming majority of clicks) is
+// completely unaffected. Needs tuning against more real cross-panel
+// screenshots — too small and it won't bridge the seam; too large and it
+// could blur away real text/bubble edges that happen to sit close to it.
+const SEAM_BLUR_RADIUS_PX = 5;
+
+/** Vertical-only box blur (blurs across the horizontal seam, not along it) over rows [centerY-radius, centerY+radius). See SEAM_BLUR_RADIUS_PX above. */
+function _blurSeamBand(imageData, centerY, radius) {
+  const { data, width: w, height: h } = imageData;
+  const yStart = Math.max(0, centerY - radius);
+  const yEnd   = Math.min(h - 1, centerY + radius - 1);
+  if (yStart > yEnd) return;
+  const src = new Uint8ClampedArray(data);
+  for (let y = yStart; y <= yEnd; y++) {
+    for (let x = 0; x < w; x++) {
+      let rSum = 0, gSum = 0, bSum = 0, n = 0;
+      for (let dy = -radius; dy <= radius; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= h) continue;
+        const i = (ny * w + x) * 4;
+        rSum += src[i]; gSum += src[i + 1]; bSum += src[i + 2];
+        n++;
+      }
+      const i = (y * w + x) * 4;
+      data[i] = rSum / n; data[i + 1] = gSum / n; data[i + 2] = bSum / n;
+    }
+  }
+}
+
+/** Smooths every segment-join seam in a composited multi-image crop — see SEAM_BLUR_RADIUS_PX above. No-op for a single-segment (same-image) crop. */
+function smoothSegmentSeams(imageData, segmentList) {
+  if (segmentList.length < 2) return;
+  // Every segment after the first one starts at a real seam (destY).
+  for (let i = 1; i < segmentList.length; i++) {
+    _blurSeamBand(imageData, segmentList[i].destY, SEAM_BLUR_RADIUS_PX);
+  }
 }
 
 /** In-place 3x3 box blur (radius 1) — smooths JPEG ringing artifacts around bubble edges. */
