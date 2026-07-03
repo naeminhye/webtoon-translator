@@ -65,7 +65,11 @@
 
   class GeminiAdapter extends LlmAdapter {
     constructor() {
-      super({ id: 'gemini', label: 'Gemini', modelPlaceholder: 'gemini-1.5-flash' });
+      // gemini-1.5-flash was retired from the v1beta generateContent endpoint —
+      // gemini-2.5-flash is the current fast/cheap default. This is only a
+      // placeholder hint (see LlmAdapter doc comment); the Model field is free
+      // text, so an already-saved older model name isn't touched by this.
+      super({ id: 'gemini', label: 'Gemini', modelPlaceholder: 'gemini-2.5-flash' });
     }
     async callApi(apiKey, model, prompt) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
