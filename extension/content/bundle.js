@@ -2970,10 +2970,16 @@ function sendToBackground(message, retries = 3) {
 //
 // Coarse by design: a uniform inset assumes margin is roughly evenly
 // distributed around the text, which won't hold for bubbles where the text
-// sits hard against the boundary on one side — if that shows up in testing,
-// the next-step fix is detecting the actual dark-pixel text cluster inside
-// the bubble instead of a uniform percentage.
-const OCR_CROP_INSET_PCT = 0.175; // % of width/height trimmed from EACH side (e.g. 0.175 = 17.5%/side, ~35% off each dimension total); start 15-20%/side per spec, needs visual tuning against real bubble screenshots of varying shapes
+// sits hard against the boundary on one side. This is no longer the only
+// pass — worker.js's refineOcrCropToTextCluster runs a second, precise
+// dark-pixel-cluster pass on top of this crop — so this first pass only
+// needs to knock off the worst of the outline/margin, not get close to the
+// text. Real-world testing found the original 17.5%/side default clipping
+// trailing characters of off-center text (e.g. text sitting at ~91% of the
+// bbox width got its last couple characters cut by an 82.5% right edge),
+// which the second pass can't recover once the pixels are gone — reduced
+// accordingly. Still needs tuning against more real screenshots.
+const OCR_CROP_INSET_PCT = 0.08; // % of width/height trimmed from EACH side (e.g. 0.08 = 8%/side, ~16% off each dimension total)
 
 /** Shrinks a %-of-image bbox toward its own center for the OCR crop only — see the OCR section note above. */
 function _insetBboxForOcr(bbox) {
@@ -2985,6 +2991,12 @@ function _insetBboxForOcr(bbox) {
     w: Math.max(0, bbox.w - 2 * insetX),
     h: Math.max(0, bbox.h - 2 * insetY),
   };
+}
+
+/** Same as _insetBboxForOcr but only shrinks the horizontal (x/w) extent, leaving y/h untouched — see ocrRegionStitched for why a cross-panel-spanning bbox needs this instead. */
+function _insetBboxXOnlyForOcr(bbox) {
+  const insetX = bbox.w * OCR_CROP_INSET_PCT;
+  return { x: bbox.x + insetX, y: bbox.y, w: Math.max(0, bbox.w - 2 * insetX), h: bbox.h };
 }
 
 async function ocrRegion(img, bbox) {
@@ -3010,12 +3022,19 @@ async function ocrRegion(img, bbox) {
 }
 
 async function ocrRegionStitched(img, rawBbox, images) {
-  // Inset once, up front — applies to the whole selection, including the
-  // cross-panel overflow math below, so a region straddling two stacked
-  // panel images gets the same margin trim on every side as a single-panel
-  // one. See the OCR section note above for why this is a deliberate
-  // simplification rather than insetting only the in-panel portion.
-  const bbox = _insetBboxForOcr(rawBbox);
+  // A bubble that visually spans two stacked panel images needs its
+  // cross-panel overflow amount (below) computed from the TRUE selection
+  // extent — shrinking y/h first (as the plain 2-axis inset does) can pull a
+  // borderline overflow back under the 100%/0% trigger entirely, silently
+  // dropping the neighboring panel's portion of the text from the crop
+  // (found via real-world testing: a bubble spanning two panels came back
+  // with zero OCR'd text). So a cross-panel-spanning bbox only gets the
+  // horizontal inset here; the worker-side text-cluster refinement trims
+  // vertical margin AFTER stitching, once both panels' pixels are already
+  // combined into one coordinate space. A single-panel bbox (the common
+  // case) is unaffected and still gets the full 2-axis inset.
+  const crossesPanel = rawBbox.y < 0 || (rawBbox.y + rawBbox.h) > 100;
+  const bbox = crossesPanel ? _insetBboxXOnlyForOcr(rawBbox) : _insetBboxForOcr(rawBbox);
   const idx        = images.indexOf(img);
   const bottomEdge = bbox.y + bbox.h;  // may exceed 100 when user drags past image bottom
   const topEdge    = bbox.y;           // may be < 0 when user drags past image top
