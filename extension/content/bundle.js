@@ -964,6 +964,10 @@ class BubbleAutoDetector {
       // Callers must strip this before persisting `bbox` as an annotation —
       // it's debug/routing metadata, not part of the BBox shape.
       bbox.skewAngle = minAreaRectAngle(extractRegionContour(region.mask, cw, r));
+      // Marks this bbox as flood-fill-detected (vs. a hand-drawn/hand-resized
+      // one) — gates the OCR-crop inset + text-cluster refinement, which only
+      // make sense for a flood-fill shape's bounding box. See runOcr.
+      bbox.source = 'auto';
       bboxes.push(bbox);
     }
     return { bboxes, firstFailReason };
@@ -1842,7 +1846,7 @@ class JobManager {
     this._ocrChainTail   = Promise.resolve(); // serializes OCR across jobs
   }
 
-  async create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey = null, skewAngle = null }) {
+  async create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey = null, skewAngle = null, source = 'manual' }) {
     const { w: natW, h: natH } = bboxNaturalSize(bbox, imageEl);
     if (natW < MIN_OCR_NATURAL_PX || natH < MIN_OCR_NATURAL_PX) {
       this._onTooSmall?.({ bbox, imageEl, imageIndex, natW, natH });
@@ -1857,6 +1861,7 @@ class JobManager {
       id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       bbox, imageEl, imageIndex, clips, existingAnnKey,
       skewAngle, // difficulty-classifier signal from auto-detect; null for manual drag-select (no flood-fill contour to measure) — see runOcr's shadow-mode classification call
+      source, // 'auto' (flood-fill detected) | 'manual' (drag-select or hand-resize, default) — gates the OCR-crop inset/text-cluster refinement in runOcr, which only make sense for a flood-fill shape's bbox
       status: 'queued', // queued -> ocr -> translating -> done | error
       originalText: '', translatedText: '', errorMessage: '',
       cancelled: false, createdAt: Date.now(),
@@ -2999,8 +3004,18 @@ function _insetBboxXOnlyForOcr(bbox) {
   return { x: bbox.x + insetX, y: bbox.y, w: Math.max(0, bbox.w - 2 * insetX), h: bbox.h };
 }
 
-async function ocrRegion(img, bbox) {
-  const cropBbox = _insetBboxForOcr(bbox);
+/**
+ * `applyOcrRefinement` gates the percentage-inset + (worker-side)
+ * text-cluster refinement — both exist to correct for a flood-fill bubble's
+ * bbox extending past its actual text into margin/outline. A manually
+ * drag-selected (or hand-resized) bbox never went through flood-fill — the
+ * user already selected exactly the text they want — so applying either
+ * step there could needlessly shrink/distort an intentionally-sized region.
+ * Defaults to true (auto-detect's existing behavior); callers pass false for
+ * manual regions — see runOcr, which decides this from job.source.
+ */
+async function ocrRegion(img, bbox, applyOcrRefinement = true) {
+  const cropBbox = applyOcrRefinement ? _insetBboxForOcr(bbox) : bbox;
   // Fast path: draw the already-loaded DOM image directly.
   // blob: URLs (Kakao) are same-origin → never tainted.
   // CDN images without crossOrigin attr may taint the canvas → SecurityError.
@@ -3015,13 +3030,13 @@ async function ocrRegion(img, bbox) {
 
   const res = await sendToBackground({
     type: MSG.OCR_REGION,
-    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox: cropBbox },
+    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox: cropBbox, refineCrop: applyOcrRefinement },
   });
   if (!res?.ok) throw new Error(res?.error || 'OCR failed');
   return { text: res.text, confidence: res.confidence };
 }
 
-async function ocrRegionStitched(img, rawBbox, images) {
+async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true) {
   // A bubble that visually spans two stacked panel images needs its
   // cross-panel overflow amount (below) computed from the TRUE selection
   // extent — shrinking y/h first (as the plain 2-axis inset does) can pull a
@@ -3032,9 +3047,12 @@ async function ocrRegionStitched(img, rawBbox, images) {
   // horizontal inset here; the worker-side text-cluster refinement trims
   // vertical margin AFTER stitching, once both panels' pixels are already
   // combined into one coordinate space. A single-panel bbox (the common
-  // case) is unaffected and still gets the full 2-axis inset.
+  // case) is unaffected and still gets the full 2-axis inset. Manual
+  // regions (applyOcrRefinement false) skip all of this — rawBbox as-is.
   const crossesPanel = rawBbox.y < 0 || (rawBbox.y + rawBbox.h) > 100;
-  const bbox = crossesPanel ? _insetBboxXOnlyForOcr(rawBbox) : _insetBboxForOcr(rawBbox);
+  const bbox = !applyOcrRefinement
+    ? rawBbox
+    : (crossesPanel ? _insetBboxXOnlyForOcr(rawBbox) : _insetBboxForOcr(rawBbox));
   const idx        = images.indexOf(img);
   const bottomEdge = bbox.y + bbox.h;  // may exceed 100 when user drags past image bottom
   const topEdge    = bbox.y;           // may be < 0 when user drags past image top
@@ -3069,14 +3087,14 @@ async function ocrRegionStitched(img, rawBbox, images) {
   }
 
   // rawBbox, not bbox — ocrRegion applies its own inset; insetting twice would over-crop.
-  if (clips.length === 1) return ocrRegion(img, rawBbox);
+  if (clips.length === 1) return ocrRegion(img, rawBbox, applyOcrRefinement);
 
   // Try client-side stitching (same-origin/blob images)
   const dataUrl = stitchClips(clips);
   if (dataUrl) {
     const res = await sendToBackground({
       type: MSG.OCR_REGION,
-      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
+      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
     return { text: res.text, confidence: res.confidence };
@@ -3084,18 +3102,19 @@ async function ocrRegionStitched(img, rawBbox, images) {
 
   // Cross-origin: send to background for fetch+stitch
   const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src, bbox: { x, y, w, h }, dispW: dw }));
-  const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
+  const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
   return { text: res.text, confidence: res.confidence };
 }
 
-async function ocrClips(clips) {
+async function ocrClips(clips, applyOcrRefinement = true) {
   // clips from FixedOverlayLayer: {img, bbox: {x,y,w,h}}
   // Convert to internal {img, x, y, w, h, dispW} format, insetting each
-  // clip's bbox for the OCR crop (see the OCR section note above).
+  // clip's bbox for the OCR crop (see the OCR section note above) unless
+  // this is a manual region (applyOcrRefinement false) — see runOcr.
   const items = clips.map(c => {
     const r = c.img.getBoundingClientRect();
-    const cropBbox = _insetBboxForOcr(c.bbox);
+    const cropBbox = applyOcrRefinement ? _insetBboxForOcr(c.bbox) : c.bbox;
     return {
       img:   c.img,
       x:     cropBbox.x, y: cropBbox.y, w: cropBbox.w, h: cropBbox.h,
@@ -3108,14 +3127,14 @@ async function ocrClips(clips) {
   if (dataUrl) {
     const res = await sendToBackground({
       type: MSG.OCR_REGION,
-      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } },
+      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
     return { text: res.text, confidence: res.confidence };
   }
   // Cross-origin: background fetch+stitch
   const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src, bbox: { x, y, w, h }, dispW }));
-  const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips } });
+  const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
   return { text: res.text, confidence: res.confidence };
 }
@@ -3660,9 +3679,14 @@ function bootForPage() {
         _storyContextRequestedThisPageLoad = true;
         getStoryContext(adapter, meta.site, meta.titleId);
       }
+      // Only a flood-fill-detected region needs the OCR-crop inset/text-
+      // cluster refinement (both correct for a bubble shape's bbox extending
+      // past its text) — a manual drag-select or hand-resized bbox is
+      // already exactly what the user wants, so it's sent to OCR unmodified.
+      const applyOcrRefinement = job.source === 'auto';
       const { text, confidence } = job.clips
-        ? await ocrClips(job.clips)
-        : await ocrRegionStitched(job.imageEl, job.bbox, images);
+        ? await ocrClips(job.clips, applyOcrRefinement)
+        : await ocrRegionStitched(job.imageEl, job.bbox, images, applyOcrRefinement);
       // Shadow-mode difficulty classification: logs [DifficultyClassifier] for
       // every real region so thresholds can be tuned against actual
       // screenshots, WITHOUT changing what OCR/translation actually does yet
@@ -3714,17 +3738,20 @@ function bootForPage() {
   });
 
   async function createJobFromSelection({ bbox, imageEl, imageIndex, clips, existingAnnKey }) {
-    // skewAngle (auto-detect only — see BubbleAutoDetector._extractBboxes) is
-    // routing metadata for the difficulty classifier, not part of the BBox
-    // shape saved with an annotation — strip it here, the one choke point
-    // both auto-detect and manual drag-select job creation funnel through.
-    const { skewAngle, ...cleanBbox } = bbox;
+    // skewAngle/source (auto-detect only — see BubbleAutoDetector._extractBboxes)
+    // are routing metadata (difficulty classifier + OCR-crop refinement gate),
+    // not part of the BBox shape saved with an annotation — strip them here,
+    // the one choke point auto-detect, manual drag-select, AND hand-resize
+    // (startBubbleResize) job creation all funnel through. A bbox with no
+    // `source` (manual drag-select or a hand-resized box — neither ever went
+    // through flood-fill) defaults to 'manual'.
+    const { skewAngle, source = 'manual', ...cleanBbox } = bbox;
     const rect = imageEl.getBoundingClientRect();
     const screenPos = {
       x: rect.left + window.scrollX + (cleanBbox.x / 100) * rect.width,
       y: rect.top  + window.scrollY + (cleanBbox.y / 100) * rect.height,
     };
-    return jobManager.create({ bbox: cleanBbox, imageEl, imageIndex, clips, screenPos, existingAnnKey, skewAngle });
+    return jobManager.create({ bbox: cleanBbox, imageEl, imageIndex, clips, screenPos, existingAnnKey, skewAngle, source });
   }
 
   // Shared click-to-detect handler — used by both BBoxSelector (normal sites)

@@ -339,7 +339,7 @@ async function refineOcrCropToTextCluster(dataUrl) {
   }
 }
 
-async function handleOcr({ dataUrl, imageUrl, bbox }) {
+async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
     [OCR_SPACE_KEY_STR]: '',
@@ -356,9 +356,17 @@ async function handleOcr({ dataUrl, imageUrl, bbox }) {
   // Second, more precise crop pass — tighten to the actual text-pixel
   // cluster within the inset crop above. Falls back to the inset crop
   // unchanged if nothing valid is found (see refineOcrCropToTextCluster).
-  const { dataUrl: _refinedDataUrl, ...refineDebug } = await refineOcrCropToTextCluster(finalDataUrl);
-  console.log('[OcrCropRefine]', refineDebug);
-  finalDataUrl = _refinedDataUrl;
+  // Skipped entirely for a manual region (refineCrop false) — the content
+  // script already sent the exact, un-inset user-drawn bbox for those, and
+  // this step assumes a flood-fill bubble shape's margin, which doesn't
+  // apply here (see bundle.js's runOcr for the source: 'auto' | 'manual' gate).
+  if (refineCrop) {
+    const { dataUrl: _refinedDataUrl, ...refineDebug } = await refineOcrCropToTextCluster(finalDataUrl);
+    console.log('[OcrCropRefine]', refineDebug);
+    finalDataUrl = _refinedDataUrl;
+  } else {
+    console.log('[OcrCropRefine]', { source: 'manual-skip' });
+  }
 
   if (provider === 'ocrspace') {
     if (!ocrKey) {
@@ -387,7 +395,7 @@ async function handleOcr({ dataUrl, imageUrl, bbox }) {
 
 // ── Multi-image stitch OCR ───────────────────────────────────────────────────────
 
-async function handleOcrStitch({ clips }) {
+async function handleOcrStitch({ clips, refineCrop = true }) {
   // Fetch and crop each clip, normalize to same display scale, stitch vertically, OCR
   const items = await Promise.all(clips.map(async ({ imageUrl, bbox, dispW }) => {
     const res  = await fetch(imageUrl, { credentials: 'omit' });
@@ -432,7 +440,7 @@ async function handleOcrStitch({ clips }) {
     reader.readAsDataURL(blob);
   });
 
-  return handleOcr({ dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 } });
+  return handleOcr({ dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop });
 }
 
 // ── OCR Detect: full-image block detection for auto-indicators ────────────────
