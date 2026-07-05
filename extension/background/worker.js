@@ -23,7 +23,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(sendResponse)
         .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
       return true;
+    case 'DETECT_BUBBLES':
+      handleDetectBubbles(message.payload)
+        .then(sendResponse)
+        .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
+      return true;
     case 'OCR_STATUS':
+    case 'ONNX_STATUS':
       // Relay engine progress from the offscreen document to content scripts
       // (runtime.sendMessage never reaches content scripts directly)
       chrome.tabs.query({
@@ -652,6 +658,53 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.runtime.onInstalled.addListener(updateBadge);
 chrome.runtime.onStartup.addListener(updateBadge);
 updateBadge();
+
+// ── ONNX bubble detection ─────────────────────────────────────────────────────
+
+/**
+ * Fetch the panel image in the service worker (avoids content-script CORS
+ * issues), encode it as a data URL, then forward to the offscreen ONNX runner.
+ * Returns { ok, bboxes } where bboxes are percentage-coordinate objects
+ * { x, y, w, h, conf } matching the extension's existing bbox format.
+ */
+async function handleDetectBubbles({ imageUrl }) {
+  if (!chrome.offscreen?.createDocument) {
+    return { ok: false, error: 'Offscreen API unavailable — reload extension (Chrome 109+)' };
+  }
+  await ensureOffscreen();
+
+  // Fetch the panel image cross-origin in the service worker
+  let dataUrl;
+  try {
+    const res  = await fetch(imageUrl, { credentials: 'omit' });
+    const blob = await res.blob();
+    dataUrl    = await new Promise((resolve, reject) => {
+      const reader   = new FileReader();
+      reader.onload  = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Failed to encode panel image for ONNX'));
+      reader.readAsDataURL(blob);
+    });
+  } catch (err) {
+    return { ok: false, error: `Image fetch failed: ${err.message}` };
+  }
+
+  // Delegate inference to the offscreen document
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'ONNX_DETECT',
+        payload: { dataUrl },
+      });
+      if (res) return res;
+      lastErr = new Error('ONNX runner did not respond');
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+  }
+  throw lastErr || new Error('ONNX runner did not respond');
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

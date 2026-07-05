@@ -21,6 +21,7 @@ const MSG    = {
   OCR_STITCH:        'OCR_STITCH',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
   CROP_IMAGE:        'CROP_IMAGE',
+  DETECT_BUBBLES:    'DETECT_BUBBLES',
 };
 
 // Background opacity for the translation caption box — a fully-opaque overlay
@@ -3566,6 +3567,7 @@ let _translationsVisible = true;
 const EYE_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_OFF_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-7 0-11-7-11-7a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 const SCAN_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>`;
+const ONNX_SCAN_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>`;
 
 // Bubble action toolbar icons — same Feather-style outline language as SCAN_ICON/EYE_ICON above.
 const BT_EDIT_ICON   = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
@@ -3754,6 +3756,71 @@ function bootForPage() {
     }
   }
   scanBtn.addEventListener('click', () => setReadScan(!readScanEnabled));
+
+  // ── ONNX "Scan All" button ────────────────────────────────────────────────
+  // Runs the ONNX bubble-detector model over every loaded panel image and
+  // queues each detected region as an independent OCR+translate job — no
+  // click required. Falls back gracefully when the model is not yet installed.
+  const onnxScanBtn = document.createElement('button');
+  onnxScanBtn.id = 'wt-onnx-scan-btn';
+  onnxScanBtn.title = 'Auto-detect all bubbles (ONNX)';
+  onnxScanBtn.setAttribute('aria-label', 'Auto-detect all speech bubbles using ONNX model');
+  onnxScanBtn.innerHTML = ONNX_SCAN_ICON;
+  document.body.appendChild(onnxScanBtn);
+
+  let onnxScanRunning = false;
+
+  onnxScanBtn.addEventListener('click', () => {
+    if (!onnxScanRunning) scanAllWithOnnx();
+  });
+
+  async function scanAllWithOnnx() {
+    if (!images.length) { showToast('No panel images loaded yet — scroll down and try again.', '#f59e0b'); return; }
+    onnxScanRunning = true;
+    onnxScanBtn.classList.add('wt-scan-active');
+    onnxScanBtn.title = 'Scanning…';
+    showToast('Scanning all panels with ONNX bubble detector…', '#6366f1', 2000);
+
+    let detected = 0;
+    let failed   = 0;
+
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+      if (!img.src || img.naturalWidth === 0) continue;
+
+      try {
+        const res = await sendToBackground({
+          type: MSG.DETECT_BUBBLES,
+          payload: { imageUrl: img.src },
+        });
+
+        if (!res?.ok || !res.bboxes?.length) continue;
+
+        for (const box of res.bboxes) {
+          await createJobFromSelection({
+            bbox:       { x: box.x, y: box.y, w: box.w, h: box.h, source: 'onnx' },
+            imageEl:    img,
+            imageIndex: i,
+          });
+          detected++;
+        }
+      } catch (err) {
+        failed++;
+      }
+    }
+
+    onnxScanRunning = false;
+    onnxScanBtn.classList.remove('wt-scan-active');
+    onnxScanBtn.title = 'Auto-detect all bubbles (ONNX)';
+
+    if (detected > 0) {
+      showToast(`✓ ONNX detected ${detected} bubble${detected !== 1 ? 's' : ''} across ${images.length} panel${images.length !== 1 ? 's' : ''}`, '#22c55e');
+    } else if (failed > 0) {
+      showToast('✗ ONNX scan failed — model may not be installed yet. See docs.', '#ef4444');
+    } else {
+      showToast('No bubbles detected. Try adjusting confidence threshold or check model installation.', '#f59e0b');
+    }
+  }
 
   // One-time hint (persisted across sessions) explaining click-to-auto-detect,
   // since the overlay cursor alone doesn't make that obvious. Kakao only
@@ -4392,6 +4459,11 @@ function bootForPage() {
       panel?.toggle();
     }
     if (message.type === 'TRIGGER_CLEAR')  triggerClear();
+    if (message.type === 'ONNX_STATUS') {
+      const { status, message: msg } = message.payload || {};
+      if (status === 'loading-model') showToast('Loading ONNX bubble detector model…', '#6366f1', 2500);
+      else if (status === 'error')    showToast(`✗ ONNX error: ${msg || 'unknown'}`, '#ef4444', 5000);
+    }
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
@@ -4430,6 +4502,7 @@ function bootForPage() {
     llmTestPopover.dismiss();
     toggleBtn.remove();
     scanBtn.remove();
+    onnxScanBtn.remove();
     panel?.hide();
     document.getElementById('wt-progress-bar')?.remove();
     document.getElementById('wt-job-badge')?.remove();

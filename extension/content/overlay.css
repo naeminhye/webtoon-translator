@@ -957,6 +957,44 @@
 
 body.wt-panel-open #wt-scan-btn { left: 24px; }
 
+/* ── ONNX "Scan All" button ─────────────────────────────────────────── */
+
+#wt-onnx-scan-btn {
+  position: fixed;
+  bottom: 128px;
+  left: 24px;
+  z-index: 99997;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.85);
+  color: #fff;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease, background 0.2s ease;
+}
+
+#wt-onnx-scan-btn:hover  { transform: scale(1.08); }
+#wt-onnx-scan-btn:active { transform: scale(0.96); }
+
+#wt-onnx-scan-btn.wt-scan-active {
+  background: rgba(16, 185, 129, 0.92);
+  box-shadow: 0 2px 16px rgba(16, 185, 129, 0.5);
+  animation: wt-onnx-pulse 2s infinite;
+}
+
+@keyframes wt-onnx-pulse {
+  0%, 100% { box-shadow: 0 2px 16px rgba(16, 185, 129, 0.5); }
+  50%       { box-shadow: 0 2px 24px rgba(16, 185, 129, 0.8); }
+}
+
+body.wt-panel-open #wt-onnx-scan-btn { left: 24px; }
+
 /* ── Translation visibility toggle (corner icon button) ──────────────── */
 
 #wt-toggle-btn {
