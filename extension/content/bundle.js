@@ -2087,7 +2087,7 @@ class JobManager {
         this._onStatusChange(job);
         return;
       }
-      console.log('[WebtoonTranslate] OCR text:', ocrText);
+      console.log(`[WebtoonTranslate] OCR text (${job._ocrProvider ?? 'unknown'}, conf=${job._ocrConfidence ?? '?'}):`, ocrText);
       job.status = 'translating';
       this._onStatusChange(job);
       const translated = await this._runTranslate(job);
@@ -3308,7 +3308,7 @@ async function ocrRegion(img, bbox, applyOcrRefinement = true) {
     payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox: cropBbox, refineCrop: applyOcrRefinement },
   });
   if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-  return { text: res.text, confidence: res.confidence };
+  return { text: res.text, confidence: res.confidence, provider: res.provider };
 }
 
 async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true) {
@@ -3375,14 +3375,14 @@ async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true
       payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return { text: res.text, confidence: res.confidence };
+    return { text: res.text, confidence: res.confidence, provider: res.provider };
   }
 
   // Cross-origin: send to background for fetch+stitch
   const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src, bbox: { x, y, w, h }, dispW: dw }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return { text: res.text, confidence: res.confidence };
+  return { text: res.text, confidence: res.confidence, provider: res.provider };
 }
 
 async function ocrClips(clips, applyOcrRefinement = true) {
@@ -3408,13 +3408,13 @@ async function ocrClips(clips, applyOcrRefinement = true) {
       payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return { text: res.text, confidence: res.confidence };
+    return { text: res.text, confidence: res.confidence, provider: res.provider };
   }
   // Cross-origin: background fetch+stitch
   const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src, bbox: { x, y, w, h }, dispW }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return { text: res.text, confidence: res.confidence };
+  return { text: res.text, confidence: res.confidence, provider: res.provider };
 }
 
 // Stitch multiple image clips vertically into one canvas.
@@ -4025,7 +4025,7 @@ function bootForPage() {
       // past its text) — a manual drag-select or hand-resized bbox is
       // already exactly what the user wants, so it's sent to OCR unmodified.
       const applyOcrRefinement = job.source === 'auto';
-      const { text, confidence } = job.clips
+      const { text, confidence, provider } = job.clips
         ? await ocrClips(job.clips, applyOcrRefinement)
         : await ocrRegionStitched(job.imageEl, job.bbox, images, applyOcrRefinement);
       // Shadow-mode difficulty classification: logs [DifficultyClassifier] for
@@ -4039,6 +4039,8 @@ function bootForPage() {
         text,
         typeof confidence === 'number' ? confidence / 100 : null
       );
+      job._ocrProvider   = provider;
+      job._ocrConfidence = confidence;
       return text;
     },
     runTranslate:  (job) => autoTranslate(job.originalText),

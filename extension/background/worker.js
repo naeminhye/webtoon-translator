@@ -441,18 +441,32 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
   // result is empty or low-confidence (complex bg, small/stylised text).
   const tessResult = await tesseractRun(finalDataUrl, isSingleLine);
   if (tessResult.ok && tessResult.text && (tessResult.confidence ?? 100) >= TESSERACT_CONFIDENCE_THRESHOLD) {
-    return tessResult;
+    return { ...tessResult, text: cleanKoreanOcrText(tessResult.text) || tessResult.text, provider: 'tesseract' };
   }
 
   if (ocrKey) {
     // Silent fallback — add a marker so the UI can hint which engine was used
     const spaceResult = await ocrSpaceRun(finalDataUrl, ocrKey);
-    if (spaceResult.ok && spaceResult.text) return { ...spaceResult, fallback: true };
+    if (spaceResult.ok && spaceResult.text) {
+      return { ...spaceResult, fallback: true, provider: 'ocrspace',
+               text: cleanKoreanOcrText(spaceResult.text) || spaceResult.text };
+    }
   }
 
   // Return the original Tesseract result (even if empty/low-confidence) when
   // no OCR.space key is available or OCR.space also failed.
-  return tessResult;
+  return { ...tessResult, text: cleanKoreanOcrText(tessResult.text || '') || tessResult.text || '', provider: 'tesseract' };
+}
+
+// Strip non-Korean noise from OCR output while preserving valid Korean text
+// and common punctuation. Applied post-OCR to remove garbage characters from
+// bubble tails or adjacent panel content bleeding into the crop region.
+function cleanKoreanOcrText(text) {
+  const cleaned = text
+    .replace(/[^가-힣ㄱ-ㅎㅏ-ㅣ\s.,!?…~‼！。、·『』「」\-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned;
 }
 
 // ── Multi-image stitch OCR ───────────────────────────────────────────────────────
