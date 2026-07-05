@@ -210,6 +210,39 @@ function decodeCraft(outputTensor, meta) {
   return nms(boxes);
 }
 
+/**
+ * Decode a YOLOv8 output in transposed format [1, N, 5+].
+ * Some export pipelines (e.g. ultralytics with transpose=True) produce
+ * (num_anchors, 4+num_classes) instead of the standard (4+num_classes, num_anchors).
+ */
+function decodeYoloTransposed(outputTensor, meta) {
+  const { scale, padX, padY, srcW, srcH } = meta;
+  const data       = outputTensor.data;
+  const N          = outputTensor.dims[1]; // number of anchors
+  const stride     = outputTensor.dims[2]; // columns per anchor (cx,cy,w,h,conf,…)
+  const candidates = [];
+
+  for (let i = 0; i < N; i++) {
+    const base = i * stride;
+    const conf = data[base + 4]; // confidence at column index 4
+    if (conf < CONF_THRESH) continue;
+
+    const cx = data[base + 0];
+    const cy = data[base + 1];
+    const bw = data[base + 2];
+    const bh = data[base + 3];
+
+    const x1 = Math.max(0, (cx - bw / 2 - padX) / scale);
+    const y1 = Math.max(0, (cy - bh / 2 - padY) / scale);
+    const x2 = Math.min(srcW, (cx + bw / 2 - padX) / scale);
+    const y2 = Math.min(srcH, (cy + bh / 2 - padY) / scale);
+
+    if (x2 > x1 && y2 > y1) candidates.push({ x1, y1, x2, y2, conf });
+  }
+
+  return nms(candidates);
+}
+
 // ── NMS ──────────────────────────────────────────────────────────────────────
 function iou(a, b) {
   const ix1 = Math.max(a.x1, b.x1), iy1 = Math.max(a.y1, b.y1);
@@ -250,8 +283,11 @@ async function detectBubbles(dataUrl) {
 
   let boxes;
   if (dims.length === 3 && dims[1] === 5) {
-    // YOLOv8 format: [1, 5, N]
+    // YOLOv8 format: [1, 5, N] — channel-first (standard export)
     boxes = decodeYolo(out, meta);
+  } else if (dims.length === 3 && dims[2] >= 5) {
+    // YOLOv8 transposed format: [1, N, 5+] — some exporters produce this
+    boxes = decodeYoloTransposed(out, meta);
   } else {
     // CRAFT-style heatmap
     boxes = decodeCraft(out, meta);

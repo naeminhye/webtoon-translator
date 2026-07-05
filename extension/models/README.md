@@ -1,65 +1,87 @@
 # ONNX Model Installation
 
-The bubble detector model (`bubble-detector.onnx`) is not bundled in the repository
-because of its size (~6 MB). Download and place it here before loading the extension.
+Place `bubble-detector.onnx` in this directory before loading the extension.
+The model is not bundled in the repo because of its size.
 
-## Option A — YOLOv8n Speech Bubble Detector (Recommended)
+---
 
-Download from HuggingFace: `ogkalu/comic-speech-bubble-detector`
+## Cách 1 — curl (đơn giản nhất, không cần Python)
 
 ```bash
-pip install huggingface_hub
-python - <<'EOF'
+# Chạy từ thư mục gốc của project
+curl -L "https://huggingface.co/Kiuyha/Manga-Bubble-YOLO/resolve/main/model.onnx" \
+     -o extension/models/bubble-detector.onnx
+```
+
+Sau khi tải xong, reload extension tại `chrome://extensions` và thử nút grid icon
+(góc dưới trái) trên một trang webtoon.
+
+---
+
+## Cách 2 — Python venv (tránh conflict dependencies trên Mac)
+
+```bash
+# Tạo môi trường ảo — không ảnh hưởng đến các package đã cài
+python3 -m venv /tmp/ort-venv
+source /tmp/ort-venv/bin/activate
+
+pip install huggingface_hub ultralytics
+
+python3 - <<'EOF'
 from huggingface_hub import hf_hub_download
-path = hf_hub_download(
-    repo_id="ogkalu/comic-speech-bubble-detector",
-    filename="comic-speech-bubble-detector.pt"
+from ultralytics import YOLO
+import shutil, glob
+
+pt = hf_hub_download(
+    repo_id='ogkalu/comic-speech-bubble-detector',
+    filename='comic-speech-bubble-detector.pt'
 )
-print("Downloaded to:", path)
+YOLO(pt).export(format='onnx', imgsz=640, opset=17, simplify=True)
+onnx_file = glob.glob('*.onnx')[0]
+shutil.copy(onnx_file, 'extension/models/bubble-detector.onnx')
+print('Done →', 'extension/models/bubble-detector.onnx')
 EOF
 
-# Export to ONNX (requires ultralytics)
-pip install ultralytics
-python - <<'EOF'
-from ultralytics import YOLO
-model = YOLO("comic-speech-bubble-detector.pt")
-model.export(format="onnx", imgsz=640, opset=17, simplify=True)
-# Rename output
-import shutil, glob
-onnx_file = glob.glob("*.onnx")[0]
-shutil.copy(onnx_file, "extension/models/bubble-detector.onnx")
-print("Saved to extension/models/bubble-detector.onnx")
-EOF
+deactivate
 ```
 
-## Option B — CRAFT Text Detector
+---
+
+## Inspect model output shape (để debug nếu cần)
 
 ```bash
-git clone https://github.com/clovaai/CRAFT-pytorch
-cd CRAFT-pytorch
-# Download pretrained weights: craft_mlt_25k.pth
-python -c "
-import torch, sys
-sys.path.insert(0, '.')
-from craft import CRAFT
-net = CRAFT()
-net.load_state_dict(torch.load('craft_mlt_25k.pth', map_location='cpu'))
-net.eval()
-dummy = torch.randn(1, 3, 768, 768)
-torch.onnx.export(
-    net, dummy,
-    '../extension/models/bubble-detector.onnx',
-    input_names=['input'],
-    output_names=['score_text', 'score_link'],
-    dynamic_axes={'input': {2: 'H', 3: 'W'}},
-    opset_version=17,
-)
-print('Exported CRAFT to extension/models/bubble-detector.onnx')
-"
+pip install onnx
+python3 - <<'EOF'
+import onnx
+m = onnx.load("extension/models/bubble-detector.onnx")
+print("Inputs:")
+for inp in m.graph.input:
+    shape = [d.dim_value or d.dim_param for d in inp.type.tensor_type.shape.dim]
+    print(f"  {inp.name}: {shape}")
+print("Outputs:")
+for out in m.graph.output:
+    shape = [d.dim_value or d.dim_param for d in out.type.tensor_type.shape.dim]
+    print(f"  {out.name}: {shape}")
+EOF
 ```
 
-## Verifying installation
+---
 
-After placing the file, reload the extension in `chrome://extensions`.
-Open a Naver/Kakao webtoon chapter — the grid icon button (bottom-left)
-will scan all panels automatically using the ONNX model.
+## Output shape dự kiến
+
+| Model | Input | Output |
+|-------|-------|--------|
+| YOLOv8 detection | `[1, 3, 640, 640]` | `[1, 5, 8400]` — (cx,cy,w,h,conf) |
+| YOLOv8 detection (transposed) | `[1, 3, 640, 640]` | `[1, 8400, 5]` — cần transpose |
+| CRAFT | `[1, 3, H, W]` | heatmap `[1, H/2, W/2, 2]` |
+
+`ort-runner.js` tự động phát hiện format dựa trên shape của output tensor.
+
+---
+
+## Sau khi cài model
+
+1. Reload extension tại `chrome://extensions`
+2. Mở bất kỳ chapter nào trên Naver/Kakao webtoon
+3. Nhấn nút **grid icon** (góc dưới trái, phía trên nút scan đơn) → extension sẽ quét toàn bộ panel và tự động detect bong bóng
+4. Mỗi bong bóng được detect sẽ đi vào pipeline OCR + dịch như bình thường
