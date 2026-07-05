@@ -47,11 +47,16 @@ function getSession() {
       })
       .then(s => {
         broadcastOnnx('model-ready');
+        console.log('[ORT] Session ready. inputs:', s.inputNames, 'outputs:', s.outputNames);
         return s;
       })
       .catch(err => {
         sessionPromise = null; // allow retry
-        broadcastOnnx('error', undefined, err.message || String(err));
+        // Surface the full error — "Can't create a session" is ORT's generic message;
+        // the real cause (corrupt file, unsupported opset, missing model) is in err.message
+        const detail = err.message || String(err);
+        console.error('[ORT] Session creation failed:', detail, '\nModel URL:', MODEL_URL);
+        broadcastOnnx('error', undefined, detail);
         throw err;
       });
   }
@@ -280,13 +285,15 @@ async function detectBubbles(dataUrl) {
   const outputName = session.outputNames[0];
   const out        = results[outputName];
   const dims       = out.dims;
+  console.log('[ORT] Output', outputName, 'shape:', dims);
 
   let boxes;
-  if (dims.length === 3 && dims[1] === 5) {
-    // YOLOv8 format: [1, 5, N] — channel-first (standard export)
+  if (dims.length === 3 && dims[1] >= 5 && dims[1] <= 144) {
+    // YOLOv8 channel-first: [1, C, N] where C = 5 (detect) or 37+ (seg, 4+1+32 mask coeffs)
+    // We only use the first 5 values (cx,cy,w,h,conf) — mask coeffs are ignored
     boxes = decodeYolo(out, meta);
-  } else if (dims.length === 3 && dims[2] >= 5) {
-    // YOLOv8 transposed format: [1, N, 5+] — some exporters produce this
+  } else if (dims.length === 3 && dims[2] >= 5 && dims[2] <= 144) {
+    // YOLOv8 transposed: [1, N, C] — some exporters produce this
     boxes = decodeYoloTransposed(out, meta);
   } else {
     // CRAFT-style heatmap

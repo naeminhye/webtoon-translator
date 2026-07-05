@@ -9,9 +9,12 @@ The model is not bundled in the repo because of its size.
 
 ```bash
 # Chạy từ thư mục gốc của project
-curl -L "https://huggingface.co/Kiuyha/Manga-Bubble-YOLO/resolve/main/model.onnx" \
+curl -L "https://huggingface.co/kitsumed/yolov8m_seg-speech-bubble/resolve/main/model_dynamic.onnx" \
      -o extension/models/bubble-detector.onnx
 ```
+
+> **Lưu ý**: File này khoảng ~50MB, chờ tải xong (curl hiển thị progress).
+> Nếu curl báo xong nhưng file chỉ vài chục bytes → URL không đúng, thử Cách 2.
 
 Sau khi tải xong, reload extension tại `chrome://extensions` và thử nút grid icon
 (góc dưới trái) trên một trang webtoon.
@@ -47,10 +50,13 @@ deactivate
 
 ---
 
-## Inspect model output shape (để debug nếu cần)
+## Kiểm tra model đã tải đúng chưa
 
 ```bash
-pip install onnx
+# File phải lớn hơn 1MB — nếu nhỏ hơn thì là lỗi redirect HTML
+ls -lh extension/models/bubble-detector.onnx
+
+# Inspect input/output shape (cần pip install onnx)
 python3 - <<'EOF'
 import onnx
 m = onnx.load("extension/models/bubble-detector.onnx")
@@ -71,11 +77,27 @@ EOF
 
 | Model | Input | Output |
 |-------|-------|--------|
-| YOLOv8 detection | `[1, 3, 640, 640]` | `[1, 5, 8400]` — (cx,cy,w,h,conf) |
-| YOLOv8 detection (transposed) | `[1, 3, 640, 640]` | `[1, 8400, 5]` — cần transpose |
-| CRAFT | `[1, 3, H, W]` | heatmap `[1, H/2, W/2, 2]` |
+| YOLOv8 detection (1 class) | `[1, 3, 640, 640]` | `[1, 5, 8400]` |
+| YOLOv8 segmentation (1 class) | `[1, 3, 640, 640]` | `[1, 37, 8400]` + mask protos |
+| YOLOv8 transposed | `[1, 3, 640, 640]` | `[1, 8400, 5+]` |
 
-`ort-runner.js` tự động phát hiện format dựa trên shape của output tensor.
+`ort-runner.js` tự động phát hiện format. Mở DevTools → offscreen document console để xem log `[ORT] Output shape:`.
+
+---
+
+## Debug "Can't create a session"
+
+Lỗi này xảy ra khi file model không hợp lệ (ví dụ: file HTML 40 bytes thay vì ONNX). Kiểm tra:
+
+```bash
+# Kích thước file — phải > 1MB
+wc -c extension/models/bubble-detector.onnx
+
+# 4 bytes đầu của file ONNX hợp lệ là: 08 XX 08 XX (protobuf magic)
+xxd extension/models/bubble-detector.onnx | head -1
+```
+
+Nếu thấy `3c 21 44 4f` (`<!DO`) hoặc `7b 22 65` (`{"e`) → file là HTML lỗi, cần tải lại.
 
 ---
 
@@ -83,5 +105,5 @@ EOF
 
 1. Reload extension tại `chrome://extensions`
 2. Mở bất kỳ chapter nào trên Naver/Kakao webtoon
-3. Nhấn nút **grid icon** (góc dưới trái, phía trên nút scan đơn) → extension sẽ quét toàn bộ panel và tự động detect bong bóng
-4. Mỗi bong bóng được detect sẽ đi vào pipeline OCR + dịch như bình thường
+3. Nhấn nút **grid icon** (góc dưới trái, phía trên nút scan đơn)
+4. Extension quét toàn bộ panel và tự động detect bong bóng → OCR + dịch
