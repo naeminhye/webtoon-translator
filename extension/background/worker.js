@@ -437,6 +437,11 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
     return ocrSpaceRun(finalDataUrl, ocrKey);
   }
 
+  if (provider === 'paddle') {
+    const result = await paddleRun(finalDataUrl);
+    return { ...result, text: cleanKoreanOcrText(result.text || '') || result.text || '' };
+  }
+
   // Tesseract — primary OCR engine. Auto-fallback to OCR.space only when the
   // user has explicitly chosen 'ocrspace' as their provider in settings.
   // (Previously this fell back silently if a key existed; that caused surprise
@@ -574,6 +579,25 @@ async function tesseractRun(dataUrl, isSingleLine = false) {
     await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
   }
   throw lastErr || new Error('OCR worker did not respond');
+}
+
+async function paddleRun(dataUrl) {
+  if (!chrome.offscreen?.createDocument) {
+    return { ok: false, error: 'Offscreen API unavailable — reload extension (Chrome 109+)' };
+  }
+  await ensureOffscreen();
+  let lastErr = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'PADDLE_OCR_RUN', payload: { dataUrl } });
+      if (res) return res;
+      lastErr = new Error('Paddle OCR worker did not respond');
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
+  }
+  throw lastErr || new Error('Paddle OCR worker did not respond');
 }
 
 // ── Image fetch + crop (service-worker side, full cross-origin access) ────────

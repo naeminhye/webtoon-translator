@@ -59,7 +59,9 @@
       "resources": [
         "vendor/ort/ort-wasm-simd.wasm",
         "vendor/ort/ort-wasm.wasm",
-        "models/bubble-detector.onnx"
+        "models/bubble-detector.onnx",
+        "models/paddle-kor-rec.onnx",
+        "models/paddle-kor-dict.txt"
       ],
       "matches": ["<all_urls>"]
     }
