@@ -3784,29 +3784,29 @@ function bootForPage() {
     let detected = 0;
     let failed   = 0;
 
-    for (let i = 0; i < images.length; i++) {
-      const img = images[i];
-      if (!img.src || img.naturalWidth === 0) continue;
-
-      try {
-        const res = await sendToBackground({
-          type: MSG.DETECT_BUBBLES,
-          payload: { imageUrl: img.src },
-        });
-
-        if (!res?.ok || !res.bboxes?.length) continue;
-
-        for (const box of res.bboxes) {
-          await createJobFromSelection({
-            bbox:       { x: box.x, y: box.y, w: box.w, h: box.h, source: 'onnx' },
-            imageEl:    img,
-            imageIndex: i,
+    const BATCH = 4;
+    for (let i = 0; i < images.length; i += BATCH) {
+      const batch = images.slice(i, i + BATCH).map(async (img, j) => {
+        if (!img.src || img.naturalWidth === 0) return;
+        try {
+          const res = await sendToBackground({
+            type: MSG.DETECT_BUBBLES,
+            payload: { imageUrl: img.src },
           });
-          detected++;
+          if (!res?.ok || !res.bboxes?.length) return;
+          for (const box of res.bboxes) {
+            createJobFromSelection({
+              bbox:       { x: box.x, y: box.y, w: box.w, h: box.h, source: 'onnx' },
+              imageEl:    img,
+              imageIndex: i + j,
+            });
+            detected++;
+          }
+        } catch (_) {
+          failed++;
         }
-      } catch (err) {
-        failed++;
-      }
+      });
+      await Promise.allSettled(batch);
     }
 
     onnxScanRunning = false;

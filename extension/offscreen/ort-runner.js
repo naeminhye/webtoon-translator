@@ -22,7 +22,7 @@ ort.env.wasm.simd       = true; // SIMD is supported in all modern Chrome
 // ── Constants ────────────────────────────────────────────────────────────────
 const MODEL_URL    = chrome.runtime.getURL('models/bubble-detector.onnx');
 const INPUT_SIZE   = 640;   // model expects 640×640 input
-const CONF_THRESH  = 0.35;  // minimum detection confidence
+const CONF_THRESH  = 0.45;  // minimum detection confidence
 const IOU_THRESH   = 0.45;  // NMS IOU threshold
 
 // ── Session lifecycle ────────────────────────────────────────────────────────
@@ -300,12 +300,13 @@ async function detectBubbles(dataUrl) {
     boxes = decodeCraft(out, meta);
   }
 
-  // Convert pixel coords → percentage (matches the extension's bbox format)
+  // Convert pixel coords → percentage (matches the extension's bbox format).
+  // Add 1% padding on each side so Tesseract has enough context around the bubble edge.
   return boxes.map(b => ({
-    x:    (b.x1 / meta.srcW) * 100,
-    y:    (b.y1 / meta.srcH) * 100,
-    w:    ((b.x2 - b.x1) / meta.srcW) * 100,
-    h:    ((b.y2 - b.y1) / meta.srcH) * 100,
+    x:    Math.max(0,   (b.x1 / meta.srcW) * 100 - 1),
+    y:    Math.max(0,   (b.y1 / meta.srcH) * 100 - 1),
+    w:    Math.min(100, ((b.x2 - b.x1) / meta.srcW) * 100 + 2),
+    h:    Math.min(100, ((b.y2 - b.y1) / meta.srcH) * 100 + 2),
     conf: b.conf,
   }));
 }
