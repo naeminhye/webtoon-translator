@@ -3731,6 +3731,16 @@ function bootForPage() {
   let annotationCount = 0;
   let disposed        = false;
 
+  // ONNX bbox cache: img.src → Promise<{ok,bboxes}|null>
+  // Populated lazily when images are loaded or first clicked.
+  const onnxBboxCache = new Map();
+  function warmOnnxCache(img) {
+    if (!img.src || onnxBboxCache.has(img.src)) return;
+    const p = sendToBackground({ type: MSG.DETECT_BUBBLES, payload: { imageUrl: img.src } })
+      .catch(() => null);
+    onnxBboxCache.set(img.src, p);
+  }
+
   // Build floating toggle button (Read mode only)
   const toggleBtn = buildToggleButton();
 
@@ -3927,6 +3937,7 @@ function bootForPage() {
     } else {
       loadAndRender().then(updateProgressBar);
       checkStorageQuota();
+      setTimeout(() => images.forEach(warmOnnxCache), 500);
     }
   };
   tryGetImages();
@@ -3939,6 +3950,7 @@ function bootForPage() {
     images = [...images, ...added].sort((a, b) =>
       a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
     );
+    setTimeout(() => added.forEach(warmOnnxCache), 500);
     if (readScanEnabled) {
       if (isKakao) fixedLayer.enable(images);
       else added.forEach(img => selector.attachImage(img, images.indexOf(img)));
@@ -4146,6 +4158,28 @@ function bootForPage() {
   // (vs. a drag) auto-detects the bubble under the cursor on every site
   // instead of only the ones using BBoxSelector.
   async function handleAutoDetectClick({ img, clickX, clickY, imgRect, imageIndex }) {
+    // Check ONNX cache: if the model already detected bubbles for this image,
+    // find whichever bbox contains the click point and use it directly.
+    const cached = onnxBboxCache.get(img.src);
+    if (cached) {
+      const result = await cached;
+      if (result?.ok && result.bboxes?.length) {
+        const cx = (clickX / imgRect.width)  * 100;
+        const cy = (clickY / imgRect.height) * 100;
+        const hit = result.bboxes.find(b =>
+          cx >= b.x && cx <= b.x + b.w &&
+          cy >= b.y && cy <= b.y + b.h
+        );
+        if (hit) {
+          await createJobFromSelection({ bbox: { ...hit, source: 'onnx' }, imageEl: img, imageIndex });
+          return;
+        }
+      }
+    } else {
+      warmOnnxCache(img); // not yet requested — start now for next click
+    }
+
+    // Fallback: flood-fill detector (works offline, no model required)
     const { bboxes } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
     if (!bboxes.length) return; // validity check failed — fall back to manual drag-to-select
     // A waist-split click can yield two touching bubbles at once — each is
