@@ -437,25 +437,13 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
     return ocrSpaceRun(finalDataUrl, ocrKey);
   }
 
-  // Tesseract — attempt first, then auto-fallback to OCR.space when the
-  // result is empty or low-confidence (complex bg, small/stylised text).
+  // Tesseract — primary OCR engine. Auto-fallback to OCR.space only when the
+  // user has explicitly chosen 'ocrspace' as their provider in settings.
+  // (Previously this fell back silently if a key existed; that caused surprise
+  //  network calls without any user opt-in.)
   const tessResult = await tesseractRun(finalDataUrl, isSingleLine);
-  if (tessResult.ok && tessResult.text && (tessResult.confidence ?? 100) >= TESSERACT_CONFIDENCE_THRESHOLD) {
-    return { ...tessResult, text: cleanKoreanOcrText(tessResult.text) || tessResult.text, provider: 'tesseract' };
-  }
-
-  if (ocrKey) {
-    // Silent fallback — add a marker so the UI can hint which engine was used
-    const spaceResult = await ocrSpaceRun(finalDataUrl, ocrKey);
-    if (spaceResult.ok && spaceResult.text) {
-      return { ...spaceResult, fallback: true, provider: 'ocrspace',
-               text: cleanKoreanOcrText(spaceResult.text) || spaceResult.text };
-    }
-  }
-
-  // Return the original Tesseract result (even if empty/low-confidence) when
-  // no OCR.space key is available or OCR.space also failed.
-  return { ...tessResult, text: cleanKoreanOcrText(tessResult.text || '') || tessResult.text || '', provider: 'tesseract' };
+  const tessText   = cleanKoreanOcrText(tessResult.text || '') || tessResult.text || '';
+  return { ...tessResult, text: tessText, provider: 'tesseract' };
 }
 
 // Strip non-Korean noise from OCR output while preserving valid Korean text
