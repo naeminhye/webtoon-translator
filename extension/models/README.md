@@ -1,34 +1,47 @@
 # ONNX Model Installation
 
-Place `bubble-detector.onnx` in this directory before loading the extension.
-The model is not bundled in the repo because of its size.
+Place `bubble-detector.onnx` in this directory before using the ONNX scan feature.
 
 ---
 
-## Cách 1 — curl (đơn giản nhất, không cần Python)
+## Bước 1 — Test pipeline trước (không cần PyTorch, không cần HuggingFace)
+
+Tạo một stub model hợp lệ để xác nhận ORT chạy được trong extension:
 
 ```bash
-# Chạy từ thư mục gốc của project
-curl -L "https://huggingface.co/kitsumed/yolov8m_seg-speech-bubble/resolve/main/model_dynamic.onnx" \
-     -o extension/models/bubble-detector.onnx
+pip install onnx          # ~10 MB, KHÔNG cần torch/CUDA
+python3 scripts/create-stub-model.py
 ```
 
-> **Lưu ý**: File này khoảng ~50MB, chờ tải xong (curl hiển thị progress).
-> Nếu curl báo xong nhưng file chỉ vài chục bytes → URL không đúng, thử Cách 2.
+Stub model này output all-zeros (không detect được bubble thật), nhưng xác nhận:
+- ORT WASM load được trong offscreen document
+- Session tạo thành công
+- Pipeline message `DETECT_BUBBLES` chạy end-to-end
 
-Sau khi tải xong, reload extension tại `chrome://extensions` và thử nút grid icon
-(góc dưới trái) trên một trang webtoon.
+Sau khi chạy xong, reload extension tại `chrome://extensions`, mở webtoon,
+nhấn nút grid icon → sẽ thấy toast "No bubbles detected" (bình thường với stub).
 
 ---
 
-## Cách 2 — Python venv (tránh conflict dependencies trên Mac)
+## Bước 2 — Thay bằng real model
+
+### Option A — HuggingFace (cần tạo free account)
+
+1. Vào https://huggingface.co/settings/tokens → tạo token với quyền "Read"
+2. Tải model:
+```bash
+curl -L \
+  -H "Authorization: Bearer hf_YOUR_TOKEN_HERE" \
+  "https://huggingface.co/kitsumed/yolov8m_seg-speech-bubble/resolve/main/model_dynamic.onnx" \
+  -o extension/models/bubble-detector.onnx
+```
+
+### Option B — Export từ PyTorch (dùng venv tránh conflict Mac)
 
 ```bash
-# Tạo môi trường ảo — không ảnh hưởng đến các package đã cài
 python3 -m venv /tmp/ort-venv
 source /tmp/ort-venv/bin/activate
-
-pip install huggingface_hub ultralytics
+pip install ultralytics huggingface_hub
 
 python3 - <<'EOF'
 from huggingface_hub import hf_hub_download
@@ -40,9 +53,8 @@ pt = hf_hub_download(
     filename='comic-speech-bubble-detector.pt'
 )
 YOLO(pt).export(format='onnx', imgsz=640, opset=17, simplify=True)
-onnx_file = glob.glob('*.onnx')[0]
-shutil.copy(onnx_file, 'extension/models/bubble-detector.onnx')
-print('Done →', 'extension/models/bubble-detector.onnx')
+shutil.copy(glob.glob('*.onnx')[0], 'extension/models/bubble-detector.onnx')
+print('Done!')
 EOF
 
 deactivate
@@ -50,26 +62,24 @@ deactivate
 
 ---
 
-## Kiểm tra model đã tải đúng chưa
+## Kiểm tra file hợp lệ
 
 ```bash
-# File phải lớn hơn 1MB — nếu nhỏ hơn thì là lỗi redirect HTML
+# Phải > 1 MB (stub ~170 KB, real model ~5–50 MB)
 ls -lh extension/models/bubble-detector.onnx
 
-# Inspect input/output shape (cần pip install onnx)
-python3 - <<'EOF'
-import onnx
-m = onnx.load("extension/models/bubble-detector.onnx")
-print("Inputs:")
-for inp in m.graph.input:
-    shape = [d.dim_value or d.dim_param for d in inp.type.tensor_type.shape.dim]
-    print(f"  {inp.name}: {shape}")
-print("Outputs:")
-for out in m.graph.output:
-    shape = [d.dim_value or d.dim_param for d in out.type.tensor_type.shape.dim]
-    print(f"  {out.name}: {shape}")
-EOF
+# 4 bytes đầu file ONNX hợp lệ bắt đầu bằng 0x08 (protobuf field tag)
+# Nếu thấy "3c 21 44 4f" (<!DO) hoặc "7b 22" ({"e) → là HTML lỗi
+xxd extension/models/bubble-detector.onnx | head -1
 ```
+
+---
+
+## Debug "Can't create a session / protobuf parsing failed"
+
+Nguyên nhân thường gặp: file tải về là HTML error page (thường chỉ vài chục bytes), không phải ONNX binary.
+
+Mở DevTools của offscreen document (`chrome://extensions` → "Inspect views: offscreen document") → Console sẽ hiện log `[ORT]` chi tiết.
 
 ---
 
@@ -77,33 +87,8 @@ EOF
 
 | Model | Input | Output |
 |-------|-------|--------|
-| YOLOv8 detection (1 class) | `[1, 3, 640, 640]` | `[1, 5, 8400]` |
-| YOLOv8 segmentation (1 class) | `[1, 3, 640, 640]` | `[1, 37, 8400]` + mask protos |
-| YOLOv8 transposed | `[1, 3, 640, 640]` | `[1, 8400, 5+]` |
+| Stub (test only) | `[1, 3, 640, 640]` | `[1, 5, 8400]` all zeros |
+| YOLOv8 detection | `[1, 3, 640, 640]` | `[1, 5, 8400]` |
+| YOLOv8 segmentation | `[1, 3, 640, 640]` | `[1, 37, 8400]` + mask protos |
 
-`ort-runner.js` tự động phát hiện format. Mở DevTools → offscreen document console để xem log `[ORT] Output shape:`.
-
----
-
-## Debug "Can't create a session"
-
-Lỗi này xảy ra khi file model không hợp lệ (ví dụ: file HTML 40 bytes thay vì ONNX). Kiểm tra:
-
-```bash
-# Kích thước file — phải > 1MB
-wc -c extension/models/bubble-detector.onnx
-
-# 4 bytes đầu của file ONNX hợp lệ là: 08 XX 08 XX (protobuf magic)
-xxd extension/models/bubble-detector.onnx | head -1
-```
-
-Nếu thấy `3c 21 44 4f` (`<!DO`) hoặc `7b 22 65` (`{"e`) → file là HTML lỗi, cần tải lại.
-
----
-
-## Sau khi cài model
-
-1. Reload extension tại `chrome://extensions`
-2. Mở bất kỳ chapter nào trên Naver/Kakao webtoon
-3. Nhấn nút **grid icon** (góc dưới trái, phía trên nút scan đơn)
-4. Extension quét toàn bộ panel và tự động detect bong bóng → OCR + dịch
+`ort-runner.js` tự động phát hiện format từ shape của output tensor.
