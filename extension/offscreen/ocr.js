@@ -11,13 +11,6 @@
 
 const VENDOR = chrome.runtime.getURL('vendor/tesseract/');
 
-// Worker pool — allows parallel OCR for batch viewport translation.
-// Each worker handles one recognize() at a time; pool distributes concurrent requests.
-const POOL_SIZE = 3;
-const _pool     = [];   // Promise<TesseractWorker>[]
-const _busy     = [];   // boolean[]
-let   _poolInit = false;
-
 // ── Tesseract recognition tuning ────────────────────────────────────────────
 // Dialogue crops are short, isolated snippets — not full documents/paragraphs,
 // which is what Tesseract's own default page-segmentation mode assumes.
@@ -45,58 +38,30 @@ function broadcast(status, progress, message) {
   } catch (_) { /* extension reloading */ }
 }
 
-function _createWorkerInstance(isPrimary) {
-  return Tesseract.createWorker('kor', Tesseract.OEM.LSTM_ONLY, {
-    workerPath: VENDOR + 'worker.min.js',
-    corePath:   VENDOR + 'tesseract-core-simd-lstm.wasm.js',
-    langPath:   VENDOR + 'lang',
-    cacheMethod: 'none',
-    workerBlobURL: false,
-    logger: isPrimary
-      ? (m) => {
-          if (m.status === 'loading language traineddata') broadcast('downloading-model', m.progress);
-          else if (m.status === 'recognizing text')        broadcast('recognizing', m.progress);
-        }
-      : () => {},
-  }).then(worker => {
-    if (isPrimary) broadcast('ready');
-    return worker;
-  }).catch(err => {
-    if (isPrimary) { broadcast('error', undefined, err.message || String(err)); }
-    throw err;
-  });
-}
+let workerPromise = null;
 
-function _ensurePool() {
-  if (_poolInit) return;
-  _poolInit = true;
-  broadcast('initializing');
-  for (let i = 0; i < POOL_SIZE; i++) {
-    _pool.push(_createWorkerInstance(i === 0));
-    _busy.push(false);
-  }
-}
-
-async function _acquireWorker() {
-  _ensurePool();
-  while (true) {
-    const i = _busy.findIndex(b => !b);
-    if (i !== -1) {
-      _busy[i] = true;
-      return { worker: await _pool[i], index: i };
-    }
-    await new Promise(r => setTimeout(r, 20));
-  }
-}
-
-function _releaseWorker(index) {
-  _busy[index] = false;
-}
-
-// Legacy: kept for any callers still referencing getWorker() — returns primary worker.
 function getWorker() {
-  _ensurePool();
-  return _pool[0];
+  if (!workerPromise) {
+    broadcast('initializing');
+    workerPromise = Tesseract.createWorker('kor', Tesseract.OEM.LSTM_ONLY, {
+      workerPath:    VENDOR + 'worker.min.js',
+      corePath:      VENDOR + 'tesseract-core-simd-lstm.wasm.js',
+      langPath:      VENDOR + 'lang',
+      cacheMethod:   'none',
+      workerBlobURL: false,
+      logger: (m) => {
+        if (m.status === 'loading language traineddata') broadcast('downloading-model', m.progress);
+        else if (m.status === 'recognizing text')        broadcast('recognizing', m.progress);
+      },
+    }).then(worker => {
+      broadcast('ready');
+      return worker;
+    }).catch(err => {
+      broadcast('error', undefined, err.message || String(err));
+      throw err;
+    });
+  }
+  return workerPromise;
 }
 
 /**
@@ -130,23 +95,19 @@ async function _upscaleForOcr(dataUrl, factor) {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type !== 'OCR_RUN') return;
   (async () => {
-    let workerIndex = -1;
     try {
-      const { worker, index } = await _acquireWorker();
-      workerIndex = index;
+      const worker = await getWorker();
       await worker.setParameters({
         tessedit_pageseg_mode: message.payload.isSingleLine ? Tesseract.PSM.SINGLE_LINE : Tesseract.PSM.SINGLE_BLOCK,
       });
       const upscaledDataUrl = await _upscaleForOcr(message.payload.dataUrl, OCR_UPSCALE_FACTOR);
       const { data } = await worker.recognize(upscaledDataUrl);
-      if (workerIndex === 0) broadcast('ready');
+      broadcast('ready');
       const text = (data.text || '').replace(/\s+/g, ' ').trim();
       const confidence = typeof data.confidence === 'number' ? data.confidence : 0;
       sendResponse({ ok: true, text, confidence });
     } catch (err) {
       sendResponse({ ok: false, error: err.message || String(err) });
-    } finally {
-      if (workerIndex !== -1) _releaseWorker(workerIndex);
     }
   })();
   return true;
