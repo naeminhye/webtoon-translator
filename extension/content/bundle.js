@@ -1671,28 +1671,6 @@ async function classifyDifficulty(regionContour, ocrRunner) {
   return result;
 }
 
-/**
- * Shadow-mode variant used by the live detect -> OCR flow (see JobManager's
- * runOcr wiring), where OCR has ALREADY run for real translation purposes —
- * unlike classifyDifficulty, this never decides whether to call OCR, and
- * takes an already-computed `skewAngle` rather than raw contour points: the
- * flood-fill mask/contour only exists transiently inside
- * BubbleAutoDetector._extractBboxes (where the angle gets computed and
- * attached to the bbox), long before this runs — by the time OCR finishes,
- * the mask itself is out of scope. Exists purely to produce
- * [DifficultyClassifier] logs for tuning; never affects what OCR or
- * translation actually does. `skewAngle` is null for manually drag-selected
- * regions (no flood-fill contour was ever computed for those).
- */
-function logDifficultyClassificationShadow(skewAngle, text, confidence) {
-  const angle = skewAngle ?? 0;
-  const result = angle > DIFFICULTY_SKEW_ANGLE_THRESHOLD_DEG
-    ? { tier: DIFFICULTY_TIERS.VISION, reason: 'high-skew-angle', skewAngle: angle, ocrConfidence: confidence, text }
-    : _classifyPostOcr(text, confidence, angle);
-  _logDifficultyClassification(result);
-  return result;
-}
-
 // ── DetectionPreview ─────────────────────────────────────────────────────────
 // Adjustable bounding-box preview shown after a successful auto-detect, so the
 // user can correct the region before it's sent into the OCR pipeline. Also
@@ -4106,16 +4084,14 @@ function bootForPage() {
       // (no pipeline routing exists — see extension/content/bundle.js's
       // Difficulty Classifier section). Tesseract/OCR.space confidence is
       // 0-100 (or absent for OCR.space); the classifier's thresholds are 0-1.
-      logDifficultyClassificationShadow(
-        job.skewAngle,
-        text,
-        typeof confidence === 'number' ? confidence / 100 : null
-      );
+      const confNorm = typeof confidence === 'number' ? confidence / 100 : null;
+      const difficulty = _classifyPostOcr(text, confNorm, job.skewAngle ?? 0);
+      console.log(`[DifficultyClassifier] tier=${difficulty.tier} reason=${difficulty.reason} skew=${difficulty.skewAngle?.toFixed(1)} conf=${confNorm?.toFixed(2)} text="${text?.slice(0, 40)}"`);
       job._ocrProvider   = provider;
       job._ocrConfidence = confidence;
-      // Low-confidence fallback: send crop to vision LLM for combined OCR+translate.
+      // Vision-tier: send crop to vision LLM for combined OCR+translate.
       // Only fires when BYOK is configured; result stored so runTranslate can skip.
-      if (typeof confidence === 'number' && confidence < 50) {
+      if (difficulty.tier === DIFFICULTY_TIERS.VISION) {
         // dataUrl may be null for cross-origin images (background did the crop+OCR).
         // In that case request the crop explicitly so we can send it to the vision LLM.
         let cropUrl = dataUrl;
@@ -4131,7 +4107,7 @@ function bootForPage() {
           const visionResult = await visionOcrTranslate(cropUrl);
           if (visionResult) {
             job._visionTranslated = visionResult;
-            console.log(`[WebtoonTranslate] Vision LLM OCR+translate (conf=${confidence}):`, visionResult);
+            console.log(`[WebtoonTranslate] Vision LLM OCR+translate (tier=vision reason=${difficulty.reason}):`, visionResult);
           }
         }
       }
