@@ -1,105 +1,124 @@
 #!/usr/bin/env python3
 """
-Download PP-OCRv4 Korean recognition model and export to ONNX for use with
-the Webtoon Translator extension.
+Download PP-OCRv4 Korean recognition model (ONNX) for the Webtoon Translator
+extension. No cmake, no paddlepaddle, no paddle2onnx required.
 
-Requirements:
-    pip install paddlepaddle paddleocr paddle2onnx
+Requirements: Python 3.6+, curl, tar (all pre-installed on macOS/Linux)
 
 Usage:
     python3 scripts/download-paddle-model.py
-
-The script downloads the Korean PP-OCRv3 rec model (~10 MB) and converts it
-to ONNX format, then copies it to extension/models/paddle-kor-rec.onnx.
-The character dictionary is downloaded directly from GitHub (no auth needed).
 """
 
 import os
 import sys
 import shutil
 import subprocess
-import urllib.request
+import tarfile
+import glob
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODELS_DIR = os.path.join(ROOT, 'extension', 'models')
+ROOT      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODELS    = os.path.join(ROOT, 'extension', 'models')
+DICT_DEST = os.path.join(MODELS, 'paddle-kor-dict.txt')
+MODEL_DEST = os.path.join(MODELS, 'paddle-kor-rec.onnx')
 
-DICT_URL = 'https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.7/ppocr/utils/dict/korean_dict.txt'
-DICT_DEST = os.path.join(MODELS_DIR, 'paddle-kor-dict.txt')
-MODEL_DEST = os.path.join(MODELS_DIR, 'paddle-kor-rec.onnx')
+DICT_URL  = ('https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR'
+             '/release/2.7/ppocr/utils/dict/korean_dict.txt')
+
+# PP-OCRv4 Korean rec model as ONNX, hosted on Baidu BOS (public, no auth)
+MODEL_TAR_URL = ('https://paddle-model-ecology.bj.bcebos.com/paddlex/'
+                 'official_inference_model/paddle3.0b2/'
+                 'korean_PP-OCRv4_rec_infer.tar.gz')
+
+
+def run_curl(url, dest, label):
+    """Download url → dest using system curl. Works on macOS/Linux, handles SSL."""
+    print(f'Downloading {label}...')
+    r = subprocess.run(
+        ['curl', '-fL', '--progress-bar', '--retry', '3', url, '-o', dest],
+        check=False,
+    )
+    if r.returncode != 0:
+        print(f'ERROR: curl failed (exit {r.returncode}) for {url}')
+        return False
+    size = os.path.getsize(dest) if os.path.exists(dest) else 0
+    if size < 100:
+        print(f'ERROR: downloaded file is too small ({size} bytes) — URL may be wrong or blocked')
+        return False
+    print(f'  → {dest} ({size // 1024} KB)')
+    return True
 
 
 def download_dict():
-    print('Downloading Korean character dictionary...')
-    urllib.request.urlretrieve(DICT_URL, DICT_DEST)
-    with open(DICT_DEST) as f:
-        lines = f.read().strip().split('\n')
-    print(f'  Dictionary: {len(lines)} characters → {DICT_DEST}')
+    if os.path.exists(DICT_DEST) and os.path.getsize(DICT_DEST) > 1000:
+        print(f'Dict already exists — skipping. ({DICT_DEST})')
+        return True
+    return run_curl(DICT_URL, DICT_DEST, 'Korean character dictionary')
 
 
-def download_and_convert_model():
-    """
-    Option A: Use paddleocr (2.x API) to auto-download and convert.
-    The model is cached in ~/.paddleocr after the first run.
-    """
-    try:
-        import paddleocr
-        import paddle2onnx
-    except ImportError:
-        print('ERROR: Missing dependencies. Run:')
-        print('  pip install paddlepaddle paddleocr paddle2onnx')
-        sys.exit(1)
+def extract_onnx(tar_path):
+    """Extract the .onnx file from the downloaded tar.gz."""
+    extract_dir = os.path.join('/tmp', 'paddle-kor-rec-extract')
+    os.makedirs(extract_dir, exist_ok=True)
+    print(f'Extracting {os.path.basename(tar_path)}...')
+    with tarfile.open(tar_path, 'r:gz') as tf:
+        tf.extractall(extract_dir)
 
-    print('Initializing PaddleOCR (will download Korean rec model ~10 MB)...')
-    from paddleocr import PaddleOCR
-    # 2.x API: triggers model download to ~/.paddleocr/whl/rec/korean/
-    ocr = PaddleOCR(use_angle_cls=False, lang='korean', show_log=False)
+    onnx_files = glob.glob(os.path.join(extract_dir, '**', '*.onnx'), recursive=True)
+    if not onnx_files:
+        print('ERROR: No .onnx file found in archive.')
+        print('Contents:', os.listdir(extract_dir))
+        return False
 
-    # Find the downloaded Paddle model directory
-    home = os.path.expanduser('~')
-    paddle_home = os.path.join(home, '.paddleocr', 'whl', 'rec', 'korean')
-    model_dirs = []
-    for d in os.listdir(paddle_home):
-        full = os.path.join(paddle_home, d)
-        if os.path.isdir(full):
-            model_dirs.append(full)
-
-    if not model_dirs:
-        print('ERROR: Could not find downloaded model under', paddle_home)
-        sys.exit(1)
-
-    model_dir = model_dirs[0]
-    print(f'  Found Paddle model: {model_dir}')
-
-    # Convert to ONNX
-    onnx_out = os.path.join('/tmp', 'paddle-kor-rec-onnx')
-    os.makedirs(onnx_out, exist_ok=True)
-    print('Converting to ONNX (paddle2onnx)...')
-    subprocess.run([
-        sys.executable, '-m', 'paddle2onnx',
-        '--model_dir', model_dir,
-        '--model_filename', 'inference.pdmodel',
-        '--params_filename', 'inference.pdiparams',
-        '--save_file', os.path.join(onnx_out, 'rec.onnx'),
-        '--opset_version', '11',
-        '--enable_onnx_checker', 'True',
-    ], check=True)
-
-    src = os.path.join(onnx_out, 'rec.onnx')
+    src = onnx_files[0]
     shutil.copy(src, MODEL_DEST)
     size_mb = os.path.getsize(MODEL_DEST) / 1024 / 1024
-    print(f'  ONNX model saved: {MODEL_DEST} ({size_mb:.1f} MB)')
+    print(f'  → {MODEL_DEST} ({size_mb:.1f} MB)')
+    shutil.rmtree(extract_dir, ignore_errors=True)
+    return True
+
+
+def download_model():
+    tar_path = '/tmp/paddle-kor-rec.tar.gz'
+    ok = run_curl(MODEL_TAR_URL, tar_path, 'PP-OCRv4 Korean rec model (~10 MB)')
+    if not ok:
+        print()
+        print('Fallback: try downloading manually with one of these commands:')
+        print()
+        print('  # macOS/Linux:')
+        print(f'  curl -L "{MODEL_TAR_URL}" -o /tmp/paddle-kor-rec.tar.gz')
+        print(f'  tar -xzf /tmp/paddle-kor-rec.tar.gz -C /tmp/')
+        print(f'  cp /tmp/korean_PP-OCRv4_rec_infer/*.onnx "{MODEL_DEST}"')
+        print()
+        print('  # ModelScope alternative (if Baidu BOS is blocked):')
+        print('  pip install modelscope')
+        print('  python3 -c "from modelscope import snapshot_download; snapshot_download(\'PaddlePaddle/PP-OCRv4\', local_dir=\'/tmp/pp-ocrv4\')"')
+        print(f'  cp /tmp/pp-ocrv4/korean_PP-OCRv4_rec_infer.onnx "{MODEL_DEST}"')
+        return False
+
+    return extract_onnx(tar_path)
 
 
 if __name__ == '__main__':
-    os.makedirs(MODELS_DIR, exist_ok=True)
+    os.makedirs(MODELS, exist_ok=True)
 
-    download_dict()
+    dict_ok = download_dict()
+    if not dict_ok:
+        print('WARNING: Dict download failed. The dict is already committed to the repo.')
+        print(f'         If {DICT_DEST} exists, it will be used.')
 
-    if os.path.exists(MODEL_DEST) and os.path.getsize(MODEL_DEST) > 1_000_000:
-        print(f'Real model already exists ({os.path.getsize(MODEL_DEST)//1024} KB) — skipping download.')
-        print('Delete', MODEL_DEST, 'to force re-download.')
+    real_model = os.path.exists(MODEL_DEST) and os.path.getsize(MODEL_DEST) > 1_000_000
+    if real_model:
+        size_mb = os.path.getsize(MODEL_DEST) / 1024 / 1024
+        print(f'Real model already present ({size_mb:.1f} MB) — skipping download.')
+        print(f'Delete {MODEL_DEST} to force re-download.')
     else:
         print('Stub model detected — downloading real PP-OCRv4 Korean model...')
-        download_and_convert_model()
+        model_ok = download_model()
+        if not model_ok:
+            print()
+            print('Stub model is still in place. PaddleOCR provider will return empty text.')
+            sys.exit(1)
 
-    print('\nDone. Reload the extension in chrome://extensions to use PaddleOCR.')
+    print()
+    print('Done. Reload the extension in chrome://extensions to use PaddleOCR.')
+    print('Then open popup → Settings → OCR Engine → PaddleOCR.')
