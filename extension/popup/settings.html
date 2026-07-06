@@ -68,7 +68,7 @@
                   <p class="engine-detail">Uses Google's unofficial API. Fast and supports 130+ languages. No sign-up required.</p>
                 </div>
               </label>
-              <label class="engine-card">
+              <label class="engine-card" id="card-deepl">
                 <input type="radio" name="translate-provider" value="deepl" class="engine-radio" />
                 <div class="engine-card-inner">
                   <div class="engine-name">
@@ -78,8 +78,12 @@
                   <div class="engine-badge engine-badge-offline">Higher Quality</div>
                   <p class="engine-detail">Superior accuracy for Asian languages. Free tier: 500,000 chars/month. API key required.</p>
                 </div>
+                <div class="engine-lock-overlay" title="Save a DeepL API key first">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  Save a key to enable
+                </div>
               </label>
-              <label class="engine-card">
+              <label class="engine-card" id="card-byok">
                 <input type="radio" name="translate-provider" value="byok" class="engine-radio" />
                 <div class="engine-card-inner">
                   <div class="engine-name">
@@ -88,6 +92,10 @@
                   </div>
                   <div class="engine-badge engine-badge-offline">LLM · API key required</div>
                   <p class="engine-detail">Use your own LLM API key (OpenAI, Anthropic, etc). Translates automatically with story context for better accuracy.</p>
+                </div>
+                <div class="engine-lock-overlay" title="Save an API key first">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  Save a key to enable
                 </div>
               </label>
             </div>

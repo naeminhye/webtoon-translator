@@ -230,6 +230,30 @@ html, body {
 
 .engine-card:has(.engine-radio:checked) .engine-name { color: #4338ca; }
 
+.engine-card--locked {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.engine-card--locked .engine-radio { pointer-events: none; }
+
+.engine-lock-overlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.7);
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #64748b;
+  pointer-events: none;
+}
+
+.engine-card--locked .engine-lock-overlay { display: flex; }
+
 .engine-badge {
   display: inline-block;
   font-size: 10px;

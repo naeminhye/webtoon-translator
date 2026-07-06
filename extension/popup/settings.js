@@ -58,6 +58,18 @@ async function initTranslationSettings() {
 
   const radios = document.querySelectorAll('input[name="translate-provider"]');
 
+  function setCardLocked(cardId, locked) {
+    const card  = $(cardId);
+    const radio = card.querySelector('.engine-radio');
+    card.classList.toggle('engine-card--locked', locked);
+    radio.disabled = locked;
+  }
+
+  function applyKeyState(deeplKey, byokKey) {
+    setCardLocked('card-deepl', !deeplKey);
+    setCardLocked('card-byok',  !byokKey);
+  }
+
   function applyProvider(provider) {
     radios.forEach(r => { r.checked = r.value === provider; });
     $('deepl-key-row').classList.toggle('hidden', provider !== 'deepl');
@@ -75,6 +87,7 @@ async function initTranslationSettings() {
     chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: initialProvider });
   }
   applyProvider(initialProvider);
+  applyKeyState(stored[DEEPL_KEY_STR], stored[BYOK_KEY_STR]);
   $('target-lang').value = stored[TRANSLATE_LANG_KEY];
   if (stored[DEEPL_KEY_STR]) $('deepl-key').value = stored[DEEPL_KEY_STR];
   if (stored[BYOK_KEY_STR]) $('byok-key').value = stored[BYOK_KEY_STR];
@@ -121,6 +134,7 @@ async function initTranslationSettings() {
   });
 
   radios.forEach(r => r.addEventListener('change', async () => {
+    if (r.disabled) return;
     await chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: r.value });
     applyProvider(r.value);
   }));
@@ -132,6 +146,14 @@ async function initTranslationSettings() {
   $('save-deepl-key').addEventListener('click', async () => {
     const key = $('deepl-key').value.trim();
     await chrome.storage.local.set({ [DEEPL_KEY_STR]: key });
+    setCardLocked('card-deepl', !key);
+    if (key) {
+      await chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: 'deepl' });
+      applyProvider('deepl');
+    } else if (stored[TRANSLATE_PROVIDER_KEY] === 'deepl') {
+      await chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: 'google' });
+      applyProvider('google');
+    }
     $('deepl-key-saved').classList.remove('hidden');
     setTimeout(() => $('deepl-key-saved').classList.add('hidden'), 2500);
   });
@@ -141,6 +163,14 @@ async function initTranslationSettings() {
     const provider = $('byok-provider').value;
     const model    = $('byok-model').value.trim();
     await chrome.storage.local.set({ [BYOK_KEY_STR]: key, [BYOK_PROVIDER_KEY]: provider, [BYOK_MODEL_STR]: model });
+    setCardLocked('card-byok', !key);
+    if (key) {
+      await chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: 'byok' });
+      applyProvider('byok');
+    } else if (stored[TRANSLATE_PROVIDER_KEY] === 'byok') {
+      await chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: 'google' });
+      applyProvider('google');
+    }
     $('byok-key-saved').classList.remove('hidden');
     setTimeout(() => $('byok-key-saved').classList.add('hidden'), 2500);
   });
