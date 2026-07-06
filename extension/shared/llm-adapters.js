@@ -75,7 +75,7 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || `Anthropic HTTP ${res.status}`);
-      return data.content?.[0]?.text ?? '';
+      return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('') || '';
     }
     async callVisionApi(apiKey, model, base64Data, mimeType, prompt) {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -92,7 +92,7 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || `Anthropic HTTP ${res.status}`);
-      return data.content?.[0]?.text ?? '';
+      return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('') || '';
     }
   }
 
@@ -104,6 +104,11 @@
       // text, so an already-saved older model name isn't touched by this.
       super({ id: 'gemini', label: 'Gemini', modelPlaceholder: 'gemini-2.5-flash' });
     }
+    _extractText(data) {
+      // Filter out thinking/reasoning parts (thought:true) — present in Gemini 2.5+ thinking models
+      const parts = (data.candidates?.[0]?.content?.parts || []).filter(p => !p.thought);
+      return parts.map(p => p.text || '').join('');
+    }
     async callApi(apiKey, model, prompt) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
       const res = await fetch(url, {
@@ -113,7 +118,7 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || `Gemini HTTP ${res.status}`);
-      return (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+      return this._extractText(data);
     }
     async callVisionApi(apiKey, model, base64Data, mimeType, prompt) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
@@ -127,7 +132,7 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || `Gemini HTTP ${res.status}`);
-      return (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+      return this._extractText(data);
     }
   }
 
