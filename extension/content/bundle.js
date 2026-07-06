@@ -732,7 +732,6 @@ class FixedOverlayLayer {
     b.dataset.annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
     b.dataset.bboxX  = ann.bbox.x; b.dataset.bboxY = ann.bbox.y;
     b.dataset.bboxW  = ann.bbox.w; b.dataset.bboxH = ann.bbox.h;
-    b.title = ann.bbox.source === 'onnx' ? 'Detection: ONNX YOLOv8' : ann.bbox.source === 'auto' ? 'Detection: Flood-fill' : 'Detection: Manual';
     b.style.position  = 'absolute';
     if (ann.style) {
       const s = ann.style;
@@ -2568,7 +2567,6 @@ class OverlayRenderer {
     b.dataset.bboxY   = ann.bbox.y;
     b.dataset.bboxW   = ann.bbox.w;
     b.dataset.bboxH   = ann.bbox.h;
-    b.title = ann.bbox.source === 'onnx' ? 'Detection: ONNX YOLOv8' : ann.bbox.source === 'auto' ? 'Detection: Flood-fill' : 'Detection: Manual';
     if (ann.style) {
       const s = ann.style;
       b.style.fontWeight = s.bold   ? 'bold'   : 'normal';
@@ -3779,7 +3777,7 @@ function bootForPage() {
   let onnxAvailable   = null; // null=unknown, true=ready, false=failed
 
   function warmOnnxCache(img) {
-    if (onnxAvailable !== true) return; // don't attempt if session is unknown or failed
+    if (onnxAvailable === false) return; // model confirmed failed — don't retry
     if (!img.src || onnxBboxCache.has(img.src)) return;
     // Try to canvas-capture the full image from the DOM so background worker doesn't
     // need to re-fetch from CDN (Naver/Kakao hotlink protection blocks service-worker fetches).
@@ -3793,7 +3791,9 @@ function bootForPage() {
         dataUrl = canvas.toDataURL('image/png');
       }
     } catch (_e) { /* cross-origin tainted canvas — fall back to service-worker fetch */ }
+    console.log('[WebtoonTranslate] ONNX warmup request for', img.src.slice(-40), dataUrl ? '(canvas)' : '(fetch fallback)');
     const p = sendToBackground({ type: MSG.DETECT_BUBBLES, payload: { imageUrl: img.src, dataUrl } })
+      .then(res => { console.log('[WebtoonTranslate] ONNX result for', img.src.slice(-40), res?.ok ? `${res.bboxes?.length} bubbles` : `FAIL: ${res?.error}`); return res; })
       .catch(() => null);
     onnxBboxCache.set(img.src, p);
   }
