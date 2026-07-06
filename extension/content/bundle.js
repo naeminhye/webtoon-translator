@@ -3774,11 +3774,11 @@ function bootForPage() {
   let disposed        = false;
 
   // ONNX bbox cache: img.src → Promise<{ok,bboxes}|null>
-  // Only populated when ONNX session is confirmed ready (onnxAvailable === true).
-  // Stays null until we get a 'model-ready' status, so failed sessions never
-  // flood the offscreen document and break Tesseract OCR.
-  const onnxBboxCache = new Map();
-  let onnxAvailable   = null; // null=unknown, true=ready, false=failed
+  // onnxResultCache stores the resolved value so handleAutoDetectClick can use
+  // it instantly without awaiting a still-pending Promise.
+  const onnxBboxCache   = new Map(); // src → Promise
+  const onnxResultCache = new Map(); // src → resolved {ok,bboxes}
+  let onnxAvailable     = null; // null=unknown, true=ready, false=failed
 
   function warmOnnxCache(img) {
     if (onnxAvailable === false) return; // model confirmed failed — don't retry
@@ -3797,7 +3797,11 @@ function bootForPage() {
     } catch (_e) { /* cross-origin tainted canvas — fall back to service-worker fetch */ }
     console.log('[WebtoonTranslate] ONNX warmup request for', img.src.slice(-40), dataUrl ? '(canvas)' : '(fetch fallback)');
     const p = sendToBackground({ type: MSG.DETECT_BUBBLES, payload: { imageUrl: img.src, dataUrl } })
-      .then(res => { console.log('[WebtoonTranslate] ONNX result for', img.src.slice(-40), res?.ok ? `${res.bboxes?.length} bubbles` : `FAIL: ${res?.error}`); return res; })
+      .then(res => {
+        console.log('[WebtoonTranslate] ONNX result for', img.src.slice(-40), res?.ok ? `${res.bboxes?.length} bubbles` : `FAIL: ${res?.error}`);
+        onnxResultCache.set(img.src, res); // store resolved value for instant lookup
+        return res;
+      })
       .catch(() => null);
     onnxBboxCache.set(img.src, p);
   }
@@ -3933,10 +3937,29 @@ function bootForPage() {
     } else {
       loadAndRender().then(updateProgressBar);
       checkStorageQuota();
-      setTimeout(() => images.forEach(warmOnnxCache), 500);
+      // Warm ONNX cache only for images in (or near) the current viewport.
+      // Firing all 50+ panel images at once floods the service worker queue and
+      // delays every result by 6+ seconds due to sequential WASM inference.
+      // Remaining images are warmed on scroll via the scroll listener below.
+      setTimeout(() => warmOnnxNearViewport(), 500);
     }
   };
   tryGetImages();
+
+  // Warm images within 2 viewport-heights of the current scroll position.
+  // Called on page load and on scroll (debounced).
+  function warmOnnxNearViewport() {
+    const vhRange = window.innerHeight * 2;
+    images.forEach(img => {
+      const r = img.getBoundingClientRect();
+      if (r.bottom > -vhRange && r.top < window.innerHeight + vhRange) warmOnnxCache(img);
+    });
+  }
+  let _scrollWarmTimer = null;
+  window.addEventListener('scroll', () => {
+    clearTimeout(_scrollWarmTimer);
+    _scrollWarmTimer = setTimeout(warmOnnxNearViewport, 300);
+  }, { passive: true });
 
   const stopWatching = adapter.watchNewImages(async (newImages) => {
     const added = newImages.filter(img => !images.includes(img));
@@ -3946,7 +3969,7 @@ function bootForPage() {
     images = [...images, ...added].sort((a, b) =>
       a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
     );
-    setTimeout(() => added.forEach(warmOnnxCache), 500);
+    setTimeout(() => warmOnnxNearViewport(), 500);
     if (readScanEnabled) {
       if (isKakao) fixedLayer.enable(images);
       else added.forEach(img => selector.attachImage(img, images.indexOf(img)));
@@ -4179,15 +4202,14 @@ function bootForPage() {
   // (vs. a drag) auto-detects the bubble under the cursor on every site
   // instead of only the ones using BBoxSelector.
   async function handleAutoDetectClick({ img, clickX, clickY, imgRect, imageIndex }) {
-    // Check ONNX cache: if the model already detected bubbles for this image,
-    // find whichever bbox contains the click point and use it directly.
-    const cached = onnxBboxCache.get(img.src);
-    if (cached) {
-      const result = await cached;
-      if (result?.ok && result.bboxes?.length) {
+    // Check ONNX result cache (instant — resolved value, no await needed).
+    // Falls through to flood-fill if ONNX hasn't finished yet or found 0 bboxes.
+    const onnxResult = onnxResultCache.get(img.src);
+    if (onnxResult) {
+      if (onnxResult.ok && onnxResult.bboxes?.length) {
         const cx = (clickX / imgRect.width)  * 100;
         const cy = (clickY / imgRect.height) * 100;
-        const hit = result.bboxes.find(b =>
+        const hit = onnxResult.bboxes.find(b =>
           cx >= b.x && cx <= b.x + b.w &&
           cy >= b.y && cy <= b.y + b.h
         );
@@ -4196,13 +4218,18 @@ function bootForPage() {
           await createJobFromSelection({ bbox: { ...hit, source: 'onnx' }, imageEl: img, imageIndex });
           return;
         }
-        console.log('[WebtoonTranslate] Auto-detect: ONNX has', result.bboxes.length, 'bboxes but none contain click point — falling to flood-fill');
+        console.log('[WebtoonTranslate] Auto-detect: ONNX has', onnxResult.bboxes.length, 'bboxes but none contain click point — falling to flood-fill');
       } else {
-        console.log('[WebtoonTranslate] Auto-detect: ONNX cached but 0 bboxes — falling to flood-fill');
+        console.log('[WebtoonTranslate] Auto-detect: ONNX returned 0 bboxes — falling to flood-fill');
       }
     } else {
-      console.log('[WebtoonTranslate] Auto-detect: no ONNX cache for this image — warming + falling to flood-fill');
-      warmOnnxCache(img); // not yet requested — start now for next click
+      // ONNX not yet done for this image — start warmup if not already queued
+      if (!onnxBboxCache.has(img.src)) {
+        console.log('[WebtoonTranslate] Auto-detect: no ONNX cache for this image — warming + falling to flood-fill');
+        warmOnnxCache(img);
+      } else {
+        console.log('[WebtoonTranslate] Auto-detect: ONNX still in-flight — falling to flood-fill immediately');
+      }
     }
 
     // Fallback: flood-fill detector (works offline, no model required)
