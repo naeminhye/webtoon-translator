@@ -3443,7 +3443,7 @@ function stitchClips(clips) {
   }
 }
 
-async function autoTranslate(text, { job } = {}) {
+async function autoTranslate(text, { job, storyCtx } = {}) {
   const s = await chrome.storage.local.get({
     'wt:translate-provider': 'google',
     'wt:translate-lang':     'vi',
@@ -3461,12 +3461,11 @@ async function autoTranslate(text, { job } = {}) {
     const provId = s['wt:byok-provider'];
     const model  = s['wt:byok-model'];
     if (!apiKey || !provId || !model) throw new Error('BYOK LLM not configured — add provider/key/model in Settings');
-    const adapter = getLlmAdapter(provId);
-    if (!adapter) throw new Error(`Unknown BYOK provider: ${provId}`);
+    const llmAdapter = getLlmAdapter(provId);
+    if (!llmAdapter) throw new Error(`Unknown BYOK provider: ${provId}`);
     if (job) { job._translateProvider = 'byok'; }
-    const storyContext = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
-    const prompt = formatLlmPrompt(storyContext, text, targetLang);
-    return adapter.callApi(apiKey, model, prompt);
+    const prompt = formatLlmPrompt(storyCtx ?? null, text, targetLang);
+    return llmAdapter.callApi(apiKey, model, prompt);
   }
 
   if (provider === 'deepl') {
@@ -4110,7 +4109,10 @@ function bootForPage() {
         job._translateProvider = 'byok';
         jobOverlayRenderer.render(job); // re-render with "Asking LLM…"
       }
-      return autoTranslate(job.originalText, { job });
+      const storyCtx = prov === 'byok'
+        ? await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null)
+        : null;
+      return autoTranslate(job.originalText, { job, storyCtx });
     },
     findOverlap:   findOverlapForBbox,
     confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'This region looks like it overlaps an existing translation. Create a new one here anyway?'),
