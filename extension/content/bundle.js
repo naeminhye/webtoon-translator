@@ -3884,7 +3884,19 @@ function bootForPage() {
   function warmOnnxCache(img) {
     if (onnxAvailable !== true) return; // don't attempt if session is unknown or failed
     if (!img.src || onnxBboxCache.has(img.src)) return;
-    const p = sendToBackground({ type: MSG.DETECT_BUBBLES, payload: { imageUrl: img.src } })
+    // Try to canvas-capture the full image from the DOM so background worker doesn't
+    // need to re-fetch from CDN (Naver/Kakao hotlink protection blocks service-worker fetches).
+    let dataUrl = null;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width  = img.naturalWidth  || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      if (canvas.width > 0 && canvas.height > 0) {
+        canvas.getContext('2d').drawImage(img, 0, 0);
+        dataUrl = canvas.toDataURL('image/png');
+      }
+    } catch (_e) { /* cross-origin tainted canvas — fall back to service-worker fetch */ }
+    const p = sendToBackground({ type: MSG.DETECT_BUBBLES, payload: { imageUrl: img.src, dataUrl } })
       .catch(() => null);
     onnxBboxCache.set(img.src, p);
   }

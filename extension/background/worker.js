@@ -712,25 +712,28 @@ updateBadge();
  * Returns { ok, bboxes } where bboxes are percentage-coordinate objects
  * { x, y, w, h, conf } matching the extension's existing bbox format.
  */
-async function handleDetectBubbles({ imageUrl }) {
+async function handleDetectBubbles({ imageUrl, dataUrl: providedDataUrl }) {
   if (!chrome.offscreen?.createDocument) {
     return { ok: false, error: 'Offscreen API unavailable — reload extension (Chrome 109+)' };
   }
   await ensureOffscreen();
 
-  // Fetch the panel image cross-origin in the service worker
-  let dataUrl;
-  try {
-    const res  = await _fetchImage(imageUrl);
-    const blob = await res.blob();
-    dataUrl    = await new Promise((resolve, reject) => {
-      const reader   = new FileReader();
-      reader.onload  = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('Failed to encode panel image for ONNX'));
-      reader.readAsDataURL(blob);
-    });
-  } catch (err) {
-    return { ok: false, error: `Image fetch failed: ${err.message}` };
+  // Use content-script-provided dataUrl (avoids CDN hotlink restrictions) when available;
+  // fall back to fetching from the service worker only if not provided.
+  let dataUrl = providedDataUrl || null;
+  if (!dataUrl) {
+    try {
+      const res  = await _fetchImage(imageUrl);
+      const blob = await res.blob();
+      dataUrl    = await new Promise((resolve, reject) => {
+        const reader   = new FileReader();
+        reader.onload  = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Failed to encode panel image for ONNX'));
+        reader.readAsDataURL(blob);
+      });
+    } catch (err) {
+      return { ok: false, error: `Image fetch failed: ${err.message}` };
+    }
   }
 
   // Delegate inference to the offscreen document
