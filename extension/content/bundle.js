@@ -4084,6 +4084,10 @@ function bootForPage() {
           if (visionResult) {
             job._visionTranslated = visionResult;
             console.log(`[WebtoonTranslate] Vision LLM OCR+translate (tier=vision reason=${difficulty.reason}):`, visionResult);
+            // Return sentinel so the pipeline continues to runTranslate even
+            // when Tesseract returned empty text (otherwise _process would bail
+            // with "No text found" before runTranslate can use _visionTranslated).
+            return text || '[vision]';
           }
         }
       }
@@ -4107,7 +4111,7 @@ function bootForPage() {
       const style = existing?.style || (matched ? { ...DEFAULT_STYLE, bg: matched.bg, color: matched.color } : DEFAULT_STYLE);
       const annotation = {
         imageHash, imageIndex: job.imageIndex, bbox: job.bbox,
-        originalText: job.originalText, translatedText: job.translatedText,
+        originalText: job.originalText === '[vision]' ? '' : job.originalText, translatedText: job.translatedText,
         style,
         language: existing?.language || 'vi',
         createdAt: existing?.createdAt || new Date().toISOString(),
