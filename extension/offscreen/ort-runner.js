@@ -285,7 +285,17 @@ async function detectBubbles(dataUrl) {
   const outputName = session.outputNames[0];
   const out        = results[outputName];
   const dims       = out.dims;
-  console.log('[ORT] Output', outputName, 'shape:', dims);
+
+  // Debug: find max confidence value to diagnose threshold issues
+  let maxConf = 0;
+  if (dims.length === 3) {
+    const N = dims[1] >= 5 && dims[1] <= 144 ? dims[2] : dims[1]; // anchor count
+    const confRow = dims[1] >= 5 && dims[1] <= 144 ? 4 : 4;       // conf index
+    for (let i = 0; i < out.data.length; i++) {
+      if (out.data[i] > maxConf) maxConf = out.data[i];
+    }
+  }
+  console.log('[ORT] Output', outputName, 'shape:', JSON.stringify(dims), '| max value in tensor:', maxConf.toFixed(4), '| CONF_THRESH:', CONF_THRESH);
 
   let boxes;
   if (dims.length === 3 && dims[1] >= 5 && dims[1] <= 144) {
@@ -299,6 +309,7 @@ async function detectBubbles(dataUrl) {
     // CRAFT-style heatmap
     boxes = decodeCraft(out, meta);
   }
+  console.log('[ORT] Decode path:', dims.length === 3 && dims[1] >= 5 && dims[1] <= 144 ? 'YOLOv8 channel-first' : dims.length === 3 && dims[2] >= 5 && dims[2] <= 144 ? 'YOLOv8 transposed' : 'CRAFT heatmap', '| boxes after NMS:', boxes.length);
 
   // Convert pixel coords → percentage (matches the extension's bbox format).
   // Add 1% padding on each side so Tesseract has enough context around the bubble edge.
