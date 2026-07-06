@@ -8,8 +8,8 @@ Chrome extension (Manifest V3) that overlays translations on webtoon panels — 
 |---|---|
 | Naver Webtoon (`comic.naver.com`) | ✅ Full support |
 | Kakao Page (`page.kakao.com`) | ✅ Full support |
-| Bomtoon (`bomtoon.com`) | ✅ Full support |
-| Ridi (`ridibooks.com`) | 🔜 Stub |
+| Ridi (`ridibooks.com`) | ✅ Full support |
+| Bomtoon (`bomtoon.com`) | 🔜 Stub |
 
 ## Features
 

@@ -732,6 +732,7 @@ class FixedOverlayLayer {
     b.dataset.annKey = `${ann.imageHash}::${ann.bbox.x.toFixed(1)}::${ann.bbox.y.toFixed(1)}`;
     b.dataset.bboxX  = ann.bbox.x; b.dataset.bboxY = ann.bbox.y;
     b.dataset.bboxW  = ann.bbox.w; b.dataset.bboxH = ann.bbox.h;
+    b.title = ann.bbox.source === 'onnx' ? 'Detection: ONNX YOLOv8' : ann.bbox.source === 'auto' ? 'Detection: Flood-fill' : 'Detection: Manual';
     b.style.position  = 'absolute';
     if (ann.style) {
       const s = ann.style;
@@ -2065,7 +2066,8 @@ class JobManager {
         this._onStatusChange(job);
         return;
       }
-      console.log(`[WebtoonTranslate] OCR text (${job._ocrProvider ?? 'unknown'}, conf=${job._ocrConfidence ?? '?'}):`, ocrText);
+      const _detSrc = job.source === 'onnx' ? 'ONNX' : job.source === 'auto' ? 'flood-fill' : 'manual';
+      console.log(`[WebtoonTranslate] OCR text (${job._ocrProvider ?? 'unknown'}, conf=${job._ocrConfidence ?? '?'}, detection=${_detSrc}):`, ocrText);
       job.status = 'translating';
       this._onStatusChange(job);
       const translated = await this._runTranslate(job);
@@ -2566,6 +2568,7 @@ class OverlayRenderer {
     b.dataset.bboxY   = ann.bbox.y;
     b.dataset.bboxW   = ann.bbox.w;
     b.dataset.bboxH   = ann.bbox.h;
+    b.title = ann.bbox.source === 'onnx' ? 'Detection: ONNX YOLOv8' : ann.bbox.source === 'auto' ? 'Detection: Flood-fill' : 'Detection: Manual';
     if (ann.style) {
       const s = ann.style;
       b.style.fontWeight = s.bold   ? 'bold'   : 'normal';
