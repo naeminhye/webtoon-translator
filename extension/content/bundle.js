@@ -4102,11 +4102,24 @@ function bootForPage() {
       job._ocrConfidence = confidence;
       // Low-confidence fallback: send crop to vision LLM for combined OCR+translate.
       // Only fires when BYOK is configured; result stored so runTranslate can skip.
-      if (typeof confidence === 'number' && confidence < 50 && dataUrl) {
-        const visionResult = await visionOcrTranslate(dataUrl);
-        if (visionResult) {
-          job._visionTranslated = visionResult;
-          console.log(`[WebtoonTranslate] Vision LLM OCR+translate (conf=${confidence}):`, visionResult);
+      if (typeof confidence === 'number' && confidence < 50) {
+        // dataUrl may be null for cross-origin images (background did the crop+OCR).
+        // In that case request the crop explicitly so we can send it to the vision LLM.
+        let cropUrl = dataUrl;
+        if (!cropUrl && job.imageEl) {
+          try {
+            cropUrl = _cropCanvas(job.imageEl, job.bbox);
+          } catch (_e) {
+            const res2 = await sendToBackground({ type: MSG.CROP_IMAGE, payload: { imageUrl: job.imageEl.src, bbox: job.bbox } });
+            cropUrl = res2?.dataUrl ?? null;
+          }
+        }
+        if (cropUrl) {
+          const visionResult = await visionOcrTranslate(cropUrl);
+          if (visionResult) {
+            job._visionTranslated = visionResult;
+            console.log(`[WebtoonTranslate] Vision LLM OCR+translate (conf=${confidence}):`, visionResult);
+          }
         }
       }
       return text;
