@@ -3590,6 +3590,91 @@ async function visionOcrTranslate(dataUrl) {
   }
 }
 
+// ── Batch viewport translation ───────────────────────────────────────────────
+
+function _getVisibleImages(images) {
+  const vpBottom = window.innerHeight;
+  return images.filter(img => {
+    const r = img.getBoundingClientRect();
+    return r.bottom > 0 && r.top < vpBottom;
+  });
+}
+
+async function _getCropDataUrl(img, bbox) {
+  try { return _cropCanvas(img, bbox); }
+  catch (_e) {
+    const res = await sendToBackground({ type: MSG.CROP_IMAGE, payload: { imageUrl: img.src, bbox } });
+    return res?.dataUrl ?? null;
+  }
+}
+
+// OCR all bboxes in parallel — worker pool in ocr.js handles concurrency.
+// onProgress(done, total) called after each bubble completes.
+async function _ocrAllParallel(bboxItems, onProgress) {
+  let done = 0;
+  const total = bboxItems.length;
+  return (await Promise.all(bboxItems.map(async (item, idx) => {
+    try {
+      const dataUrl = await _getCropDataUrl(item.img, item.bbox);
+      if (!dataUrl) return null;
+      const res = await sendToBackground({
+        type: MSG.OCR_REGION,
+        payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: false },
+      });
+      onProgress?.(++done, total);
+      return res?.ok ? { ...item, idx, text: res.text || '', confidence: res.confidence ?? 0 } : null;
+    } catch { return null; }
+  }))).filter(Boolean);
+}
+
+// Single batch LLM call: returns array of translations or null on failure.
+async function _callByokLlmBatch(items, storyCtx, targetLang) {
+  const s = await chrome.storage.local.get({ 'wt:byok-key': '', 'wt:byok-provider': '', 'wt:byok-model': '' });
+  const apiKey = s['wt:byok-key'], provId = s['wt:byok-provider'], model = s['wt:byok-model'];
+  if (!apiKey || !provId || !model) return null;
+  const adapter = getLlmAdapter(provId);
+  if (!adapter) return null;
+
+  const lines = items.map((item, i) => `[${i}] ${item.text}`).join('\n');
+  const ctxBlock = storyCtx
+    ? `Title: ${storyCtx.title || ''}\nTags: ${(storyCtx.tags || []).join(', ')}\nSynopsis: ${storyCtx.synopsis || ''}\n\n`
+    : '';
+  const prompt = `${ctxBlock}Translate these Korean webtoon dialogue lines to ${targetLang}.\nReturn ONLY a JSON array of exactly ${items.length} translated strings, same order as input. No markdown, no explanation.\n\n${lines}`;
+
+  try {
+    const raw = await adapter.callApi(apiKey, model, prompt);
+    const jsonStr = raw.match(/\[[\s\S]*\]/)?.[0];
+    if (!jsonStr) return null;
+    const arr = JSON.parse(jsonStr);
+    return Array.isArray(arr) && arr.length === items.length ? arr : null;
+  } catch { return null; }
+}
+
+// Create a lightweight placeholder overlay on an image at a bbox.
+// Returns { update(text), remove() }.
+function _createPlaceholder(img, bbox) {
+  const el = document.createElement('div');
+  el.className = 'wt-batch-placeholder';
+  const setPos = () => {
+    const r = img.getBoundingClientRect();
+    const left = r.left + (bbox.x / 100) * r.width + window.scrollX;
+    const top  = r.top  + (bbox.y / 100) * r.height + window.scrollY;
+    const w    = (bbox.w / 100) * r.width;
+    const h    = (bbox.h / 100) * r.height;
+    Object.assign(el.style, { position: 'absolute', left: `${left}px`, top: `${top}px`, width: `${w}px`, height: `${h}px`, zIndex: '9998', pointerEvents: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.5)', borderRadius: '4px', fontSize: '11px', color: '#6366f1', fontWeight: '600' });
+  };
+  setPos();
+  document.body.appendChild(el);
+  el.textContent = '⏳';
+  return {
+    update: (text) => { el.textContent = text; },
+    remove: () => el.remove(),
+    reposition: setPos,
+  };
+}
+
+let _batchRunning = false;
+
 function _cropCanvas(img, bbox) {
   const nw = img.naturalWidth  || img.width  || img.offsetWidth;
   const nh = img.naturalHeight || img.height || img.offsetHeight;
@@ -3856,6 +3941,96 @@ function bootForPage() {
   };
   document.addEventListener('keydown', keyHandler);
 
+  // ── Batch viewport translation ──────────────────────────────────────────
+
+  async function batchTranslatePage() {
+    if (_batchRunning) { showToast('Batch translation already running…', '#f59e0b'); return; }
+    _batchRunning = true;
+    const placeholders = [];
+    try {
+      const visibleImgs = _getVisibleImages(images);
+      if (!visibleImgs.length) { showToast('No panel images in viewport', '#94a3b8'); return; }
+
+      // Collect bboxes from ONNX cache (pre-warmed by warmOnnxCache)
+      const bboxItems = [];
+      for (const img of visibleImgs) {
+        const cached = onnxBboxCache.get(img.src);
+        if (!cached) continue;
+        const res = await cached;
+        if (!res?.ok) continue;
+        for (const bbox of (res.bboxes || [])) {
+          const imageIndex = images.indexOf(img);
+          if (findOverlapForBbox(bbox, imageIndex) > 0.3) continue; // already translated
+          bboxItems.push({ img, bbox });
+        }
+      }
+      if (!bboxItems.length) { showToast('All bubbles already translated', '#22c55e'); return; }
+
+      // Sort reading order: top-to-bottom, left-to-right (absolute page Y)
+      bboxItems.sort((a, b) => {
+        const ra = a.img.getBoundingClientRect(), rb = b.img.getBoundingClientRect();
+        const ay = ra.top + (a.bbox.y / 100) * ra.height;
+        const by = rb.top + (b.bbox.y / 100) * rb.height;
+        return ay - by || a.bbox.x - b.bbox.x;
+      });
+
+      // Show placeholder overlays immediately so user sees progress
+      for (const item of bboxItems) placeholders.push(_createPlaceholder(item.img, item.bbox));
+
+      showToast(`Scanning ${bboxItems.length} bubbles…`, '#6366f1');
+
+      // Parallel OCR — worker pool handles concurrency
+      const ocrResults = await _ocrAllParallel(bboxItems, (done, total) => {
+        placeholders[done - 1]?.update('💬');
+        showToast(`OCR ${done}/${total}…`, '#6366f1');
+      });
+
+      const validResults = ocrResults.filter(r => r.text?.trim());
+      if (!validResults.length) { showToast('No text found in bubbles', '#94a3b8'); return; }
+
+      showToast(`Translating ${validResults.length} bubbles…`, '#6366f1');
+
+      const storyCtx = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
+      const { 'wt:translate-lang': lang = 'vi' } = await chrome.storage.local.get('wt:translate-lang');
+
+      // Single batch LLM call → fallback to per-bubble if JSON parse fails
+      let translations = await _callByokLlmBatch(validResults, storyCtx, lang);
+      if (!translations) {
+        translations = await Promise.all(validResults.map(r => autoTranslate(r.text).catch(() => '')));
+      }
+
+      placeholders.forEach(p => p.remove());
+      placeholders.length = 0;
+
+      let saved = 0;
+      for (let i = 0; i < validResults.length; i++) {
+        const { img, bbox, text } = validResults[i];
+        const translatedText = (translations[i] || '').trim();
+        if (!translatedText) continue;
+        const imageHash = await hashImage(img);
+        const ann = {
+          imageHash, imageIndex: images.indexOf(img), bbox,
+          originalText: text, translatedText,
+          style: DEFAULT_STYLE, language: lang,
+          createdAt: new Date().toISOString(),
+        };
+        await sendToBackground({ type: MSG.SAVE_TRANSLATIONS, payload: { ...meta, annotations: [ann] } });
+        allAnnotations.push(ann);
+        if (isKakao) fixedLayer.upsertBubble(img, ann);
+        else renderer.upsertBubble(img, ann);
+        saved++;
+      }
+      panel?.update(allAnnotations);
+      showToast(`✓ Translated ${saved} bubbles`, '#22c55e');
+    } catch (err) {
+      showToast(`Batch failed: ${err.message}`, '#ef4444');
+      console.error('[WebtoonTranslate] batchTranslatePage error:', err);
+    } finally {
+      placeholders.forEach(p => p.remove());
+      _batchRunning = false;
+    }
+  }
+
   // ── load & render ──────────────────────────────────────────────────────
 
   async function loadAndRender() {
@@ -3939,6 +4114,7 @@ function bootForPage() {
       loadAndRender().then(updateProgressBar);
       checkStorageQuota();
       setTimeout(() => images.forEach(warmOnnxCache), 500);
+      ensureBatchButton();
     }
   };
   tryGetImages();
@@ -4062,6 +4238,30 @@ function bootForPage() {
     badge.classList.toggle('wt-job-badge-visible', active + queued > 0);
     badge.querySelector('.wt-job-badge-text').textContent =
       queued > 0 ? `${active} translating · ${queued} pending` : `${active} translating`;
+  }
+
+  // "Translate Page" button — triggers batch viewport translation.
+  // Created lazily on first call; stays in DOM for the session.
+  function ensureBatchButton() {
+    if (document.getElementById('wt-batch-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'wt-batch-btn';
+    btn.type = 'button';
+    btn.title = 'Translate all speech bubbles in viewport';
+    btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg> Translate Page';
+    Object.assign(btn.style, { position: 'fixed', bottom: '16px', right: '16px', zIndex: '2147483646', display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: '20px', fontSize: '13px', fontWeight: '600', cursor: 'pointer', boxShadow: '0 2px 12px rgba(0,0,0,0.25)', fontFamily: 'system-ui,sans-serif' });
+    btn.addEventListener('mouseenter', () => { btn.style.background = '#4f46e5'; });
+    btn.addEventListener('mouseleave', () => { btn.style.background = _batchRunning ? '#9ca3af' : '#6366f1'; });
+    btn.addEventListener('click', () => {
+      if (_batchRunning) return;
+      btn.style.background = '#9ca3af';
+      btn.textContent = 'Translating…';
+      batchTranslatePage().finally(() => {
+        btn.style.background = '#6366f1';
+        btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg> Translate Page';
+      });
+    });
+    document.body.appendChild(btn);
   }
 
   let _storyContextRequestedThisPageLoad = false; // only fetch/log once per page load, not on every OCR request
