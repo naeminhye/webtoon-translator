@@ -17,8 +17,10 @@ function _refererFor(imageUrl) {
 
 function _fetchImage(imageUrl) {
   const referer = _refererFor(imageUrl);
-  const headers = referer ? { 'Referer': referer } : {};
-  return fetch(imageUrl, { credentials: 'omit', headers });
+  // Use the `referrer` fetch init option — NOT headers['Referer'] (a forbidden header
+  // that browsers silently strip). The fetch init `referrer` field IS the correct API
+  // for controlling the Referer sent on the request.
+  return fetch(imageUrl, { credentials: 'omit', ...(referer ? { referrer: referer } : {}) });
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
