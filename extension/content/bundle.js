@@ -3308,7 +3308,7 @@ async function ocrRegion(img, bbox, applyOcrRefinement = true) {
     payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox: cropBbox, refineCrop: applyOcrRefinement },
   });
   if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-  return { text: res.text, confidence: res.confidence, provider: res.provider };
+  return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl };
 }
 
 async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true) {
@@ -3368,21 +3368,21 @@ async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true
   if (clips.length === 1) return ocrRegion(img, rawBbox, applyOcrRefinement);
 
   // Try client-side stitching (same-origin/blob images)
-  const dataUrl = stitchClips(clips);
-  if (dataUrl) {
+  const stitchedDataUrl = stitchClips(clips);
+  if (stitchedDataUrl) {
     const res = await sendToBackground({
       type: MSG.OCR_REGION,
-      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
+      payload: { dataUrl: stitchedDataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return { text: res.text, confidence: res.confidence, provider: res.provider };
+    return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: stitchedDataUrl };
   }
 
   // Cross-origin: send to background for fetch+stitch
   const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src, bbox: { x, y, w, h }, dispW: dw }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return { text: res.text, confidence: res.confidence, provider: res.provider };
+  return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: null };
 }
 
 async function ocrClips(clips, applyOcrRefinement = true) {
@@ -3401,20 +3401,20 @@ async function ocrClips(clips, applyOcrRefinement = true) {
   });
 
   // Try client-side stitch first
-  const dataUrl = stitchClips(items);
-  if (dataUrl) {
+  const clipsDataUrl = stitchClips(items);
+  if (clipsDataUrl) {
     const res = await sendToBackground({
       type: MSG.OCR_REGION,
-      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
+      payload: { dataUrl: clipsDataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return { text: res.text, confidence: res.confidence, provider: res.provider };
+    return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: clipsDataUrl };
   }
   // Cross-origin: background fetch+stitch
   const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src, bbox: { x, y, w, h }, dispW }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return { text: res.text, confidence: res.confidence, provider: res.provider };
+  return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: null };
 }
 
 // Stitch multiple image clips vertically into one canvas.
@@ -3529,6 +3529,65 @@ async function callByokLlm(prompt) {
   const adapter = getLlmAdapter(providerId);
   if (!adapter) throw new Error(`Unknown provider "${providerId}" — pick one from the Settings dropdown`);
   return adapter.callApi(apiKey, model, prompt);
+}
+
+// Convert a dataUrl to grayscale with reduced color depth before sending to
+// vision LLM — reduces token cost and removes color noise that doesn't help OCR.
+// levels: number of gray steps (8 = 32-step quantization → cleaner contrast).
+function preprocessImageForVision(dataUrl, levels = 8) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width  = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = imageData.data;
+      const step = 255 / (levels - 1);
+      for (let i = 0; i < d.length; i += 4) {
+        const gray = Math.round((0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / step) * step;
+        d[i] = d[i + 1] = d[i + 2] = gray;
+        // d[i+3] (alpha) unchanged
+      }
+      ctx.putImageData(imageData, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(dataUrl); // fallback to original on error
+    img.src = dataUrl;
+  });
+}
+
+// Called when Tesseract confidence is low: preprocess the crop and send to
+// the configured BYOK vision LLM for combined OCR + translation in one step.
+// Returns the translated string, or null if BYOK is not configured or fails.
+async function visionOcrTranslate(dataUrl) {
+  const s = await chrome.storage.local.get({
+    'wt:byok-key':          '',
+    'wt:byok-provider':     '',
+    'wt:byok-model':        '',
+    'wt:translate-lang':    'vi',
+  });
+  const apiKey  = s['wt:byok-key'];
+  const provId  = s['wt:byok-provider'];
+  const model   = s['wt:byok-model'];
+  const lang    = s['wt:translate-lang'];
+  if (!apiKey || !provId || !model) return null;
+
+  const adapter = getLlmAdapter(provId);
+  if (!adapter) return null;
+
+  const processed = await preprocessImageForVision(dataUrl);
+  const base64    = processed.split(',')[1];
+  const mime      = processed.match(/data:([^;]+);/)?.[1] ?? 'image/png';
+  const prompt    = `This is a speech bubble from a Korean webtoon. Read the Korean text and translate it to ${lang}. Return ONLY the translation, no explanation, no original text.`;
+  try {
+    return await adapter.callVisionApi(apiKey, model, base64, mime, prompt);
+  } catch (err) {
+    console.warn('[WebtoonTranslate] Vision LLM fallback failed:', err.message);
+    return null;
+  }
 }
 
 function _cropCanvas(img, bbox) {
@@ -4025,7 +4084,7 @@ function bootForPage() {
       // past its text) — a manual drag-select or hand-resized bbox is
       // already exactly what the user wants, so it's sent to OCR unmodified.
       const applyOcrRefinement = job.source === 'auto';
-      const { text, confidence, provider } = job.clips
+      const { text, confidence, provider, dataUrl } = job.clips
         ? await ocrClips(job.clips, applyOcrRefinement)
         : await ocrRegionStitched(job.imageEl, job.bbox, images, applyOcrRefinement);
       // Shadow-mode difficulty classification: logs [DifficultyClassifier] for
@@ -4041,9 +4100,21 @@ function bootForPage() {
       );
       job._ocrProvider   = provider;
       job._ocrConfidence = confidence;
+      // Low-confidence fallback: send crop to vision LLM for combined OCR+translate.
+      // Only fires when BYOK is configured; result stored so runTranslate can skip.
+      if (typeof confidence === 'number' && confidence < 50 && dataUrl) {
+        const visionResult = await visionOcrTranslate(dataUrl);
+        if (visionResult) {
+          job._visionTranslated = visionResult;
+          console.log(`[WebtoonTranslate] Vision LLM OCR+translate (conf=${confidence}):`, visionResult);
+        }
+      }
       return text;
     },
-    runTranslate:  (job) => autoTranslate(job.originalText),
+    runTranslate: (job) => {
+      if (job._visionTranslated) return job._visionTranslated;
+      return autoTranslate(job.originalText);
+    },
     findOverlap:   findOverlapForBbox,
     confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'This region looks like it overlaps an existing translation. Create a new one here anyway?'),
     onTooSmall: () => showToast('Selected region is too small to recognize text — drag/select a larger area', '#f59e0b'),
