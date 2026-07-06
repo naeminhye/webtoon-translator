@@ -22,7 +22,7 @@ ort.env.wasm.simd       = true; // SIMD is supported in all modern Chrome
 // ── Constants ────────────────────────────────────────────────────────────────
 const MODEL_URL    = chrome.runtime.getURL('models/bubble-detector.onnx');
 const INPUT_SIZE   = 640;   // model expects 640×640 input
-const CONF_THRESH  = 0.45;  // minimum detection confidence
+const CONF_THRESH  = 0.15;  // minimum detection confidence
 const IOU_THRESH   = 0.45;  // NMS IOU threshold
 
 // ── Session lifecycle ────────────────────────────────────────────────────────
