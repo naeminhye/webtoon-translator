@@ -3951,20 +3951,25 @@ function bootForPage() {
       const visibleImgs = _getVisibleImages(images);
       if (!visibleImgs.length) { showToast('No panel images in viewport', '#94a3b8'); return; }
 
-      // Collect bboxes from ONNX cache (pre-warmed by warmOnnxCache)
+      // Collect bboxes from ONNX cache; trigger warm for any image not yet cached
+      showToast('Detecting bubbles…', '#6366f1');
       const bboxItems = [];
+      let totalDetected = 0;
       for (const img of visibleImgs) {
-        const cached = onnxBboxCache.get(img.src);
+        let cached = onnxBboxCache.get(img.src);
+        if (!cached) { warmOnnxCache(img); cached = onnxBboxCache.get(img.src); }
         if (!cached) continue;
         const res = await cached;
         if (!res?.ok) continue;
+        const imageIndex = images.indexOf(img);
         for (const bbox of (res.bboxes || [])) {
-          const imageIndex = images.indexOf(img);
+          totalDetected++;
           if (findOverlapForBbox(bbox, imageIndex) > 0.3) continue; // already translated
           bboxItems.push({ img, bbox });
         }
       }
-      if (!bboxItems.length) { showToast('All bubbles already translated', '#22c55e'); return; }
+      if (!totalDetected) { showToast('No speech bubbles detected — ONNX model may still be loading', '#f59e0b'); return; }
+      if (!bboxItems.length) { showToast('All bubbles in viewport already translated', '#22c55e'); return; }
 
       // Sort reading order: top-to-bottom, left-to-right (absolute page Y)
       bboxItems.sort((a, b) => {
