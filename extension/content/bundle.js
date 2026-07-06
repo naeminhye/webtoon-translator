@@ -2126,7 +2126,8 @@ class JobOverlayRenderer {
     el.className = `wt-job-overlay wt-job-${job.status}${this._isKakao ? ' wt-job-fixed' : ''}`;
     el.dataset.status = job.status;
 
-    const labels = { queued: 'Pending…', ocr: 'Scanning text…', translating: 'Translating…' };
+    const translatingLabel = job._translateProvider === 'byok' ? 'Asking LLM…' : 'Translating…';
+    const labels = { queued: 'Pending…', ocr: 'Scanning text…', translating: translatingLabel };
     const label = job.status === 'error' ? (job.errorMessage || 'Error') : (labels[job.status] || '');
     const cancellable = job.status !== 'error';
     el.innerHTML = `
@@ -2919,14 +2920,8 @@ function targetLanguageDisplayName(langCode) {
 
 // ── LLM prompt formatting (manual "Test LLM" preview only, see LlmTestPopover) ──
 // Plain string formatting (title + tags + synopsis + OCR text) — no template
-// engine and no LLM-based compression, consistent with the earlier decision to
-// keep Story Context assembly simple. Character memory / chapter summary
-// aren't built yet, so they're intentionally omitted here rather than stubbed
-// with placeholder text; nothing built from this function is wired into the
-// automatic translation pipeline (see autoTranslate()) — it only feeds the
-// manual per-region preview/test popover. Only one call site exists (the
-// "Test LLM" button handler below), so adding the targetLang param here can't
-// unexpectedly change behavior anywhere else.
+// engine and no LLM-based compression. Used by both the automatic BYOK
+// translation pipeline (autoTranslate) and the manual "Test LLM" preview popover.
 function formatLlmPrompt(storyContext, ocrText, targetLang) {
   const lines = [];
   if (storyContext?.title)          lines.push(`Title: ${storyContext.title}`);
@@ -3448,15 +3443,31 @@ function stitchClips(clips) {
   }
 }
 
-async function autoTranslate(text) {
+async function autoTranslate(text, { job } = {}) {
   const s = await chrome.storage.local.get({
     'wt:translate-provider': 'google',
     'wt:translate-lang':     'vi',
     'wt:deepl-key':          '',
+    'wt:byok-key':           '',
+    'wt:byok-provider':      '',
+    'wt:byok-model':         '',
   });
   const provider   = s['wt:translate-provider'];
   const targetLang = s['wt:translate-lang'];
   if (provider === 'none') return null;
+
+  if (provider === 'byok') {
+    const apiKey = s['wt:byok-key'];
+    const provId = s['wt:byok-provider'];
+    const model  = s['wt:byok-model'];
+    if (!apiKey || !provId || !model) throw new Error('BYOK LLM not configured — add provider/key/model in Settings');
+    const adapter = getLlmAdapter(provId);
+    if (!adapter) throw new Error(`Unknown BYOK provider: ${provId}`);
+    if (job) { job._translateProvider = 'byok'; }
+    const storyContext = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
+    const prompt = formatLlmPrompt(storyContext, text, targetLang);
+    return adapter.callApi(apiKey, model, prompt);
+  }
 
   if (provider === 'deepl') {
     const apiKey = s['wt:deepl-key'];
@@ -3474,9 +3485,7 @@ async function autoTranslate(text) {
     return data.translations[0].text;
   }
 
-  // Google Translate (unofficial free endpoint) — also the fallback for
-  // 'byok', which isn't wired into this automatic pipeline yet (see
-  // callByokLlm/LlmTestPopover for the manual per-region preview instead).
+  // Google Translate (unofficial free endpoint)
   const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -4093,9 +4102,15 @@ function bootForPage() {
       }
       return text;
     },
-    runTranslate: (job) => {
+    runTranslate: async (job) => {
       if (job._visionTranslated) return job._visionTranslated;
-      return autoTranslate(job.originalText);
+      // Peek at provider so we can update the overlay label before the API call starts
+      const { 'wt:translate-provider': prov = 'google' } = await chrome.storage.local.get('wt:translate-provider');
+      if (prov === 'byok') {
+        job._translateProvider = 'byok';
+        jobOverlayRenderer.render(job); // re-render with "Asking LLM…"
+      }
+      return autoTranslate(job.originalText, { job });
     },
     findOverlap:   findOverlapForBbox,
     confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'This region looks like it overlaps an existing translation. Create a new one here anyway?'),
