@@ -54,14 +54,5 @@
     "default_popup": "popup/popup.html"
   },
 
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "vendor/ort/ort-wasm-simd.wasm",
-        "vendor/ort/ort-wasm.wasm",
-        "models/bubble-detector.onnx"
-      ],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  "web_accessible_resources": []
 }

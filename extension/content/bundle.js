@@ -21,7 +21,7 @@ const MSG    = {
   OCR_STITCH:        'OCR_STITCH',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
   CROP_IMAGE:        'CROP_IMAGE',
-  DETECT_BUBBLES:    'DETECT_BUBBLES',
+
 };
 
 // Background opacity for the translation caption box — a fully-opaque overlay
@@ -2065,7 +2065,7 @@ class JobManager {
         this._onStatusChange(job);
         return;
       }
-      const _detSrc = job.source === 'onnx' ? 'ONNX' : job.source === 'auto' ? 'flood-fill' : 'manual';
+      const _detSrc = job.source === 'auto' ? 'flood-fill' : 'manual';
       console.log(`[WebtoonTranslate] OCR text (${job._ocrProvider ?? 'unknown'}, conf=${job._ocrConfidence ?? '?'}, detection=${_detSrc}):`, ocrText);
       job.status = 'translating';
       this._onStatusChange(job);
@@ -3773,54 +3773,6 @@ function bootForPage() {
   let annotationCount = 0;
   let disposed        = false;
 
-  // ONNX bbox cache: img.src → Promise<{ok,bboxes}|null>
-  // onnxResultCache stores the resolved value so handleAutoDetectClick can use
-  // it instantly without awaiting a still-pending Promise.
-  const onnxBboxCache   = new Map(); // src → Promise
-  const onnxResultCache = new Map(); // src → resolved {ok,bboxes}
-  let onnxAvailable     = null; // null=unknown, true=ready, false=failed
-
-  // Serial warmup queue: process one image at a time so background CDN fetches
-  // don't saturate the service worker and block OCR CROP_IMAGE requests.
-  const _onnxQueue  = [];
-  let   _onnxActive = false;
-  async function _drainOnnxQueue() {
-    if (_onnxActive) return;
-    _onnxActive = true;
-    while (_onnxQueue.length) {
-      const img = _onnxQueue.shift();
-      if (!img.src || onnxBboxCache.has(img.src)) continue; // already queued/done
-      let dataUrl = null;
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width  = img.naturalWidth  || img.width;
-        canvas.height = img.naturalHeight || img.height;
-        if (canvas.width > 0 && canvas.height > 0) {
-          canvas.getContext('2d').drawImage(img, 0, 0);
-          dataUrl = canvas.toDataURL('image/png');
-        }
-      } catch (_e) { /* cross-origin — background will fetch */ }
-      console.log('[WebtoonTranslate] ONNX warmup', img.src.slice(-40), dataUrl ? '(canvas)' : '(fetch)');
-      const p = sendToBackground({ type: MSG.DETECT_BUBBLES, payload: { imageUrl: img.src, dataUrl } })
-        .then(res => {
-          console.log('[WebtoonTranslate] ONNX result', img.src.slice(-40), res?.ok ? `${res.bboxes?.length} bubbles` : `FAIL: ${res?.error}`);
-          onnxResultCache.set(img.src, res);
-          return res;
-        })
-        .catch(() => null);
-      onnxBboxCache.set(img.src, p);
-      await p; // wait for this image before starting the next one
-    }
-    _onnxActive = false;
-  }
-
-  function warmOnnxCache(img) {
-    if (onnxAvailable === false) return;
-    if (!img.src || onnxBboxCache.has(img.src) || _onnxQueue.includes(img)) return;
-    _onnxQueue.push(img);
-    _drainOnnxQueue();
-  }
-
   // Build floating toggle button (Read mode only)
   const toggleBtn = buildToggleButton();
 
@@ -3952,29 +3904,9 @@ function bootForPage() {
     } else {
       loadAndRender().then(updateProgressBar);
       checkStorageQuota();
-      // Warm ONNX cache only for images in (or near) the current viewport.
-      // Firing all 50+ panel images at once floods the service worker queue and
-      // delays every result by 6+ seconds due to sequential WASM inference.
-      // Remaining images are warmed on scroll via the scroll listener below.
-      setTimeout(() => warmOnnxNearViewport(), 500);
     }
   };
   tryGetImages();
-
-  // Warm images within 2 viewport-heights of the current scroll position.
-  // Called on page load and on scroll (debounced).
-  function warmOnnxNearViewport() {
-    const vhRange = window.innerHeight * 2;
-    images.forEach(img => {
-      const r = img.getBoundingClientRect();
-      if (r.bottom > -vhRange && r.top < window.innerHeight + vhRange) warmOnnxCache(img);
-    });
-  }
-  let _scrollWarmTimer = null;
-  window.addEventListener('scroll', () => {
-    clearTimeout(_scrollWarmTimer);
-    _scrollWarmTimer = setTimeout(warmOnnxNearViewport, 300);
-  }, { passive: true });
 
   const stopWatching = adapter.watchNewImages(async (newImages) => {
     const added = newImages.filter(img => !images.includes(img));
@@ -3984,7 +3916,6 @@ function bootForPage() {
     images = [...images, ...added].sort((a, b) =>
       a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
     );
-    setTimeout(() => warmOnnxNearViewport(), 500);
     if (readScanEnabled) {
       if (isKakao) fixedLayer.enable(images);
       else added.forEach(img => selector.attachImage(img, images.indexOf(img)));
@@ -4217,38 +4148,6 @@ function bootForPage() {
   // (vs. a drag) auto-detects the bubble under the cursor on every site
   // instead of only the ones using BBoxSelector.
   async function handleAutoDetectClick({ img, clickX, clickY, imgRect, imageIndex }) {
-    // Check ONNX result cache (instant — resolved value, no await needed).
-    // Falls through to flood-fill if ONNX hasn't finished yet or found 0 bboxes.
-    const onnxResult = onnxResultCache.get(img.src);
-    if (onnxResult) {
-      if (onnxResult.ok && onnxResult.bboxes?.length) {
-        const cx = (clickX / imgRect.width)  * 100;
-        const cy = (clickY / imgRect.height) * 100;
-        const hit = onnxResult.bboxes.find(b =>
-          cx >= b.x && cx <= b.x + b.w &&
-          cy >= b.y && cy <= b.y + b.h
-        );
-        if (hit) {
-          console.log('[WebtoonTranslate] Auto-detect: ONNX hit', hit);
-          await createJobFromSelection({ bbox: { ...hit, source: 'onnx' }, imageEl: img, imageIndex });
-          return;
-        }
-        console.log('[WebtoonTranslate] Auto-detect: ONNX has', onnxResult.bboxes.length, 'bboxes but none contain click point — falling to flood-fill');
-      } else {
-        console.log('[WebtoonTranslate] Auto-detect: ONNX returned 0 bboxes — falling to flood-fill');
-      }
-    } else {
-      // ONNX not yet done for this image — start warmup if not already queued
-      if (!onnxBboxCache.has(img.src)) {
-        console.log('[WebtoonTranslate] Auto-detect: no ONNX cache for this image — warming + falling to flood-fill');
-        warmOnnxCache(img);
-      } else {
-        console.log('[WebtoonTranslate] Auto-detect: ONNX still in-flight — falling to flood-fill immediately');
-      }
-    }
-
-    // Fallback: flood-fill detector (works offline, no model required)
-    console.log('[WebtoonTranslate] Auto-detect: running flood-fill at', Math.round(clickX), Math.round(clickY));
     const { bboxes, debug } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
     if (!bboxes.length) {
       console.log('[WebtoonTranslate] Auto-detect: flood-fill returned no bbox', debug);
@@ -4565,19 +4464,6 @@ function bootForPage() {
       panel?.toggle();
     }
     if (message.type === 'TRIGGER_CLEAR')  triggerClear();
-    if (message.type === 'ONNX_STATUS') {
-      const { status, message: msg } = message.payload || {};
-      if (status === 'loading-model') {
-        showToast('Loading ONNX bubble detector model…', '#6366f1', 2500);
-      } else if (status === 'model-ready') {
-        onnxAvailable = true;
-        // Now that the session is ready, warm the cache for all loaded images.
-        setTimeout(() => images.forEach(warmOnnxCache), 100);
-      } else if (status === 'error') {
-        onnxAvailable = false;
-        showToast(`✗ ONNX error: ${msg || 'unknown'}`, '#ef4444', 5000);
-      }
-    }
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
