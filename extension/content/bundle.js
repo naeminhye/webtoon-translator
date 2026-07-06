@@ -2964,7 +2964,11 @@ class NaverAdapter {
       const src = img.src || '';
       if (src.includes('/thumbnail/') || src.includes('/title/') ||
           src.includes('/banner/')    || src.includes('bg_transparency')) return false;
-      return (img.naturalWidth || img.offsetWidth || img.width) >= 300;
+      const w = img.naturalWidth  || img.offsetWidth  || img.width  || 0;
+      const h = img.naturalHeight || img.offsetHeight || img.height || 0;
+      // Must be at least 300px wide AND taller than wide (portrait orientation).
+      // Landscape/square images are likely banners or decorative elements, not webtoon panels.
+      return w >= 300 && h > w;
     };
     const seen = new Set(), imgs = [];
     for (const sel of ['.wt_viewer','#comic_view_area','.viewer_lst','.viewer_img','.toon_img','.swiper-wrapper']) {
@@ -3824,9 +3828,6 @@ function bootForPage() {
   }
   scanBtn.addEventListener('click', () => setReadScan(!readScanEnabled));
 
-  // ── ONNX "Scan All" button ────────────────────────────────────────────────
-  // Runs the ONNX bubble-detector model over every loaded panel image and
-
   // One-time hint (persisted across sessions) explaining click-to-auto-detect,
   // since the overlay cursor alone doesn't make that obvious. Kakao only
   // supports drag-select (no auto-detect), so its crosshair cursor already
@@ -4191,17 +4192,26 @@ function bootForPage() {
           cy >= b.y && cy <= b.y + b.h
         );
         if (hit) {
+          console.log('[WebtoonTranslate] Auto-detect: ONNX hit', hit);
           await createJobFromSelection({ bbox: { ...hit, source: 'onnx' }, imageEl: img, imageIndex });
           return;
         }
+        console.log('[WebtoonTranslate] Auto-detect: ONNX has', result.bboxes.length, 'bboxes but none contain click point — falling to flood-fill');
+      } else {
+        console.log('[WebtoonTranslate] Auto-detect: ONNX cached but 0 bboxes — falling to flood-fill');
       }
     } else {
+      console.log('[WebtoonTranslate] Auto-detect: no ONNX cache for this image — warming + falling to flood-fill');
       warmOnnxCache(img); // not yet requested — start now for next click
     }
 
     // Fallback: flood-fill detector (works offline, no model required)
-    const { bboxes } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
-    if (!bboxes.length) return; // validity check failed — fall back to manual drag-to-select
+    console.log('[WebtoonTranslate] Auto-detect: running flood-fill at', Math.round(clickX), Math.round(clickY));
+    const { bboxes, debug } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
+    if (!bboxes.length) {
+      console.log('[WebtoonTranslate] Auto-detect: flood-fill returned no bbox', debug);
+      return; // validity check failed — fall back to manual drag-to-select
+    }
     // A waist-split click can yield two touching bubbles at once — each is
     // translated as its own independent job.
     for (const bbox of bboxes) {
