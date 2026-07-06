@@ -3547,11 +3547,14 @@ function preprocessImageForVision(dataUrl, levels = 8) {
 // Returns the translated string, or null if BYOK is not configured or fails.
 async function visionOcrTranslate(dataUrl) {
   const s = await chrome.storage.local.get({
-    'wt:byok-key':          '',
-    'wt:byok-provider':     '',
-    'wt:byok-model':        '',
-    'wt:translate-lang':    'vi',
+    'wt:translate-provider': 'google',
+    'wt:byok-key':           '',
+    'wt:byok-provider':      '',
+    'wt:byok-model':         '',
+    'wt:translate-lang':     'vi',
   });
+  // Only activate when user has explicitly chosen BYOK as their translation provider
+  if (s['wt:translate-provider'] !== 'byok') return null;
   const apiKey  = s['wt:byok-key'];
   const provId  = s['wt:byok-provider'];
   const model   = s['wt:byok-model'];
