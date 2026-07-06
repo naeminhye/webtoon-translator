@@ -3780,30 +3780,45 @@ function bootForPage() {
   const onnxResultCache = new Map(); // src → resolved {ok,bboxes}
   let onnxAvailable     = null; // null=unknown, true=ready, false=failed
 
+  // Serial warmup queue: process one image at a time so background CDN fetches
+  // don't saturate the service worker and block OCR CROP_IMAGE requests.
+  const _onnxQueue  = [];
+  let   _onnxActive = false;
+  async function _drainOnnxQueue() {
+    if (_onnxActive) return;
+    _onnxActive = true;
+    while (_onnxQueue.length) {
+      const img = _onnxQueue.shift();
+      if (!img.src || onnxBboxCache.has(img.src)) continue; // already queued/done
+      let dataUrl = null;
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width  = img.naturalWidth  || img.width;
+        canvas.height = img.naturalHeight || img.height;
+        if (canvas.width > 0 && canvas.height > 0) {
+          canvas.getContext('2d').drawImage(img, 0, 0);
+          dataUrl = canvas.toDataURL('image/png');
+        }
+      } catch (_e) { /* cross-origin — background will fetch */ }
+      console.log('[WebtoonTranslate] ONNX warmup', img.src.slice(-40), dataUrl ? '(canvas)' : '(fetch)');
+      const p = sendToBackground({ type: MSG.DETECT_BUBBLES, payload: { imageUrl: img.src, dataUrl } })
+        .then(res => {
+          console.log('[WebtoonTranslate] ONNX result', img.src.slice(-40), res?.ok ? `${res.bboxes?.length} bubbles` : `FAIL: ${res?.error}`);
+          onnxResultCache.set(img.src, res);
+          return res;
+        })
+        .catch(() => null);
+      onnxBboxCache.set(img.src, p);
+      await p; // wait for this image before starting the next one
+    }
+    _onnxActive = false;
+  }
+
   function warmOnnxCache(img) {
-    if (onnxAvailable === false) return; // model confirmed failed — don't retry
-    if (!img.src || onnxBboxCache.has(img.src)) return;
-    // Try to canvas-capture the full image from the DOM so background worker doesn't
-    // need to re-fetch from CDN (Naver/Kakao hotlink protection blocks service-worker fetches).
-    let dataUrl = null;
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width  = img.naturalWidth  || img.width;
-      canvas.height = img.naturalHeight || img.height;
-      if (canvas.width > 0 && canvas.height > 0) {
-        canvas.getContext('2d').drawImage(img, 0, 0);
-        dataUrl = canvas.toDataURL('image/png');
-      }
-    } catch (_e) { /* cross-origin tainted canvas — fall back to service-worker fetch */ }
-    console.log('[WebtoonTranslate] ONNX warmup request for', img.src.slice(-40), dataUrl ? '(canvas)' : '(fetch fallback)');
-    const p = sendToBackground({ type: MSG.DETECT_BUBBLES, payload: { imageUrl: img.src, dataUrl } })
-      .then(res => {
-        console.log('[WebtoonTranslate] ONNX result for', img.src.slice(-40), res?.ok ? `${res.bboxes?.length} bubbles` : `FAIL: ${res?.error}`);
-        onnxResultCache.set(img.src, res); // store resolved value for instant lookup
-        return res;
-      })
-      .catch(() => null);
-    onnxBboxCache.set(img.src, p);
+    if (onnxAvailable === false) return;
+    if (!img.src || onnxBboxCache.has(img.src) || _onnxQueue.includes(img)) return;
+    _onnxQueue.push(img);
+    _drainOnnxQueue();
   }
 
   // Build floating toggle button (Read mode only)
