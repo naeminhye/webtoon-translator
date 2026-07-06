@@ -105,9 +105,12 @@
       super({ id: 'gemini', label: 'Gemini', modelPlaceholder: 'gemini-2.5-flash' });
     }
     _extractText(data) {
-      // Filter out thinking/reasoning parts (thought:true) — present in Gemini 2.5+ thinking models
+      // Filter flagged thinking parts (thought:true), then take only the last text part.
+      // Gemini 2.5 thinking models sometimes emit reasoning as an unflagged first part
+      // followed by the actual answer as a second part — joining all would include the reasoning.
       const parts = (data.candidates?.[0]?.content?.parts || []).filter(p => !p.thought);
-      return parts.map(p => p.text || '').join('');
+      const texts = parts.map(p => p.text || '').filter(Boolean);
+      return texts[texts.length - 1] ?? '';
     }
     async callApi(apiKey, model, prompt) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
