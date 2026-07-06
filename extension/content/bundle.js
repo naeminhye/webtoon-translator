@@ -3443,7 +3443,8 @@ function stitchClips(clips) {
   }
 }
 
-async function autoTranslate(text, { job, storyCtx } = {}) {
+// forceLlm: caller (runTranslate) has already decided to use LLM — skip provider check
+async function autoTranslate(text, { job, storyCtx, forceLlm = false } = {}) {
   const s = await chrome.storage.local.get({
     'wt:translate-provider': 'google',
     'wt:translate-lang':     'vi',
@@ -3452,7 +3453,7 @@ async function autoTranslate(text, { job, storyCtx } = {}) {
     'wt:byok-provider':      '',
     'wt:byok-model':         '',
   });
-  const provider   = s['wt:translate-provider'];
+  const provider   = forceLlm ? 'byok' : s['wt:translate-provider'];
   const targetLang = s['wt:translate-lang'];
   if (provider === 'none') return null;
 
@@ -4071,8 +4072,9 @@ function bootForPage() {
       const confNorm = typeof confidence === 'number' ? confidence / 100 : null;
       const difficulty = _classifyPostOcr(text, confNorm, job.skewAngle ?? 0);
       console.log(`[DifficultyClassifier] tier=${difficulty.tier} reason=${difficulty.reason} skew=${difficulty.skewAngle?.toFixed(1)} conf=${confNorm?.toFixed(2)} text="${text?.slice(0, 40)}"`);
-      job._ocrProvider   = provider;
-      job._ocrConfidence = confidence;
+      job._ocrProvider    = provider;
+      job._ocrConfidence  = confidence;
+      job._difficultyTier = difficulty.tier;
       // Vision-tier: send crop to vision LLM for combined OCR+translate.
       // Only fires when BYOK is configured; result stored so runTranslate can skip.
       if (difficulty.tier === DIFFICULTY_TIERS.VISION) {
@@ -4103,16 +4105,23 @@ function bootForPage() {
     },
     runTranslate: async (job) => {
       if (job._visionTranslated) return job._visionTranslated;
-      // Peek at provider so we can update the overlay label before the API call starts
-      const { 'wt:translate-provider': prov = 'google' } = await chrome.storage.local.get('wt:translate-provider');
-      if (prov === 'byok') {
+      const s = await chrome.storage.local.get({ 'wt:translate-provider': 'google', 'wt:byok-mode': 'always' });
+      const prov     = s['wt:translate-provider'];
+      const byokMode = s['wt:byok-mode'];
+      // In smart mode, only route hard/vision tier to LLM; easy/medium use Google.
+      const useLlm = prov === 'byok' && (
+        byokMode === 'always' ||
+        job._difficultyTier === DIFFICULTY_TIERS.HARD ||
+        job._difficultyTier === DIFFICULTY_TIERS.VISION
+      );
+      if (useLlm) {
         job._translateProvider = 'byok';
         jobOverlayRenderer.render(job); // re-render with "Asking LLM…"
+        const storyCtx = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
+        return autoTranslate(job.originalText, { job, storyCtx, forceLlm: true });
       }
-      const storyCtx = prov === 'byok'
-        ? await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null)
-        : null;
-      return autoTranslate(job.originalText, { job, storyCtx });
+      // Google/DeepL path (also used for BYOK smart mode on easy/medium tiers)
+      return autoTranslate(job.originalText, { job, forceLlm: false });
     },
     findOverlap:   findOverlapForBbox,
     confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'This region looks like it overlaps an existing translation. Create a new one here anyway?'),

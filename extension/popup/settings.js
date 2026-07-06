@@ -7,6 +7,7 @@ const DEEPL_KEY_STR          = 'wt:deepl-key';
 const BYOK_KEY_STR           = 'wt:byok-key';
 const BYOK_PROVIDER_KEY      = 'wt:byok-provider';
 const BYOK_MODEL_STR         = 'wt:byok-model';
+const BYOK_MODE_KEY          = 'wt:byok-mode';
 const OVERLAY_MODE_KEY       = 'wt:overlay-mode';
 
 // Mirrors background/worker.js — keep in sync.
@@ -52,6 +53,7 @@ async function initTranslationSettings() {
     [BYOK_KEY_STR]:           '',
     [BYOK_PROVIDER_KEY]:      '',
     [BYOK_MODEL_STR]:         '',
+    [BYOK_MODE_KEY]:          'always',
   });
 
   const radios = document.querySelectorAll('input[name="translate-provider"]');
@@ -105,6 +107,13 @@ async function initTranslationSettings() {
   providerSelect.value = byokProvider;
   applyByokProviderPlaceholder(byokProvider);
   if (byokModel) $('byok-model').value = byokModel;
+
+  // BYOK mode radio
+  const byokModeRadios = document.querySelectorAll('input[name="byok-mode"]');
+  byokModeRadios.forEach(r => { r.checked = r.value === stored[BYOK_MODE_KEY]; });
+  byokModeRadios.forEach(r => r.addEventListener('change', async () => {
+    if (r.checked) await chrome.storage.local.set({ [BYOK_MODE_KEY]: r.value });
+  }));
 
   providerSelect.addEventListener('change', async (e) => {
     await chrome.storage.local.set({ [BYOK_PROVIDER_KEY]: e.target.value });

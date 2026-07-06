@@ -87,7 +87,7 @@
                     Bring Your Own Key
                   </div>
                   <div class="engine-badge engine-badge-offline">LLM · API key required</div>
-                  <p class="engine-detail">Use your own LLM API key (OpenAI, Anthropic, etc). Currently manual preview/test only — not yet wired into automatic translation.</p>
+                  <p class="engine-detail">Use your own LLM API key (OpenAI, Anthropic, etc). Translates automatically with story context for better accuracy.</p>
                 </div>
               </label>
             </div>
@@ -114,7 +114,24 @@
             </div>
             <label class="field-label" style="margin-top:12px">Model</label>
             <input type="text" id="byok-model" class="text-input" placeholder="gpt-4o-mini" autocomplete="off" />
-            <p class="field-hint">Which provider your key is for, and the exact model name to request. Used to build the request when you test a prompt on a region.</p>
+            <p class="field-hint">Which provider your key is for, and the exact model name to request.</p>
+            <label class="field-label" style="margin-top:16px">Translation Mode</label>
+            <div class="byok-mode-group">
+              <label class="byok-mode-option">
+                <input type="radio" name="byok-mode" value="always" />
+                <span class="byok-mode-label">
+                  <span class="byok-mode-title">Always use LLM</span>
+                  <span class="byok-mode-desc">Every bubble is translated by your LLM — best quality, higher API cost.</span>
+                </span>
+              </label>
+              <label class="byok-mode-option">
+                <input type="radio" name="byok-mode" value="smart" />
+                <span class="byok-mode-label">
+                  <span class="byok-mode-title">Smart (Hybrid)</span>
+                  <span class="byok-mode-desc">Simple text uses Google Translate (free, fast); complex or low-confidence text uses your LLM.</span>
+                </span>
+              </label>
+            </div>
           </div>
 
           <!-- DeepL API key (shown when DeepL selected) -->
