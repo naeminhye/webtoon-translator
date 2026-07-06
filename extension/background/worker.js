@@ -2,6 +2,25 @@
  * background/worker.js — chrome.storage.local persistence + OCR/translation pipeline
  */
 
+// Naver/Kakao CDNs enforce a Referer check — requests without one get
+// ERR_CONNECTION_RESET. Derive a plausible Referer from the image URL so
+// every cross-origin panel fetch succeeds without hardcoding per-site values.
+function _refererFor(imageUrl) {
+  try {
+    const u = new URL(imageUrl);
+    // pstatic.net → Naver; fallback to same origin as caller
+    if (u.hostname.endsWith('pstatic.net')) return 'https://comic.naver.com/';
+    if (u.hostname.endsWith('kakaocdn.net') || u.hostname.endsWith('kakao.com')) return 'https://page.kakao.com/';
+    return u.origin + '/';
+  } catch { return ''; }
+}
+
+function _fetchImage(imageUrl) {
+  const referer = _refererFor(imageUrl);
+  const headers = referer ? { 'Referer': referer } : {};
+  return fetch(imageUrl, { credentials: 'omit', headers });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case 'SAVE_TRANSLATIONS':   handleSave(message.payload).then(sendResponse);   return true;
@@ -467,7 +486,7 @@ function cleanKoreanOcrText(text) {
 async function handleOcrStitch({ clips, refineCrop = true }) {
   // Fetch and crop each clip, normalize to same display scale, stitch vertically, OCR
   const items = await Promise.all(clips.map(async ({ imageUrl, bbox, dispW }) => {
-    const res  = await fetch(imageUrl, { credentials: 'omit' });
+    const res  = await _fetchImage(imageUrl);
     const blob = await res.blob();
     const bm   = await createImageBitmap(blob);
     const sx = (bbox.x / 100) * bm.width;
@@ -603,7 +622,7 @@ async function paddleRun(dataUrl) {
 // ── Image fetch + crop (service-worker side, full cross-origin access) ────────
 
 async function fetchAndCrop(imageUrl, bbox) {
-  const res    = await fetch(imageUrl, { credentials: 'omit' });
+  const res    = await _fetchImage(imageUrl);
   const blob   = await res.blob();
   const bitmap = await createImageBitmap(blob);
 
@@ -636,7 +655,7 @@ async function fetchAndCrop(imageUrl, bbox) {
  * still lines up with the returned image.
  */
 async function fetchAndCropRaw(imageUrl, bbox) {
-  const res    = await fetch(imageUrl, { credentials: 'omit' });
+  const res    = await _fetchImage(imageUrl);
   const blob   = await res.blob();
   const bitmap = await createImageBitmap(blob);
 
@@ -702,7 +721,7 @@ async function handleDetectBubbles({ imageUrl }) {
   // Fetch the panel image cross-origin in the service worker
   let dataUrl;
   try {
-    const res  = await fetch(imageUrl, { credentials: 'omit' });
+    const res  = await _fetchImage(imageUrl);
     const blob = await res.blob();
     dataUrl    = await new Promise((resolve, reject) => {
       const reader   = new FileReader();
