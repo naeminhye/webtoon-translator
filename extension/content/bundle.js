@@ -2781,16 +2781,16 @@ class SidePanel {
           const img    = this._images[imgIdx];
           const bubble = document.querySelector(`[data-ann-key="${key}"]`);
           if (bubble) {
-            // scrollIntoView can fail for position:absolute elements in some browsers;
-            // use absolute scrollTo for reliability.
-            const br = bubble.getBoundingClientRect();
-            const absTop = br.top + window.scrollY - (window.innerHeight - br.height) / 2;
-            window.scrollTo({ top: Math.max(0, absTop), behavior: 'smooth' });
+            // scrollIntoView handles all scroll containers (window, Ridi simplebar, etc.)
+            bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
           } else if (img) {
-            const r = img.getBoundingClientRect();
-            const ih = img.naturalHeight || img.height || r.height || img.offsetHeight || 500;
-            const absTop = r.top + window.scrollY + ((ann.bbox.y + ann.bbox.h / 2) / 100) * ih - window.innerHeight / 2;
-            window.scrollTo({ top: Math.max(0, absTop), behavior: 'smooth' });
+            // Bubble not rendered yet — scroll to the approximate position in the image.
+            // Use getBoundingClientRect().height (rendered px) not img.height (intrinsic
+            // canvas attribute) because bbox percentages are relative to display size.
+            const r  = img.getBoundingClientRect();
+            const ih = r.height || img.offsetHeight || 500;
+            const targetAbsY = window.scrollY + r.top + ((ann.bbox.y + ann.bbox.h / 2) / 100) * ih;
+            window.scrollTo({ top: Math.max(0, targetAbsY - window.innerHeight / 2), behavior: 'smooth' });
           } else {
             return;
           }
@@ -3906,35 +3906,41 @@ function bootForPage() {
 
   // ── image loading ──────────────────────────────────────────────────────
 
-  // Bomtoon: show a loading overlay while waiting for images to decode
+  // Bomtoon: show a small non-blocking badge while waiting for panels to decode.
+  // Positioned at bottom-left so it never covers the comic or the right-side panel.
+  // pointer-events:none so the user can still scroll/interact freely.
   const isBomtoon = location.hostname === 'www.bomtoon.com';
-  let _loadingOverlay = null;
+  let _loadingBadge = null;
   if (isBomtoon) {
-    _loadingOverlay = document.createElement('div');
-    _loadingOverlay.id = 'wt-loading-overlay';
-    _loadingOverlay.style.cssText = [
-      'position:fixed', 'inset:0', 'z-index:2147483647',
-      'display:flex', 'flex-direction:column', 'align-items:center', 'justify-content:center',
-      'background:rgba(0,0,0,0.45)', 'gap:14px', 'pointer-events:none',
-    ].join(';');
-    _loadingOverlay.innerHTML = `
-      <div style="width:44px;height:44px;border:4px solid rgba(255,255,255,0.2);border-top-color:#6366f1;border-radius:50%;animation:wt-spin 0.8s linear infinite;"></div>
-      <span style="color:#fff;font-size:14px;font-family:system-ui,sans-serif;opacity:0.85;">Đang tải bản dịch…</span>`;
     if (!document.getElementById('wt-spin-style')) {
       const st = document.createElement('style');
       st.id = 'wt-spin-style';
       st.textContent = '@keyframes wt-spin{to{transform:rotate(360deg)}}';
       document.head.appendChild(st);
     }
-    document.body.appendChild(_loadingOverlay);
+    _loadingBadge = document.createElement('div');
+    _loadingBadge.id = 'wt-loading-badge';
+    _loadingBadge.style.cssText = [
+      'position:fixed', 'bottom:20px', 'left:20px', 'z-index:2147483646',
+      'display:flex', 'align-items:center', 'gap:8px',
+      'background:#1e1b4b', 'color:#e0e7ff',
+      'font-size:12px', 'font-family:system-ui,sans-serif',
+      'padding:8px 14px', 'border-radius:20px',
+      'box-shadow:0 2px 10px rgba(0,0,0,0.4)',
+      'pointer-events:none', 'user-select:none',
+    ].join(';');
+    _loadingBadge.innerHTML =
+      `<div style="width:14px;height:14px;border:2px solid rgba(165,180,252,0.3);border-top-color:#a5b4fc;border-radius:50%;animation:wt-spin 0.8s linear infinite;flex-shrink:0;"></div>` +
+      `<span>Đang tải bản dịch…</span>`;
+    document.body.appendChild(_loadingBadge);
   }
 
-  function _hideLoadingOverlay() {
-    if (_loadingOverlay) {
-      _loadingOverlay.style.transition = 'opacity 0.3s';
-      _loadingOverlay.style.opacity = '0';
-      setTimeout(() => _loadingOverlay?.remove(), 320);
-      _loadingOverlay = null;
+  function _hideLoadingBadge() {
+    if (_loadingBadge) {
+      _loadingBadge.style.transition = 'opacity 0.4s';
+      _loadingBadge.style.opacity = '0';
+      setTimeout(() => _loadingBadge?.remove(), 420);
+      _loadingBadge = null;
     }
   }
 
@@ -3951,7 +3957,7 @@ function bootForPage() {
       }
       setTimeout(tryGetImages, 600);
     } else {
-      loadAndRender().then(() => { updateProgressBar(); _hideLoadingOverlay(); });
+      loadAndRender().then(() => { updateProgressBar(); _hideLoadingBadge(); });
       checkStorageQuota();
     }
   };
