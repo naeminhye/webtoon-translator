@@ -3444,7 +3444,7 @@ function stitchClips(clips) {
 }
 
 // forceLlm: caller (runTranslate) has already decided to use LLM — skip provider check
-async function autoTranslate(text, { job, storyCtx, forceLlm = false } = {}) {
+async function autoTranslate(text, { job, storyCtx, forceLlm = false, forceGoogle = false } = {}) {
   const s = await chrome.storage.local.get({
     'wt:translate-provider': 'google',
     'wt:translate-lang':     'vi',
@@ -3453,7 +3453,7 @@ async function autoTranslate(text, { job, storyCtx, forceLlm = false } = {}) {
     'wt:byok-provider':      '',
     'wt:byok-model':         '',
   });
-  const provider   = forceLlm ? 'byok' : s['wt:translate-provider'];
+  const provider   = forceGoogle ? 'google' : forceLlm ? 'byok' : s['wt:translate-provider'];
   const targetLang = s['wt:translate-lang'];
   if (provider === 'none') return null;
 
@@ -4125,9 +4125,10 @@ function bootForPage() {
           console.warn('[WebtoonTranslate] LLM translate failed, falling back to Google:', llmErr?.message || llmErr);
           showToast(`LLM error — falling back to Google Translate`, '#f59e0b');
         }
-        // Fallback to Google/DeepL when LLM fails or returns empty
+        // Fallback to Google when LLM fails or returns empty — forceGoogle bypasses
+        // the stored provider (which is still 'byok') to avoid retrying LLM.
         job._translateProvider = undefined;
-        return autoTranslate(job.originalText, { job, forceLlm: false });
+        return autoTranslate(job.originalText, { job, forceGoogle: true });
       }
       // Google/DeepL path (also used for BYOK smart mode on easy/medium tiers)
       return autoTranslate(job.originalText, { job, forceLlm: false });
