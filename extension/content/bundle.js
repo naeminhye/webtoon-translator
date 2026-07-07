@@ -4130,8 +4130,9 @@ function bootForPage() {
         job._translateProvider = undefined;
         return autoTranslate(job.originalText, { job, forceGoogle: true });
       }
-      // Google/DeepL path (also used for BYOK smart mode on easy/medium tiers)
-      return autoTranslate(job.originalText, { job, forceLlm: false });
+      // Google/DeepL path. When provider='byok' in smart mode (easy/medium tier),
+      // forceGoogle bypasses BYOK so we don't accidentally route to LLM via storage.
+      return autoTranslate(job.originalText, { job, forceGoogle: prov === 'byok' });
     },
     findOverlap:   findOverlapForBbox,
     confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'This region looks like it overlaps an existing translation. Create a new one here anyway?'),
