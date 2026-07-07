@@ -7,6 +7,7 @@ const DEEPL_KEY_STR          = 'wt:deepl-key';
 const BYOK_KEY_STR           = 'wt:byok-key';
 const BYOK_PROVIDER_KEY      = 'wt:byok-provider';
 const BYOK_MODEL_STR         = 'wt:byok-model';
+const BYOK_MODE_KEY          = 'wt:byok-mode';
 const OVERLAY_MODE_KEY       = 'wt:overlay-mode';
 
 // Mirrors background/worker.js — keep in sync.
@@ -52,6 +53,7 @@ async function initTranslationSettings() {
     [BYOK_KEY_STR]:           '',
     [BYOK_PROVIDER_KEY]:      '',
     [BYOK_MODEL_STR]:         '',
+    [BYOK_MODE_KEY]:          'always',
   });
 
   const radios = document.querySelectorAll('input[name="translate-provider"]');
@@ -59,9 +61,7 @@ async function initTranslationSettings() {
   function applyProvider(provider) {
     radios.forEach(r => { r.checked = r.value === provider; });
     $('deepl-key-row').classList.toggle('hidden', provider !== 'deepl');
-    $('deepl-key-saved').classList.add('hidden');
     $('byok-key-row').classList.toggle('hidden', provider !== 'byok');
-    $('byok-key-saved').classList.add('hidden');
   }
 
   // "none" (Disabled) was removed as an option — fall back a stored legacy
@@ -106,39 +106,65 @@ async function initTranslationSettings() {
   applyByokProviderPlaceholder(byokProvider);
   if (byokModel) $('byok-model').value = byokModel;
 
-  providerSelect.addEventListener('change', async (e) => {
-    await chrome.storage.local.set({ [BYOK_PROVIDER_KEY]: e.target.value });
-    applyByokProviderPlaceholder(e.target.value);
-  });
-
-  radios.forEach(r => r.addEventListener('change', async () => {
-    await chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: r.value });
-    applyProvider(r.value);
+  // BYOK mode radio
+  const byokModeRadios = document.querySelectorAll('input[name="byok-mode"]');
+  byokModeRadios.forEach(r => { r.checked = r.value === stored[BYOK_MODE_KEY]; });
+  byokModeRadios.forEach(r => r.addEventListener('change', async () => {
+    if (r.checked) await chrome.storage.local.set({ [BYOK_MODE_KEY]: r.value });
   }));
 
-  $('target-lang').addEventListener('change', async (e) => {
-    await chrome.storage.local.set({ [TRANSLATE_LANG_KEY]: e.target.value });
+  providerSelect.addEventListener('change', (e) => applyByokProviderPlaceholder(e.target.value));
+
+  radios.forEach(r => r.addEventListener('change', () => applyProvider(r.value)));
+
+  // Global Save button — validate then persist all translation settings at once
+  $('save-translation').addEventListener('click', async () => {
+    const provider = [...radios].find(r => r.checked)?.value || 'google';
+    const deeplKey = $('deepl-key').value.trim();
+    const byokKey  = $('byok-key').value.trim();
+    const byokProv = $('byok-provider').value;
+    const byokMod  = $('byok-model').value.trim();
+    const byokMode = [...document.querySelectorAll('input[name="byok-mode"]')].find(r => r.checked)?.value || 'always';
+    const lang     = $('target-lang').value;
+
+    // Validate: key required for paid providers
+    let valid = true;
+    $('deepl-key-error').classList.add('hidden');
+    $('byok-key-error').classList.add('hidden');
+    if (provider === 'deepl' && !deeplKey) {
+      $('deepl-key-error').classList.remove('hidden');
+      $('deepl-key').focus();
+      valid = false;
+    }
+    if (provider === 'byok' && !byokKey) {
+      $('byok-key-error').classList.remove('hidden');
+      $('byok-key').focus();
+      valid = false;
+    }
+    if (!valid) {
+      showSaveFeedback('Please enter an API key first.', 'error');
+      return;
+    }
+
+    await chrome.storage.local.set({
+      [TRANSLATE_PROVIDER_KEY]: provider,
+      [TRANSLATE_LANG_KEY]:     lang,
+      [DEEPL_KEY_STR]:          deeplKey,
+      [BYOK_KEY_STR]:           byokKey,
+      [BYOK_PROVIDER_KEY]:      byokProv,
+      [BYOK_MODEL_STR]:         byokMod,
+      [BYOK_MODE_KEY]:          byokMode,
+    });
+    showSaveFeedback('Settings saved!', 'success');
   });
 
-  $('save-deepl-key').addEventListener('click', async () => {
-    const key = $('deepl-key').value.trim();
-    await chrome.storage.local.set({ [DEEPL_KEY_STR]: key });
-    $('deepl-key-saved').classList.remove('hidden');
-    setTimeout(() => $('deepl-key-saved').classList.add('hidden'), 2500);
-  });
-
-  $('save-byok-key').addEventListener('click', async () => {
-    const key      = $('byok-key').value.trim();
-    const provider = $('byok-provider').value;
-    const model    = $('byok-model').value.trim();
-    await chrome.storage.local.set({ [BYOK_KEY_STR]: key, [BYOK_PROVIDER_KEY]: provider, [BYOK_MODEL_STR]: model });
-    $('byok-key-saved').classList.remove('hidden');
-    setTimeout(() => $('byok-key-saved').classList.add('hidden'), 2500);
-  });
-
-  $('byok-model').addEventListener('change', async (e) => {
-    await chrome.storage.local.set({ [BYOK_MODEL_STR]: e.target.value.trim() });
-  });
+  function showSaveFeedback(msg, type) {
+    const el = $('save-translation-feedback');
+    el.textContent = msg;
+    el.className = `save-feedback ${type}`;
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 2500);
+  }
 }
 
 async function initDisplaySettings() {

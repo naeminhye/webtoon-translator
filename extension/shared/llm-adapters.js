@@ -24,6 +24,9 @@
     async callApi(apiKey, model, prompt) {
       throw new Error(`${this.constructor.name} must implement callApi()`);
     }
+    async callVisionApi(apiKey, model, base64Data, mimeType, prompt) {
+      throw new Error(`${this.constructor.name} does not support vision input`);
+    }
     /* eslint-enable no-unused-vars */
   }
 
@@ -36,6 +39,19 @@
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || `OpenAI HTTP ${res.status}`);
+      return data.choices?.[0]?.message?.content ?? '';
+    }
+    async callVisionApi(apiKey, model, base64Data, mimeType, prompt) {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: [
+          { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Data}` } },
+          { type: 'text', text: prompt },
+        ] }] }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || `OpenAI HTTP ${res.status}`);
@@ -59,7 +75,24 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || `Anthropic HTTP ${res.status}`);
-      return data.content?.[0]?.text ?? '';
+      return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('') || '';
+    }
+    async callVisionApi(apiKey, model, base64Data, mimeType, prompt) {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model, max_tokens: 1024, messages: [{ role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64Data } },
+          { type: 'text', text: prompt },
+        ] }] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || `Anthropic HTTP ${res.status}`);
+      return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('') || '';
     }
   }
 
@@ -71,6 +104,14 @@
       // text, so an already-saved older model name isn't touched by this.
       super({ id: 'gemini', label: 'Gemini', modelPlaceholder: 'gemini-2.5-flash' });
     }
+    _extractText(data) {
+      // Filter flagged thinking parts (thought:true), then take only the last text part.
+      // Gemini 2.5 thinking models sometimes emit reasoning as an unflagged first part
+      // followed by the actual answer as a second part — joining all would include the reasoning.
+      const parts = (data.candidates?.[0]?.content?.parts || []).filter(p => !p.thought);
+      const texts = parts.map(p => p.text || '').filter(Boolean);
+      return texts[texts.length - 1] ?? '';
+    }
     async callApi(apiKey, model, prompt) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
       const res = await fetch(url, {
@@ -80,7 +121,21 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message || `Gemini HTTP ${res.status}`);
-      return (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+      return this._extractText(data);
+    }
+    async callVisionApi(apiKey, model, base64Data, mimeType, prompt) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [
+          { inlineData: { mimeType, data: base64Data } },
+          { text: prompt },
+        ] }] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || `Gemini HTTP ${res.status}`);
+      return this._extractText(data);
     }
   }
 

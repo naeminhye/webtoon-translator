@@ -21,6 +21,7 @@ const MSG    = {
   OCR_STITCH:        'OCR_STITCH',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
   CROP_IMAGE:        'CROP_IMAGE',
+
 };
 
 // Background opacity for the translation caption box — a fully-opaque overlay
@@ -1670,28 +1671,6 @@ async function classifyDifficulty(regionContour, ocrRunner) {
   return result;
 }
 
-/**
- * Shadow-mode variant used by the live detect -> OCR flow (see JobManager's
- * runOcr wiring), where OCR has ALREADY run for real translation purposes —
- * unlike classifyDifficulty, this never decides whether to call OCR, and
- * takes an already-computed `skewAngle` rather than raw contour points: the
- * flood-fill mask/contour only exists transiently inside
- * BubbleAutoDetector._extractBboxes (where the angle gets computed and
- * attached to the bbox), long before this runs — by the time OCR finishes,
- * the mask itself is out of scope. Exists purely to produce
- * [DifficultyClassifier] logs for tuning; never affects what OCR or
- * translation actually does. `skewAngle` is null for manually drag-selected
- * regions (no flood-fill contour was ever computed for those).
- */
-function logDifficultyClassificationShadow(skewAngle, text, confidence) {
-  const angle = skewAngle ?? 0;
-  const result = angle > DIFFICULTY_SKEW_ANGLE_THRESHOLD_DEG
-    ? { tier: DIFFICULTY_TIERS.VISION, reason: 'high-skew-angle', skewAngle: angle, ocrConfidence: confidence, text }
-    : _classifyPostOcr(text, confidence, angle);
-  _logDifficultyClassification(result);
-  return result;
-}
-
 // ── DetectionPreview ─────────────────────────────────────────────────────────
 // Adjustable bounding-box preview shown after a successful auto-detect, so the
 // user can correct the region before it's sent into the OCR pipeline. Also
@@ -2086,7 +2065,8 @@ class JobManager {
         this._onStatusChange(job);
         return;
       }
-      console.log('[WebtoonTranslate] OCR text:', ocrText);
+      const _detSrc = job.source === 'auto' ? 'flood-fill' : 'manual';
+      console.log(`[WebtoonTranslate] OCR text (${job._ocrProvider ?? 'unknown'}, conf=${job._ocrConfidence ?? '?'}, detection=${_detSrc}):`, ocrText);
       job.status = 'translating';
       this._onStatusChange(job);
       const translated = await this._runTranslate(job);
@@ -2146,7 +2126,8 @@ class JobOverlayRenderer {
     el.className = `wt-job-overlay wt-job-${job.status}${this._isKakao ? ' wt-job-fixed' : ''}`;
     el.dataset.status = job.status;
 
-    const labels = { queued: 'Pending…', ocr: 'Scanning text…', translating: 'Translating…' };
+    const translatingLabel = job._translateProvider === 'byok' ? 'Asking LLM…' : 'Translating…';
+    const labels = { queued: 'Pending…', ocr: 'Scanning text…', translating: translatingLabel };
     const label = job.status === 'error' ? (job.errorMessage || 'Error') : (labels[job.status] || '');
     const cancellable = job.status !== 'error';
     el.innerHTML = `
@@ -2939,14 +2920,8 @@ function targetLanguageDisplayName(langCode) {
 
 // ── LLM prompt formatting (manual "Test LLM" preview only, see LlmTestPopover) ──
 // Plain string formatting (title + tags + synopsis + OCR text) — no template
-// engine and no LLM-based compression, consistent with the earlier decision to
-// keep Story Context assembly simple. Character memory / chapter summary
-// aren't built yet, so they're intentionally omitted here rather than stubbed
-// with placeholder text; nothing built from this function is wired into the
-// automatic translation pipeline (see autoTranslate()) — it only feeds the
-// manual per-region preview/test popover. Only one call site exists (the
-// "Test LLM" button handler below), so adding the targetLang param here can't
-// unexpectedly change behavior anywhere else.
+// engine and no LLM-based compression. Used by both the automatic BYOK
+// translation pipeline (autoTranslate) and the manual "Test LLM" preview popover.
 function formatLlmPrompt(storyContext, ocrText, targetLang) {
   const lines = [];
   if (storyContext?.title)          lines.push(`Title: ${storyContext.title}`);
@@ -2984,7 +2959,11 @@ class NaverAdapter {
       const src = img.src || '';
       if (src.includes('/thumbnail/') || src.includes('/title/') ||
           src.includes('/banner/')    || src.includes('bg_transparency')) return false;
-      return (img.naturalWidth || img.offsetWidth || img.width) >= 300;
+      const w = img.naturalWidth  || img.offsetWidth  || img.width  || 0;
+      const h = img.naturalHeight || img.offsetHeight || img.height || 0;
+      // Must be at least 300px wide AND taller than wide (portrait orientation).
+      // Landscape/square images are likely banners or decorative elements, not webtoon panels.
+      return w >= 300 && h > w;
     };
     const seen = new Set(), imgs = [];
     for (const sel of ['.wt_viewer','#comic_view_area','.viewer_lst','.viewer_img','.toon_img','.swiper-wrapper']) {
@@ -3307,7 +3286,7 @@ async function ocrRegion(img, bbox, applyOcrRefinement = true) {
     payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox: cropBbox, refineCrop: applyOcrRefinement },
   });
   if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-  return { text: res.text, confidence: res.confidence };
+  return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl };
 }
 
 async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true) {
@@ -3367,21 +3346,21 @@ async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true
   if (clips.length === 1) return ocrRegion(img, rawBbox, applyOcrRefinement);
 
   // Try client-side stitching (same-origin/blob images)
-  const dataUrl = stitchClips(clips);
-  if (dataUrl) {
+  const stitchedDataUrl = stitchClips(clips);
+  if (stitchedDataUrl) {
     const res = await sendToBackground({
       type: MSG.OCR_REGION,
-      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
+      payload: { dataUrl: stitchedDataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return { text: res.text, confidence: res.confidence };
+    return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: stitchedDataUrl };
   }
 
   // Cross-origin: send to background for fetch+stitch
   const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src, bbox: { x, y, w, h }, dispW: dw }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return { text: res.text, confidence: res.confidence };
+  return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: null };
 }
 
 async function ocrClips(clips, applyOcrRefinement = true) {
@@ -3400,20 +3379,20 @@ async function ocrClips(clips, applyOcrRefinement = true) {
   });
 
   // Try client-side stitch first
-  const dataUrl = stitchClips(items);
-  if (dataUrl) {
+  const clipsDataUrl = stitchClips(items);
+  if (clipsDataUrl) {
     const res = await sendToBackground({
       type: MSG.OCR_REGION,
-      payload: { dataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
+      payload: { dataUrl: clipsDataUrl, imageUrl: null, bbox: { x: 0, y: 0, w: 100, h: 100 }, refineCrop: applyOcrRefinement },
     });
     if (!res?.ok) throw new Error(res?.error || 'OCR failed');
-    return { text: res.text, confidence: res.confidence };
+    return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: clipsDataUrl };
   }
   // Cross-origin: background fetch+stitch
   const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src, bbox: { x, y, w, h }, dispW }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
-  return { text: res.text, confidence: res.confidence };
+  return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: null };
 }
 
 // Stitch multiple image clips vertically into one canvas.
@@ -3464,15 +3443,31 @@ function stitchClips(clips) {
   }
 }
 
-async function autoTranslate(text) {
+// forceLlm: caller (runTranslate) has already decided to use LLM — skip provider check
+async function autoTranslate(text, { job, storyCtx, forceLlm = false, forceGoogle = false } = {}) {
   const s = await chrome.storage.local.get({
     'wt:translate-provider': 'google',
     'wt:translate-lang':     'vi',
     'wt:deepl-key':          '',
+    'wt:byok-key':           '',
+    'wt:byok-provider':      '',
+    'wt:byok-model':         '',
   });
-  const provider   = s['wt:translate-provider'];
+  const provider   = forceGoogle ? 'google' : forceLlm ? 'byok' : s['wt:translate-provider'];
   const targetLang = s['wt:translate-lang'];
   if (provider === 'none') return null;
+
+  if (provider === 'byok') {
+    const apiKey = s['wt:byok-key'];
+    const provId = s['wt:byok-provider'];
+    const model  = s['wt:byok-model'];
+    if (!apiKey || !provId || !model) throw new Error('BYOK LLM not configured — add provider/key/model in Settings');
+    const llmAdapter = getLlmAdapter(provId);
+    if (!llmAdapter) throw new Error(`Unknown BYOK provider: ${provId}`);
+    if (job) { job._translateProvider = 'byok'; }
+    const prompt = formatLlmPrompt(storyCtx ?? null, text, targetLang);
+    return llmAdapter.callApi(apiKey, model, prompt);
+  }
 
   if (provider === 'deepl') {
     const apiKey = s['wt:deepl-key'];
@@ -3490,9 +3485,7 @@ async function autoTranslate(text) {
     return data.translations[0].text;
   }
 
-  // Google Translate (unofficial free endpoint) — also the fallback for
-  // 'byok', which isn't wired into this automatic pipeline yet (see
-  // callByokLlm/LlmTestPopover for the manual per-region preview instead).
+  // Google Translate (unofficial free endpoint)
   const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -3529,6 +3522,69 @@ async function callByokLlm(prompt) {
   if (!adapter) throw new Error(`Unknown provider "${providerId}" — pick one from the Settings dropdown`);
   return adapter.callApi(apiKey, model, prompt);
 }
+
+// Convert a dataUrl to grayscale with reduced color depth before sending to
+// vision LLM — reduces token cost and removes color noise that doesn't help OCR.
+// levels: number of gray steps (8 = 32-step quantization → cleaner contrast).
+function preprocessImageForVision(dataUrl, levels = 8) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width  = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = imageData.data;
+      const step = 255 / (levels - 1);
+      for (let i = 0; i < d.length; i += 4) {
+        const gray = Math.round((0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / step) * step;
+        d[i] = d[i + 1] = d[i + 2] = gray;
+        // d[i+3] (alpha) unchanged
+      }
+      ctx.putImageData(imageData, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(dataUrl); // fallback to original on error
+    img.src = dataUrl;
+  });
+}
+
+// Called when Tesseract confidence is low: preprocess the crop and send to
+// the configured BYOK vision LLM for combined OCR + translation in one step.
+// Returns the translated string, or null if BYOK is not configured or fails.
+async function visionOcrTranslate(dataUrl) {
+  const s = await chrome.storage.local.get({
+    'wt:translate-provider': 'google',
+    'wt:byok-key':           '',
+    'wt:byok-provider':      '',
+    'wt:byok-model':         '',
+    'wt:translate-lang':     'vi',
+  });
+  // Only activate when user has explicitly chosen BYOK as their translation provider
+  if (s['wt:translate-provider'] !== 'byok') return null;
+  const apiKey  = s['wt:byok-key'];
+  const provId  = s['wt:byok-provider'];
+  const model   = s['wt:byok-model'];
+  const lang    = s['wt:translate-lang'];
+  if (!apiKey || !provId || !model) return null;
+
+  const adapter = getLlmAdapter(provId);
+  if (!adapter) return null;
+
+  const processed = await preprocessImageForVision(dataUrl);
+  const base64    = processed.split(',')[1];
+  const mime      = processed.match(/data:([^;]+);/)?.[1] ?? 'image/png';
+  const prompt    = `This is a speech bubble from a Korean webtoon. Read the Korean text and translate it to ${lang}. Return ONLY the translation, no explanation, no original text.`;
+  try {
+    return await adapter.callVisionApi(apiKey, model, base64, mime, prompt);
+  } catch (err) {
+    console.warn('[WebtoonTranslate] Vision LLM fallback failed:', err.message);
+    return null;
+  }
+}
+
 
 function _cropCanvas(img, bbox) {
   const nw = img.naturalWidth  || img.width  || img.offsetWidth;
@@ -4004,7 +4060,7 @@ function bootForPage() {
       // past its text) — a manual drag-select or hand-resized bbox is
       // already exactly what the user wants, so it's sent to OCR unmodified.
       const applyOcrRefinement = job.source === 'auto';
-      const { text, confidence } = job.clips
+      const { text, confidence, provider, dataUrl } = job.clips
         ? await ocrClips(job.clips, applyOcrRefinement)
         : await ocrRegionStitched(job.imageEl, job.bbox, images, applyOcrRefinement);
       // Shadow-mode difficulty classification: logs [DifficultyClassifier] for
@@ -4013,14 +4069,71 @@ function bootForPage() {
       // (no pipeline routing exists — see extension/content/bundle.js's
       // Difficulty Classifier section). Tesseract/OCR.space confidence is
       // 0-100 (or absent for OCR.space); the classifier's thresholds are 0-1.
-      logDifficultyClassificationShadow(
-        job.skewAngle,
-        text,
-        typeof confidence === 'number' ? confidence / 100 : null
-      );
+      const confNorm = typeof confidence === 'number' ? confidence / 100 : null;
+      const difficulty = _classifyPostOcr(text, confNorm, job.skewAngle ?? 0);
+      console.log(`[DifficultyClassifier] tier=${difficulty.tier} reason=${difficulty.reason} skew=${difficulty.skewAngle?.toFixed(1)} conf=${confNorm?.toFixed(2)} text="${text?.slice(0, 40)}"`);
+      job._ocrProvider    = provider;
+      job._ocrConfidence  = confidence;
+      job._difficultyTier = difficulty.tier;
+      // Vision-tier: send crop to vision LLM for combined OCR+translate.
+      // Only fires when BYOK is configured; result stored so runTranslate can skip.
+      if (difficulty.tier === DIFFICULTY_TIERS.VISION) {
+        // dataUrl may be null for cross-origin images (background did the crop+OCR).
+        // In that case request the crop explicitly so we can send it to the vision LLM.
+        let cropUrl = dataUrl;
+        if (!cropUrl && job.imageEl) {
+          try {
+            cropUrl = _cropCanvas(job.imageEl, job.bbox);
+          } catch (_e) {
+            const res2 = await sendToBackground({ type: MSG.CROP_IMAGE, payload: { imageUrl: job.imageEl.src, bbox: job.bbox } });
+            cropUrl = res2?.dataUrl ?? null;
+          }
+        }
+        if (cropUrl) {
+          const visionResult = await visionOcrTranslate(cropUrl);
+          if (visionResult) {
+            job._visionTranslated = visionResult;
+            console.log(`[WebtoonTranslate] Vision LLM OCR+translate (tier=vision reason=${difficulty.reason}):`, visionResult);
+            // Return sentinel so the pipeline continues to runTranslate even
+            // when Tesseract returned empty text (otherwise _process would bail
+            // with "No text found" before runTranslate can use _visionTranslated).
+            return text || '[vision]';
+          }
+        }
+      }
       return text;
     },
-    runTranslate:  (job) => autoTranslate(job.originalText),
+    runTranslate: async (job) => {
+      if (job._visionTranslated) return job._visionTranslated;
+      const s = await chrome.storage.local.get({ 'wt:translate-provider': 'google', 'wt:byok-mode': 'always' });
+      const prov     = s['wt:translate-provider'];
+      const byokMode = s['wt:byok-mode'];
+      // In smart mode, only route hard/vision tier to LLM; easy/medium use Google.
+      const useLlm = prov === 'byok' && (
+        byokMode === 'always' ||
+        job._difficultyTier === DIFFICULTY_TIERS.HARD ||
+        job._difficultyTier === DIFFICULTY_TIERS.VISION
+      );
+      if (useLlm) {
+        job._translateProvider = 'byok';
+        jobOverlayRenderer.render(job); // re-render with "Asking LLM…"
+        const storyCtx = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
+        try {
+          const result = await autoTranslate(job.originalText, { job, storyCtx, forceLlm: true });
+          if (result) return result;
+        } catch (llmErr) {
+          console.warn('[WebtoonTranslate] LLM translate failed, falling back to Google:', llmErr?.message || llmErr);
+          showToast(`LLM error — falling back to Google Translate`, '#f59e0b');
+        }
+        // Fallback to Google when LLM fails or returns empty — forceGoogle bypasses
+        // the stored provider (which is still 'byok') to avoid retrying LLM.
+        job._translateProvider = undefined;
+        return autoTranslate(job.originalText, { job, forceGoogle: true });
+      }
+      // Google/DeepL path. When provider='byok' in smart mode (easy/medium tier),
+      // forceGoogle bypasses BYOK so we don't accidentally route to LLM via storage.
+      return autoTranslate(job.originalText, { job, forceGoogle: prov === 'byok' });
+    },
     findOverlap:   findOverlapForBbox,
     confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'This region looks like it overlaps an existing translation. Create a new one here anyway?'),
     onTooSmall: () => showToast('Selected region is too small to recognize text — drag/select a larger area', '#f59e0b'),
@@ -4035,7 +4148,7 @@ function bootForPage() {
       const style = existing?.style || (matched ? { ...DEFAULT_STYLE, bg: matched.bg, color: matched.color } : DEFAULT_STYLE);
       const annotation = {
         imageHash, imageIndex: job.imageIndex, bbox: job.bbox,
-        originalText: job.originalText, translatedText: job.translatedText,
+        originalText: job.originalText === '[vision]' ? '' : job.originalText, translatedText: job.translatedText,
         style,
         language: existing?.language || 'vi',
         createdAt: existing?.createdAt || new Date().toISOString(),
@@ -4079,8 +4192,11 @@ function bootForPage() {
   // (vs. a drag) auto-detects the bubble under the cursor on every site
   // instead of only the ones using BBoxSelector.
   async function handleAutoDetectClick({ img, clickX, clickY, imgRect, imageIndex }) {
-    const { bboxes } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
-    if (!bboxes.length) return; // validity check failed — fall back to manual drag-to-select
+    const { bboxes, debug } = await autoDetector.detect(img, clickX, clickY, imgRect, images, imageIndex);
+    if (!bboxes.length) {
+      console.log('[WebtoonTranslate] Auto-detect: flood-fill returned no bbox', debug);
+      return; // validity check failed — fall back to manual drag-to-select
+    }
     // A waist-split click can yield two touching bubbles at once — each is
     // translated as its own independent job.
     for (const bbox of bboxes) {

@@ -68,7 +68,7 @@
                   <p class="engine-detail">Uses Google's unofficial API. Fast and supports 130+ languages. No sign-up required.</p>
                 </div>
               </label>
-              <label class="engine-card">
+              <label class="engine-card" id="card-deepl">
                 <input type="radio" name="translate-provider" value="deepl" class="engine-radio" />
                 <div class="engine-card-inner">
                   <div class="engine-name">
@@ -79,7 +79,7 @@
                   <p class="engine-detail">Superior accuracy for Asian languages. Free tier: 500,000 chars/month. API key required.</p>
                 </div>
               </label>
-              <label class="engine-card">
+              <label class="engine-card" id="card-byok">
                 <input type="radio" name="translate-provider" value="byok" class="engine-radio" />
                 <div class="engine-card-inner">
                   <div class="engine-name">
@@ -87,7 +87,7 @@
                     Bring Your Own Key
                   </div>
                   <div class="engine-badge engine-badge-offline">LLM · API key required</div>
-                  <p class="engine-detail">Use your own LLM API key (OpenAI, Anthropic, etc). Currently manual preview/test only — not yet wired into automatic translation.</p>
+                  <p class="engine-detail">Use your own LLM API key (OpenAI, Anthropic, etc). Translates automatically with story context for better accuracy.</p>
                 </div>
               </label>
             </div>
@@ -99,14 +99,8 @@
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
               LLM API Key
             </label>
-            <div class="field-row">
-              <input type="password" id="byok-key" class="text-input" placeholder="Paste your LLM API key…" autocomplete="off" />
-              <button id="save-byok-key" class="btn-primary">Save</button>
-            </div>
-            <p id="byok-key-saved" class="field-success hidden">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              API key saved successfully
-            </p>
+            <input type="password" id="byok-key" class="text-input" placeholder="Paste your LLM API key…" autocomplete="off" />
+            <p id="byok-key-error" class="field-error hidden">An API key is required to use Bring Your Own Key.</p>
             <label class="field-label" style="margin-top:12px">Provider</label>
             <div class="lang-select-wrap">
               <select id="byok-provider" class="lang-select"></select>
@@ -114,7 +108,24 @@
             </div>
             <label class="field-label" style="margin-top:12px">Model</label>
             <input type="text" id="byok-model" class="text-input" placeholder="gpt-4o-mini" autocomplete="off" />
-            <p class="field-hint">Which provider your key is for, and the exact model name to request. Used to build the request when you test a prompt on a region.</p>
+            <p class="field-hint">Which provider your key is for, and the exact model name to request.</p>
+            <label class="field-label" style="margin-top:16px">Translation Mode</label>
+            <div class="byok-mode-group">
+              <label class="byok-mode-option">
+                <input type="radio" name="byok-mode" value="always" />
+                <span class="byok-mode-label">
+                  <span class="byok-mode-title">Always use LLM</span>
+                  <span class="byok-mode-desc">Every bubble is translated by your LLM — best quality, higher API cost.</span>
+                </span>
+              </label>
+              <label class="byok-mode-option">
+                <input type="radio" name="byok-mode" value="smart" />
+                <span class="byok-mode-label">
+                  <span class="byok-mode-title">Smart (Hybrid)</span>
+                  <span class="byok-mode-desc">Simple text uses Google Translate (free, fast); complex or low-confidence text uses your LLM.</span>
+                </span>
+              </label>
+            </div>
           </div>
 
           <!-- DeepL API key (shown when DeepL selected) -->
@@ -123,15 +134,9 @@
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
               DeepL API Key
             </label>
-            <div class="field-row">
-              <input type="password" id="deepl-key" class="text-input" placeholder="Paste your DeepL API key…" autocomplete="off" />
-              <button id="save-deepl-key" class="btn-primary">Save</button>
-            </div>
-            <p id="deepl-key-saved" class="field-success hidden">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              API key saved successfully
-            </p>
-            <p class="field-hint">Get a free key at <span class="link-text">deepl.com/pro</span> — free tier gives 500k characters/month.</p>
+            <input type="password" id="deepl-key" class="text-input" placeholder="Paste your DeepL API key…" autocomplete="off" />
+            <p id="deepl-key-error" class="field-error hidden">An API key is required to use DeepL.</p>
+            <p class="field-hint" style="margin-top:6px">Get a free key at <span class="link-text">deepl.com/pro</span> — free tier gives 500k characters/month.</p>
           </div>
 
           <!-- Target language -->
@@ -175,6 +180,15 @@
               </select>
               <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
             </div>
+          </div>
+
+          <!-- Save translation settings -->
+          <div class="save-row">
+            <button id="save-translation" class="btn-primary btn-save">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Save
+            </button>
+            <span id="save-translation-feedback" class="save-feedback hidden"></span>
           </div>
 
         </div>

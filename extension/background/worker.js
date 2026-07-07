@@ -2,6 +2,27 @@
  * background/worker.js — chrome.storage.local persistence + OCR/translation pipeline
  */
 
+// Naver/Kakao CDNs enforce a Referer check — requests without one get
+// ERR_CONNECTION_RESET. Derive a plausible Referer from the image URL so
+// every cross-origin panel fetch succeeds without hardcoding per-site values.
+function _refererFor(imageUrl) {
+  try {
+    const u = new URL(imageUrl);
+    // pstatic.net → Naver; fallback to same origin as caller
+    if (u.hostname.endsWith('pstatic.net')) return 'https://comic.naver.com/';
+    if (u.hostname.endsWith('kakaocdn.net') || u.hostname.endsWith('kakao.com')) return 'https://page.kakao.com/';
+    return u.origin + '/';
+  } catch { return ''; }
+}
+
+function _fetchImage(imageUrl) {
+  const referer = _refererFor(imageUrl);
+  // Use the `referrer` fetch init option — NOT headers['Referer'] (a forbidden header
+  // that browsers silently strip). The fetch init `referrer` field IS the correct API
+  // for controlling the Referer sent on the request.
+  return fetch(imageUrl, { credentials: 'omit', ...(referer ? { referrer: referer } : {}) });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case 'SAVE_TRANSLATIONS':   handleSave(message.payload).then(sendResponse);   return true;
@@ -431,22 +452,24 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
     return ocrSpaceRun(finalDataUrl, ocrKey);
   }
 
-  // Tesseract — attempt first, then auto-fallback to OCR.space when the
-  // result is empty or low-confidence (complex bg, small/stylised text).
+  // Tesseract — primary OCR engine. Auto-fallback to OCR.space only when the
+  // user has explicitly chosen 'ocrspace' as their provider in settings.
+  // (Previously this fell back silently if a key existed; that caused surprise
+  //  network calls without any user opt-in.)
   const tessResult = await tesseractRun(finalDataUrl, isSingleLine);
-  if (tessResult.ok && tessResult.text && (tessResult.confidence ?? 100) >= TESSERACT_CONFIDENCE_THRESHOLD) {
-    return tessResult;
-  }
+  const tessText   = cleanKoreanOcrText(tessResult.text || '') || tessResult.text || '';
+  return { ...tessResult, text: tessText, provider: 'tesseract' };
+}
 
-  if (ocrKey) {
-    // Silent fallback — add a marker so the UI can hint which engine was used
-    const spaceResult = await ocrSpaceRun(finalDataUrl, ocrKey);
-    if (spaceResult.ok && spaceResult.text) return { ...spaceResult, fallback: true };
-  }
-
-  // Return the original Tesseract result (even if empty/low-confidence) when
-  // no OCR.space key is available or OCR.space also failed.
-  return tessResult;
+// Strip non-Korean noise from OCR output while preserving valid Korean text
+// and common punctuation. Applied post-OCR to remove garbage characters from
+// bubble tails or adjacent panel content bleeding into the crop region.
+function cleanKoreanOcrText(text) {
+  const cleaned = text
+    .replace(/[^가-힣ㄱ-ㅎㅏ-ㅣ\s.,!?…~‼！。、·『』「」\-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned;
 }
 
 // ── Multi-image stitch OCR ───────────────────────────────────────────────────────
@@ -454,7 +477,7 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
 async function handleOcrStitch({ clips, refineCrop = true }) {
   // Fetch and crop each clip, normalize to same display scale, stitch vertically, OCR
   const items = await Promise.all(clips.map(async ({ imageUrl, bbox, dispW }) => {
-    const res  = await fetch(imageUrl, { credentials: 'omit' });
+    const res  = await _fetchImage(imageUrl);
     const blob = await res.blob();
     const bm   = await createImageBitmap(blob);
     const sx = (bbox.x / 100) * bm.width;
@@ -571,7 +594,7 @@ async function tesseractRun(dataUrl, isSingleLine = false) {
 // ── Image fetch + crop (service-worker side, full cross-origin access) ────────
 
 async function fetchAndCrop(imageUrl, bbox) {
-  const res    = await fetch(imageUrl, { credentials: 'omit' });
+  const res    = await _fetchImage(imageUrl);
   const blob   = await res.blob();
   const bitmap = await createImageBitmap(blob);
 
@@ -604,7 +627,7 @@ async function fetchAndCrop(imageUrl, bbox) {
  * still lines up with the returned image.
  */
 async function fetchAndCropRaw(imageUrl, bbox) {
-  const res    = await fetch(imageUrl, { credentials: 'omit' });
+  const res    = await _fetchImage(imageUrl);
   const blob   = await res.blob();
   const bitmap = await createImageBitmap(blob);
 

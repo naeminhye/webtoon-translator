@@ -11,8 +11,6 @@
 
 const VENDOR = chrome.runtime.getURL('vendor/tesseract/');
 
-let workerPromise = null;
-
 // ── Tesseract recognition tuning ────────────────────────────────────────────
 // Dialogue crops are short, isolated snippets — not full documents/paragraphs,
 // which is what Tesseract's own default page-segmentation mode assumes.
@@ -40,17 +38,16 @@ function broadcast(status, progress, message) {
   } catch (_) { /* extension reloading */ }
 }
 
+let workerPromise = null;
+
 function getWorker() {
   if (!workerPromise) {
     broadcast('initializing');
     workerPromise = Tesseract.createWorker('kor', Tesseract.OEM.LSTM_ONLY, {
-      workerPath: VENDOR + 'worker.min.js',
-      corePath:   VENDOR + 'tesseract-core-simd-lstm.wasm.js',
-      // Bundled model (best_int, 1.5MB) — fully offline, no CDN dependency
-      langPath:   VENDOR + 'lang',
-      cacheMethod: 'none', // local file — IndexedDB cache is pointless
-      // MV3 CSP only allows 'self' scripts — tesseract's default blob: URL
-      // worker is blocked, so spawn the worker from workerPath directly
+      workerPath:    VENDOR + 'worker.min.js',
+      corePath:      VENDOR + 'tesseract-core-simd-lstm.wasm.js',
+      langPath:      VENDOR + 'lang',
+      cacheMethod:   'none',
       workerBlobURL: false,
       logger: (m) => {
         if (m.status === 'loading language traineddata') broadcast('downloading-model', m.progress);
@@ -60,7 +57,6 @@ function getWorker() {
       broadcast('ready');
       return worker;
     }).catch(err => {
-      workerPromise = null; // allow retry after a failed init (e.g. offline)
       broadcast('error', undefined, err.message || String(err));
       throw err;
     });
@@ -101,25 +97,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     try {
       const worker = await getWorker();
-      // SINGLE_LINE when the caller knows this crop is one isolated text
-      // block (see worker.js's refineOcrCropToTextCluster/isSingleLine) —
-      // SINGLE_BLOCK (multi-line dialogue) otherwise/by default, since
-      // Tesseract's own default PSM assumes a full multi-paragraph document,
-      // not a short dialogue snippet.
       await worker.setParameters({
         tessedit_pageseg_mode: message.payload.isSingleLine ? Tesseract.PSM.SINGLE_LINE : Tesseract.PSM.SINGLE_BLOCK,
       });
       const upscaledDataUrl = await _upscaleForOcr(message.payload.dataUrl, OCR_UPSCALE_FACTOR);
       const { data } = await worker.recognize(upscaledDataUrl);
       broadcast('ready');
-      // Webtoon bubbles wrap lines arbitrarily — collapse to one line
       const text = (data.text || '').replace(/\s+/g, ' ').trim();
-      // confidence: 0-100 average across all recognised words
       const confidence = typeof data.confidence === 'number' ? data.confidence : 0;
       sendResponse({ ok: true, text, confidence });
     } catch (err) {
       sendResponse({ ok: false, error: err.message || String(err) });
     }
   })();
-  return true; // keep the message port open for the async response
+  return true;
 });
