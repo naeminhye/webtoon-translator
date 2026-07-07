@@ -34,6 +34,7 @@ export const SITES = {
   NAVER: 'naver',
   RIDI: 'ridi',
   KAKAO: 'kakao',
+  BOMTOON: 'bomtoon',
 };
 
 export const MODES = {
