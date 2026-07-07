@@ -2547,12 +2547,14 @@ class OverlayRenderer {
       wrapper.appendChild(img);
       img.style.display = 'block';
       const setW = () => {
-        const w = displayW || img.naturalWidth || img.offsetWidth;
+        // canvas elements use .width (intrinsic attribute) instead of .naturalWidth
+        const w = displayW || img.naturalWidth || img.offsetWidth || img.width;
         if (w > 0) {
           wrapper.style.cssText = `position:relative;display:block;width:${w}px;line-height:0;margin:0 auto;padding:0;`;
         }
       };
-      if (img.complete && img.naturalWidth > 0) setW();
+      if (img.tagName === 'CANVAS') setW();
+      else if (img.complete && img.naturalWidth > 0) setW();
       else img.addEventListener('load', setW, { once: true });
     }
     this.imageState.set(img, { wrapper, bubbles: new Map() });
@@ -2598,8 +2600,8 @@ class OverlayRenderer {
     b.appendChild(createBubbleReloadButton(this._onReload, ann, img));
 
     const rect = img.getBoundingClientRect();
-    const iw = img.naturalWidth  || rect.width  || img.offsetWidth  || 375;
-    const ih = img.naturalHeight || rect.height || img.offsetHeight || 500;
+    const iw = img.naturalWidth  || img.width  || rect.width  || img.offsetWidth  || 375;
+    const ih = img.naturalHeight || img.height || rect.height || img.offsetHeight || 500;
     // side-by-side mode: a fixed-width caption in the page's own margin, not
     // an overlay on the (often oval) bubble shape — no oval-corner margin.
     const boxWidthPx = _overlayMode === 'side-by-side' ? SIDE_BY_SIDE_WIDTH_PX : (ann.bbox.w / 100) * iw;
@@ -2611,9 +2613,9 @@ class OverlayRenderer {
 
   _positionBubble(bubble, bbox, img) {
     const rect = img.getBoundingClientRect();
-    // Kakao uses padding-top ratio so rect.height may be 0 — fallback to naturalHeight
-    const iw = img.naturalWidth  || rect.width  || img.offsetWidth  || 375;
-    const ih = img.naturalHeight || rect.height || img.offsetHeight || 500;
+    // canvas: use .width/.height attributes (Bomtoon); img: naturalWidth/naturalHeight
+    const iw = img.naturalWidth  || img.width  || rect.width  || img.offsetWidth  || 375;
+    const ih = img.naturalHeight || img.height || rect.height || img.offsetHeight || 500;
     // autoFitHeightPx (set once at _createBubble time) may exceed the raw
     // bbox-derived height — see fitAndExpand(). Not recomputed on reposition/
     // resize; same pre-existing limitation the font-size styling already had.
@@ -2778,14 +2780,17 @@ class SidePanel {
         row.addEventListener('click', () => {
           const img    = this._images[imgIdx];
           const bubble = document.querySelector(`[data-ann-key="${key}"]`);
-          if (bubble && !bubble.classList.contains('wt-fixed-bubble')) {
-            bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          if (bubble) {
+            // scrollIntoView can fail for position:absolute elements in some browsers;
+            // use absolute scrollTo for reliability.
+            const br = bubble.getBoundingClientRect();
+            const absTop = br.top + window.scrollY - (window.innerHeight - br.height) / 2;
+            window.scrollTo({ top: Math.max(0, absTop), behavior: 'smooth' });
           } else if (img) {
             const r = img.getBoundingClientRect();
-            const targetY = r.top + ((ann.bbox.y + ann.bbox.h / 2) / 100) * r.height;
-            scrollAncestorBy(img, targetY - window.innerHeight / 2);
-          } else if (bubble) {
-            bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const ih = img.naturalHeight || img.height || r.height || img.offsetHeight || 500;
+            const absTop = r.top + window.scrollY + ((ann.bbox.y + ann.bbox.h / 2) / 100) * ih - window.innerHeight / 2;
+            window.scrollTo({ top: Math.max(0, absTop), behavior: 'smooth' });
           } else {
             return;
           }
@@ -3901,6 +3906,38 @@ function bootForPage() {
 
   // ── image loading ──────────────────────────────────────────────────────
 
+  // Bomtoon: show a loading overlay while waiting for images to decode
+  const isBomtoon = location.hostname === 'www.bomtoon.com';
+  let _loadingOverlay = null;
+  if (isBomtoon) {
+    _loadingOverlay = document.createElement('div');
+    _loadingOverlay.id = 'wt-loading-overlay';
+    _loadingOverlay.style.cssText = [
+      'position:fixed', 'inset:0', 'z-index:2147483647',
+      'display:flex', 'flex-direction:column', 'align-items:center', 'justify-content:center',
+      'background:rgba(0,0,0,0.45)', 'gap:14px', 'pointer-events:none',
+    ].join(';');
+    _loadingOverlay.innerHTML = `
+      <div style="width:44px;height:44px;border:4px solid rgba(255,255,255,0.2);border-top-color:#6366f1;border-radius:50%;animation:wt-spin 0.8s linear infinite;"></div>
+      <span style="color:#fff;font-size:14px;font-family:system-ui,sans-serif;opacity:0.85;">Đang tải bản dịch…</span>`;
+    if (!document.getElementById('wt-spin-style')) {
+      const st = document.createElement('style');
+      st.id = 'wt-spin-style';
+      st.textContent = '@keyframes wt-spin{to{transform:rotate(360deg)}}';
+      document.head.appendChild(st);
+    }
+    document.body.appendChild(_loadingOverlay);
+  }
+
+  function _hideLoadingOverlay() {
+    if (_loadingOverlay) {
+      _loadingOverlay.style.transition = 'opacity 0.3s';
+      _loadingOverlay.style.opacity = '0';
+      setTimeout(() => _loadingOverlay?.remove(), 320);
+      _loadingOverlay = null;
+    }
+  }
+
   let attempts = 0;
   const tryGetImages = () => {
     if (disposed) return;
@@ -3914,7 +3951,7 @@ function bootForPage() {
       }
       setTimeout(tryGetImages, 600);
     } else {
-      loadAndRender().then(updateProgressBar);
+      loadAndRender().then(() => { updateProgressBar(); _hideLoadingOverlay(); });
       checkStorageQuota();
     }
   };
