@@ -4118,7 +4118,16 @@ function bootForPage() {
         job._translateProvider = 'byok';
         jobOverlayRenderer.render(job); // re-render with "Asking LLM…"
         const storyCtx = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
-        return autoTranslate(job.originalText, { job, storyCtx, forceLlm: true });
+        try {
+          const result = await autoTranslate(job.originalText, { job, storyCtx, forceLlm: true });
+          if (result) return result;
+        } catch (llmErr) {
+          console.warn('[WebtoonTranslate] LLM translate failed, falling back to Google:', llmErr?.message || llmErr);
+          showToast(`LLM error — falling back to Google Translate`, '#f59e0b');
+        }
+        // Fallback to Google/DeepL when LLM fails or returns empty
+        job._translateProvider = undefined;
+        return autoTranslate(job.originalText, { job, forceLlm: false });
       }
       // Google/DeepL path (also used for BYOK smart mode on easy/medium tiers)
       return autoTranslate(job.originalText, { job, forceLlm: false });
