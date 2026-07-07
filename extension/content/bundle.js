@@ -4075,36 +4075,9 @@ function bootForPage() {
       job._ocrProvider    = provider;
       job._ocrConfidence  = confidence;
       job._difficultyTier = difficulty.tier;
-      // Vision-tier: send crop to vision LLM for combined OCR+translate.
-      // Only fires when BYOK is configured; result stored so runTranslate can skip.
-      if (difficulty.tier === DIFFICULTY_TIERS.VISION) {
-        // dataUrl may be null for cross-origin images (background did the crop+OCR).
-        // In that case request the crop explicitly so we can send it to the vision LLM.
-        let cropUrl = dataUrl;
-        if (!cropUrl && job.imageEl) {
-          try {
-            cropUrl = _cropCanvas(job.imageEl, job.bbox);
-          } catch (_e) {
-            const res2 = await sendToBackground({ type: MSG.CROP_IMAGE, payload: { imageUrl: job.imageEl.src, bbox: job.bbox } });
-            cropUrl = res2?.dataUrl ?? null;
-          }
-        }
-        if (cropUrl) {
-          const visionResult = await visionOcrTranslate(cropUrl);
-          if (visionResult) {
-            job._visionTranslated = visionResult;
-            console.log(`[WebtoonTranslate] Vision LLM OCR+translate (tier=vision reason=${difficulty.reason}):`, visionResult);
-            // Return sentinel so the pipeline continues to runTranslate even
-            // when Tesseract returned empty text (otherwise _process would bail
-            // with "No text found" before runTranslate can use _visionTranslated).
-            return text || '[vision]';
-          }
-        }
-      }
       return text;
     },
     runTranslate: async (job) => {
-      if (job._visionTranslated) return job._visionTranslated;
       const s = await chrome.storage.local.get({ 'wt:translate-provider': 'google', 'wt:byok-mode': 'always' });
       const prov     = s['wt:translate-provider'];
       const byokMode = s['wt:byok-mode'];
