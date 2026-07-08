@@ -3786,7 +3786,11 @@ class LezhinAdapter {
       if (!el.src) el.src = `lezhin-panel-${i}`;
       if (!Object.getOwnPropertyDescriptor(el, '_ocrCanvas')) {
         Object.defineProperty(el, '_ocrCanvas', {
-          get() { return el.querySelector('img[src^="blob:"]'); },
+          get() {
+            return el.querySelector('img[src^="blob:"]') ||
+                   el.querySelector('img[src^="http"]') ||
+                   el.querySelector('canvas');
+          },
           configurable: true,
         });
       }
