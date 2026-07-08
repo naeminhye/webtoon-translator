@@ -36,6 +36,7 @@ export const SITES = {
   KAKAO: 'kakao',
   BOMTOON: 'bomtoon',
   LEZHIN: 'lezhin',
+  QTOON: 'qtoon',
 };
 
 export const MODES = {

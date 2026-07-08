@@ -3802,9 +3802,42 @@ class LezhinAdapter {
   }
 }
 
+class QtoonAdapter {
+  detect() {
+    return location.hostname === 'www.qtoon.co.kr' &&
+           location.pathname === '/toon/view.mg';
+  }
+
+  getChapterMeta() {
+    const params = new URLSearchParams(location.search);
+    return {
+      site: 'qtoon',
+      titleId: params.get('tcode') || 'unknown',
+      chapterId: params.get('cuid') || 'unknown',
+    };
+  }
+
+  getImages() {
+    return [...document.querySelectorAll('#img_area img')].filter(img => img.src && img.classList.contains('loaded'));
+  }
+
+  watchNewImages(callback) {
+    const root = document.querySelector('#img_area') || document.body;
+    let debounce = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        callback(this.getImages());
+      }, 150);
+    });
+    observer.observe(root, { subtree: true, attributes: true, attributeFilter: ['src', 'class'] });
+    return () => observer.disconnect();
+  }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter(), new BomtoonAdapter(), new LezhinAdapter()];
+const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter(), new BomtoonAdapter(), new LezhinAdapter(), new QtoonAdapter()];
 
 function findAdapter() { return ADAPTERS.find(a => a.detect()); }
 
