@@ -291,6 +291,8 @@ const COLOR_SAMPLE_INSET_FRAC = 0.15;
  * default style). Never throws.
  */
 async function detectBubbleColors(img, bbox) {
+  // For Bomtoon panel divs, sample from the canvas inside the div
+  img = _drawSource(img) || img;
   const nw = img.naturalWidth  || img.width  || img.offsetWidth  || 1;
   const nh = img.naturalHeight || img.height || img.offsetHeight || 1;
   const fullX = (bbox.x / 100) * nw, fullY = (bbox.y / 100) * nh;
@@ -882,8 +884,10 @@ class BubbleAutoDetector {
    * to manual drag).
    */
   async detect(img, clickX, clickY, imgRect, images, imageIndex) {
-    const nw = img.naturalWidth  || img.width  || imgRect.width;
-    const nh = img.naturalHeight || img.height || imgRect.height;
+    // For Bomtoon panel divs, pixel dimensions come from the canvas inside the div
+    const pixelSrc = _drawSource(img) || img;
+    const nw = pixelSrc.naturalWidth  || pixelSrc.width  || imgRect.width;
+    const nh = pixelSrc.naturalHeight || pixelSrc.height || imgRect.height;
     const scaleX = nw / imgRect.width, scaleY = nh / imgRect.height;
     const cx = clickX * scaleX, cy = clickY * scaleY; // click point in current image's natural px
 
@@ -1062,23 +1066,26 @@ class BubbleAutoDetector {
 
     if (syRaw < 0) {
       const prevImg = (images && imageIndex > 0) ? images[imageIndex - 1] : null;
-      const pnh = prevImg ? (prevImg.naturalHeight || prevImg.height || 0) : 0;
-      const want = prevImg ? Math.min(-syRaw, pnh) : 0;
+      const prevSrc = _drawSource(prevImg);
+      const pnh = prevSrc ? (prevSrc.naturalHeight || prevSrc.height || 0) : 0;
+      const want = prevSrc ? Math.min(-syRaw, pnh) : 0;
       canvasTopFrameY = -want;
-      if (want > 0) list.push({ source: prevImg, sy: pnh - want, sh: want, destY: 0 });
+      if (want > 0) list.push({ source: prevSrc, sy: pnh - want, sh: want, destY: 0 });
     }
 
+    const imgSrc = _drawSource(img) || img;
     const curSegStart = Math.max(0, syRaw);
     const curSegEnd   = Math.min(nh, eyRaw);
     const curH = curSegEnd - curSegStart;
-    if (curH > 0) list.push({ source: img, sy: curSegStart, sh: curH, destY: curSegStart - canvasTopFrameY });
+    if (curH > 0) list.push({ source: imgSrc, sy: curSegStart, sh: curH, destY: curSegStart - canvasTopFrameY });
 
     if (eyRaw > nh) {
       const nextImg = (images && imageIndex < images.length - 1) ? images[imageIndex + 1] : null;
-      if (nextImg) {
-        const nnh = nextImg.naturalHeight || nextImg.height || 0;
+      const nextSrc = _drawSource(nextImg);
+      if (nextSrc) {
+        const nnh = nextSrc.naturalHeight || nextSrc.height || 0;
         const want = Math.min(eyRaw - nh, nnh);
-        if (want > 0) list.push({ source: nextImg, sy: 0, sh: want, destY: nh - canvasTopFrameY });
+        if (want > 0) list.push({ source: nextSrc, sy: 0, sh: want, destY: nh - canvasTopFrameY });
       }
     }
 
@@ -3414,15 +3421,17 @@ async function ocrClips(clips, applyOcrRefinement = true) {
 function stitchClips(clips) {
   try {
     const items = clips.map(({ img, x, y, w, h, dispW }) => {
-      const nw = img.naturalWidth  || img.width  || img.offsetWidth;
-      const nh = img.naturalHeight || img.height || img.offsetHeight;
+      // For Bomtoon panel divs, draw from the canvas inside the div
+      const src = _drawSource(img) || img;
+      const nw = src.naturalWidth  || src.width  || src.offsetWidth;
+      const nh = src.naturalHeight || src.height || src.offsetHeight;
       const px = (x / 100) * nw;
       const py = (y / 100) * nh;
       const pw = Math.max(1, (w / 100) * nw);
       const ph = Math.max(1, (h / 100) * nh);
       // dispW is the display-pixel width; use it to normalize scale
       const dw = dispW || pw;
-      return { img, px, py, pw, ph, dw };
+      return { img: src, px, py, pw, ph, dw };
     });
 
     // Normalize: all clips rendered at TARGET_W pixels wide
@@ -3599,9 +3608,19 @@ async function visionOcrTranslate(dataUrl) {
 }
 
 
+// Returns the drawable pixel source for an element — for Bomtoon panel divs,
+// the <canvas> inside the div; for regular <img>/<canvas>, the element itself.
+function _drawSource(el) {
+  if (!el) return null;
+  return el._ocrCanvas || (el.tagName === 'DIV' ? el.querySelector('canvas') : el);
+}
+
 function _cropCanvas(img, bbox) {
-  const nw = img.naturalWidth  || img.width  || img.offsetWidth;
-  const nh = img.naturalHeight || img.height || img.offsetHeight;
+  // For Bomtoon panel divs, pixel data lives in the canvas inside (may be null if scrolled out)
+  const srcEl = _drawSource(img);
+  if (!srcEl) throw new DOMException('No canvas — panel scrolled out of view', 'SecurityError');
+  const nw = srcEl.naturalWidth  || srcEl.width  || srcEl.offsetWidth;
+  const nh = srcEl.naturalHeight || srcEl.height || srcEl.offsetHeight;
   const sx = (bbox.x / 100) * nw;
   const sy = (bbox.y / 100) * nh;
   const sw = Math.max(1, (bbox.w / 100) * nw);
@@ -3613,7 +3632,7 @@ function _cropCanvas(img, bbox) {
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  ctx.drawImage(srcEl, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL('image/png'); // throws SecurityError if canvas is tainted
 }
 
@@ -3699,40 +3718,37 @@ class BomtoonAdapter {
     return { site: 'bomtoon', titleId, chapterId };
   }
 
-  // Extract image URLs from __NEXT_DATA__ so we can identify panels by URL.
-  _getImageUrls() {
-    try {
-      const data = JSON.parse(document.getElementById('__NEXT_DATA__')?.textContent || '{}');
-      const images = data?.props?.pageProps?.episodeData?.result?.images || [];
-      return images.map(i => i.imagePath || i.url || '').filter(Boolean);
-    } catch { return []; }
-  }
-
   getImages() {
-    // Bomtoon renders panels as <canvas> elements (scrambled WebP tiles).
-    // Return the canvas elements directly so drawImage() works for OCR/cropping.
-    // We attach a .src property (JS-only) from __NEXT_DATA__ URLs for hashing.
-    const urls = this._getImageUrls();
-
-    const canvases = [...document.querySelectorAll('canvas')]
-      .filter(c => (c.width || 0) >= 200 && (c.height || 0) >= 200);
-
-    // Annotate each canvas with a stable .src for hashImage
-    canvases.forEach((el, i) => {
-      if (!el.src) el.src = urls[i] || `bomtoon-panel-${i}`;
+    // Bomtoon virtual-scrolls — only 3-4 <canvas> elements exist in DOM at once.
+    // The persistent <div width height> placeholder elements are always in DOM
+    // regardless of scroll position, making them stable panel anchors.
+    const panels = [...document.querySelectorAll('div[width][height]')]
+      .filter(d => parseInt(d.getAttribute('width')) >= 200);
+    panels.forEach((el, i) => {
+      if (!el.src) el.src = `bomtoon-panel-${i}`;
+      // Live getter so _drawSource() always gets the current canvas (null when scrolled out)
+      if (!Object.getOwnPropertyDescriptor(el, '_ocrCanvas')) {
+        Object.defineProperty(el, '_ocrCanvas', {
+          get() { return el.querySelector('canvas'); },
+          configurable: true,
+        });
+      }
     });
-
-    return canvases;
+    return panels;
   }
 
   watchNewImages(callback) {
     const root = document.body;
+    let seenCount = 0;
     let debounce = null;
     const observer = new MutationObserver(() => {
       clearTimeout(debounce);
       debounce = setTimeout(() => {
-        const imgs = this.getImages();
-        if (imgs.length) callback(imgs);
+        const panels = this.getImages();
+        if (panels.length !== seenCount) {
+          seenCount = panels.length;
+          callback(panels);
+        }
       }, 300);
     });
     observer.observe(root, { childList: true, subtree: true });
