@@ -14,13 +14,14 @@ import { NaverAdapter } from './adapters/naver.js';
 import { RidiAdapter } from './adapters/ridi.js';
 import { KakaoAdapter } from './adapters/kakao.js';
 import { BomtoonAdapter } from './adapters/bomtoon.js';
+import { LezhinAdapter } from './adapters/lezhin.js';
 import { BBoxSelector } from './annotation-engine/selector.js';
 import { OverlayRenderer } from './annotation-engine/overlay.js';
 import { InputDialog } from './annotation-engine/input-dialog.js';
 import { hashImage } from './annotation-engine/hasher.js';
 import { MODES, MSG } from './types.js';
 
-const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter(), new BomtoonAdapter()];
+const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter(), new BomtoonAdapter(), new LezhinAdapter()];
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 

@@ -35,6 +35,7 @@ export const SITES = {
   RIDI: 'ridi',
   KAKAO: 'kakao',
   BOMTOON: 'bomtoon',
+  LEZHIN: 'lezhin',
 };
 
 export const MODES = {
