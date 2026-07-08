@@ -3761,7 +3761,7 @@ class LezhinAdapter {
 
   detect() {
     return location.hostname === 'www.lezhin.com' &&
-           /^\/[a-z]{2}\/comic\/[^/]+\/\d+/.test(location.pathname);
+           /^\/[a-z]{2}\/comic\/[^/]+\/[^/?#]+/.test(location.pathname);
   }
 
   getChapterMeta() {
