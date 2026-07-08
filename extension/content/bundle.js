@@ -2540,26 +2540,27 @@ class OverlayRenderer {
     if (this.imageState.has(img)) return this.imageState.get(img).wrapper;
     let wrapper = img.parentElement;
     if (!wrapper?.classList.contains('wt-img-wrapper')) {
-      const displayW = img.offsetWidth;
       wrapper = document.createElement('div');
       wrapper.className = 'wt-img-wrapper';
+      // Base styles — width is NOT set here; _syncWrapperWidth handles it once
+      // the element is laid out (offsetWidth > 0). Setting width to an intrinsic
+      // canvas.width that differs from the rendered size misaligns all bubbles.
+      wrapper.style.cssText = 'position:relative;display:block;line-height:0;margin:0 auto;padding:0;';
       img.parentElement.insertBefore(wrapper, img);
       wrapper.appendChild(img);
       img.style.display = 'block';
-      const setW = () => {
-        // canvas elements use .width (intrinsic attribute) instead of .naturalWidth
-        const w = displayW || img.naturalWidth || img.offsetWidth || img.width;
-        if (w > 0) {
-          wrapper.style.cssText = `position:relative;display:block;width:${w}px;line-height:0;margin:0 auto;padding:0;`;
-        }
-      };
-      if (img.tagName === 'CANVAS') setW();
-      else if (img.complete && img.naturalWidth > 0) setW();
-      else img.addEventListener('load', setW, { once: true });
     }
     this.imageState.set(img, { wrapper, bubbles: new Map() });
+    // Observe both the wrapper AND the element itself so any CSS-driven resize
+    // (Bomtoon scaling the canvas to fit the viewport) triggers repositioning.
     this._resizeObserver.observe(wrapper);
+    this._resizeObserver.observe(img);
     return wrapper;
+  }
+
+  _syncWrapperWidth(img, wrapper) {
+    const w = img.offsetWidth;
+    if (w > 0) wrapper.style.width = `${w}px`;
   }
 
   _createBubble(ann, img) {
@@ -2600,8 +2601,11 @@ class OverlayRenderer {
     b.appendChild(createBubbleReloadButton(this._onReload, ann, img));
 
     const rect = img.getBoundingClientRect();
-    const iw = img.naturalWidth  || img.width  || rect.width  || img.offsetWidth  || 375;
-    const ih = img.naturalHeight || img.height || rect.height || img.offsetHeight || 500;
+    // Always use rendered dimensions for positioning — bbox percentages are relative
+    // to displayed size, not intrinsic size. For canvas, naturalWidth is undefined
+    // and img.width is the intrinsic pixel count which may differ from display size.
+    const iw = rect.width  || img.offsetWidth  || img.naturalWidth  || 375;
+    const ih = rect.height || img.offsetHeight || img.naturalHeight || 500;
     // side-by-side mode: a fixed-width caption in the page's own margin, not
     // an overlay on the (often oval) bubble shape — no oval-corner margin.
     const boxWidthPx = _overlayMode === 'side-by-side' ? SIDE_BY_SIDE_WIDTH_PX : (ann.bbox.w / 100) * iw;
@@ -2613,9 +2617,11 @@ class OverlayRenderer {
 
   _positionBubble(bubble, bbox, img) {
     const rect = img.getBoundingClientRect();
-    // canvas: use .width/.height attributes (Bomtoon); img: naturalWidth/naturalHeight
-    const iw = img.naturalWidth  || img.width  || rect.width  || img.offsetWidth  || 375;
-    const ih = img.naturalHeight || img.height || rect.height || img.offsetHeight || 500;
+    // Always use rendered size — bbox % are relative to displayed dimensions.
+    // For canvas, naturalWidth is undefined and img.width is intrinsic (720px)
+    // which differs from the CSS-scaled display size, causing misalignment.
+    const iw = rect.width  || img.offsetWidth  || img.naturalWidth  || 375;
+    const ih = rect.height || img.offsetHeight || img.naturalHeight || 500;
     // autoFitHeightPx (set once at _createBubble time) may exceed the raw
     // bbox-derived height — see fitAndExpand(). Not recomputed on reposition/
     // resize; same pre-existing limitation the font-size styling already had.
@@ -2645,17 +2651,19 @@ class OverlayRenderer {
     }
   }
 
-  _repositionForWrapper(wrapper) {
-    const img   = wrapper.querySelector('img');
-    const state = img && this.imageState.get(img);
+  _repositionForWrapper(entry) {
+    // entry may be a wrapper div or the img/canvas itself (both observed)
+    const isCanvas = entry.tagName === 'CANVAS' || entry.tagName === 'IMG';
+    const imgEl    = isCanvas ? entry : entry.querySelector('img, canvas');
+    const state    = imgEl && this.imageState.get(imgEl);
     if (!state) return;
+    const wrapper = state.wrapper;
     requestAnimationFrame(() => {
-      const w = img.offsetWidth || img.naturalWidth;
-      if (w > 0) wrapper.style.width = `${w}px`;
+      this._syncWrapperWidth(imgEl, wrapper);
       state.bubbles.forEach(bubble => {
         const x = parseFloat(bubble.dataset.bboxX), y = parseFloat(bubble.dataset.bboxY);
         const bw = parseFloat(bubble.dataset.bboxW), h = parseFloat(bubble.dataset.bboxH);
-        if (!isNaN(x)) this._positionBubble(bubble, { x, y, w: bw, h }, img);
+        if (!isNaN(x)) this._positionBubble(bubble, { x, y, w: bw, h }, imgEl);
       });
     });
   }
