@@ -3299,11 +3299,20 @@ async function ocrRegion(img, bbox, applyOcrRefinement = true) {
     dataUrl = _cropCanvas(img, cropBbox);
   } catch (e) {
     if (!(e instanceof DOMException) || e.name !== 'SecurityError') throw e;
+    // Virtual-scroll adapters (Bomtoon/Lezhin) use synthetic src keys like
+    // 'lezhin-panel-0' — not real URLs the background can fetch. If the panel's
+    // blob img is unloaded, show a helpful hint instead of a confusing network error.
+    if (!img.src?.match(/^https?:\/\//)) {
+      throw new Error('Panel not loaded — scroll so the image is fully visible, then try again');
+    }
   }
 
+  // Only pass imageUrl when it is a real HTTP(S) URL; synthetic panel keys and
+  // blob: URLs (process-local, unreachable by the service worker) must not be sent.
+  const imageUrl = (!dataUrl && img.src?.match(/^https?:\/\//)) ? img.src : null;
   const res = await sendToBackground({
     type: MSG.OCR_REGION,
-    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox: cropBbox, refineCrop: applyOcrRefinement },
+    payload: { dataUrl, imageUrl, bbox: cropBbox, refineCrop: applyOcrRefinement },
   });
   if (!res?.ok) throw new Error(res?.error || 'OCR failed');
   return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl };
@@ -3377,7 +3386,8 @@ async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true
   }
 
   // Cross-origin: send to background for fetch+stitch
-  const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src, bbox: { x, y, w, h }, dispW: dw }));
+  // Only include real HTTP URLs; synthetic panel keys (e.g. 'lezhin-panel-0') are not fetchable.
+  const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src?.match(/^https?:\/\//) ? i.src : null, bbox: { x, y, w, h }, dispW: dw }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
   return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: null };
@@ -3409,7 +3419,7 @@ async function ocrClips(clips, applyOcrRefinement = true) {
     return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: clipsDataUrl };
   }
   // Cross-origin: background fetch+stitch
-  const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src, bbox: { x, y, w, h }, dispW }));
+  const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src?.match(/^https?:\/\//) ? img.src : null, bbox: { x, y, w, h }, dispW }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
   return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: null };
