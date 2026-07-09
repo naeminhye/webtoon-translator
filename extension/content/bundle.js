@@ -1626,11 +1626,6 @@ function _classifyPostOcr(text, confidence, skewAngle) {
     return { ...base, tier: DIFFICULTY_TIERS.HARD, reason: 'honorific-detected' };
   }
 
-  const hasStylizedPunctuation = DIFFICULTY_STYLIZED_PUNCTUATION_MARKERS.some(m => text.includes(m));
-  if (hasStylizedPunctuation) {
-    return { ...base, tier: DIFFICULTY_TIERS.HARD, reason: 'stylized-punctuation' };
-  }
-
   return { ...base, tier: DIFFICULTY_TIERS.MEDIUM, reason: 'default' };
 }
 
