@@ -560,7 +560,7 @@ class FixedOverlayLayer {
 
     this._el.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
-      if (e.target.closest('.wt-translation-bubble')) return;
+      if (e.target.closest('.wt-translation-bubble, .wt-bubble-toolbar')) return;
       e.preventDefault();
       startX = e.clientX; startY = e.clientY;
       this._selRect = document.createElement('div');
@@ -2361,7 +2361,7 @@ class BBoxSelector {
 
     const onMouseDown = (e) => {
       if (e.button !== 0) return;
-      if (e.target.closest('.wt-translation-bubble')) return; // let bubble clicks through
+      if (e.target.closest('.wt-translation-bubble, .wt-bubble-toolbar')) return; // let bubble clicks through
       e.preventDefault();
       this.onDragStart?.();
       overlay.classList.add('wt-dragging'); // pointer -> crosshair while an actual drag is happening
