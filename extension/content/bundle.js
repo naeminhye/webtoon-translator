@@ -3586,7 +3586,7 @@ function preprocessImageForVision(dataUrl, levels = 8) {
 // Called when Tesseract confidence is low: preprocess the crop and send to
 // the configured BYOK vision LLM for combined OCR + translation in one step.
 // Returns the translated string, or null if BYOK is not configured or fails.
-async function visionOcrTranslate(dataUrl) {
+async function visionOcrTranslate(dataUrl, storyCtx = null) {
   const s = await chrome.storage.local.get({
     'wt:translate-provider': 'google',
     'wt:byok-key':           '',
@@ -3608,7 +3608,15 @@ async function visionOcrTranslate(dataUrl) {
   const processed = await preprocessImageForVision(dataUrl);
   const base64    = processed.split(',')[1];
   const mime      = processed.match(/data:([^;]+);/)?.[1] ?? 'image/png';
-  const prompt    = `This is a speech bubble from a Korean webtoon. Read the Korean text and translate it to ${lang}. Return ONLY the translation, no explanation, no original text.`;
+
+  const ctxLines = [];
+  if (storyCtx?.title)        ctxLines.push(`Title: ${storyCtx.title}`);
+  if (storyCtx?.tags?.length) ctxLines.push(`Tags: ${storyCtx.tags.join(', ')}`);
+  if (storyCtx?.synopsis)     ctxLines.push(`Synopsis: ${storyCtx.synopsis}`);
+  const ctxPrefix = ctxLines.length ? ctxLines.join('\n') + '\n\n' : '';
+  const langName  = targetLanguageDisplayName(lang);
+  const prompt    = `${ctxPrefix}This is a speech bubble from a Korean webtoon. Read the Korean text in the image and translate it directly into ${langName}. Output ONLY the translated text — no alternatives, no explanation, no original text.`;
+
   try {
     return await adapter.callVisionApi(apiKey, model, base64, mime, prompt);
   } catch (err) {
@@ -4235,6 +4243,7 @@ function bootForPage() {
       job._ocrProvider    = provider;
       job._ocrConfidence  = confidence;
       job._difficultyTier = difficulty.tier;
+      job._ocrDataUrl     = dataUrl ?? null; // retained for vision-tier re-OCR via LLM
       return text;
     },
     runTranslate: async (job) => {
@@ -4252,7 +4261,16 @@ function bootForPage() {
         jobOverlayRenderer.render(job); // re-render with "Asking LLM…"
         const storyCtx = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
         try {
-          const result = await autoTranslate(job.originalText, { job, storyCtx, forceLlm: true });
+          // vision tier: send the cropped image to the LLM for combined OCR + translation
+          // so that low-confidence Tesseract text is bypassed entirely.
+          let result = null;
+          if (job._difficultyTier === DIFFICULTY_TIERS.VISION && job._ocrDataUrl) {
+            result = await visionOcrTranslate(job._ocrDataUrl, storyCtx);
+            if (result) {
+              job.originalText = '[vision]'; // mark that OCR came from the vision LLM
+            }
+          }
+          if (!result) result = await autoTranslate(job.originalText, { job, storyCtx, forceLlm: true });
           if (result) return result;
         } catch (llmErr) {
           console.warn('[WebtoonTranslate] LLM translate failed, falling back to Google:', llmErr?.message || llmErr);
