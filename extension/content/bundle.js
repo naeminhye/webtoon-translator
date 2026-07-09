@@ -29,7 +29,9 @@ const MSG    = {
 // catch a bad OCR/translation). Needs visual tuning against real panels: light
 // backgrounds vs. dark/stylized-text panels (e.g. colored SFX) may want
 // different values; hold-to-peek is the primary fix for the latter case.
-const OVERLAY_BG_OPACITY = 0.88;
+const OVERLAY_BG_OPACITY_DEFAULT = 0.88;
+let _globalBubbleOpacity = OVERLAY_BG_OPACITY_DEFAULT;
+let _globalBubbleFont    = '';  // '' = use CSS default (Noto Sans)
 
 /** '#rrggbb' (or '#rgb') -> 'rgba(r, g, b, alpha)'. Non-hex input passes through unchanged. */
 function hexToRgba(hex, alpha) {
@@ -745,7 +747,12 @@ class FixedOverlayLayer {
       } else {
         b.style.textShadow = 'none';
       }
-      if (s.fontFamily) b.style.fontFamily = `'${s.fontFamily}', system-ui, sans-serif`;
+      const fontFamily = s.fontFamily || _globalBubbleFont;
+      if (fontFamily) {
+        b.style.fontFamily = `'${fontFamily}', system-ui, sans-serif`;
+        if (!s.fontFamily) loadGoogleFont(fontFamily);
+      }
+      if (s.fontFamily) b.dataset.customFont = '1'; // prevent global font live-update from overriding
       if (s.textAlign) {
         b.style.textAlign      = s.textAlign;
         b.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
@@ -760,7 +767,7 @@ class FixedOverlayLayer {
     span.className = 'wt-bubble-text';
     span.textContent = ann.translatedText;
     const s = ann.style || {};
-    span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', OVERLAY_BG_OPACITY);
+    span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', _globalBubbleOpacity);
     b.appendChild(span);
     b.appendChild(createBubbleReloadButton(this._onReload, ann, img));
 
@@ -2583,10 +2590,12 @@ class OverlayRenderer {
       } else {
         b.style.textShadow = 'none';
       }
-      if (s.fontFamily) {
-        b.style.fontFamily = `'${s.fontFamily}', system-ui, sans-serif`;
-        loadGoogleFont(s.fontFamily);
+      const fontFamily = s.fontFamily || _globalBubbleFont;
+      if (fontFamily) {
+        b.style.fontFamily = `'${fontFamily}', system-ui, sans-serif`;
+        loadGoogleFont(fontFamily);
       }
+      if (s.fontFamily) b.dataset.customFont = '1';
       if (s.textAlign) {
         b.style.textAlign      = s.textAlign;
         b.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
@@ -2598,7 +2607,7 @@ class OverlayRenderer {
     span.className = 'wt-bubble-text';
     span.textContent = ann.translatedText;
     const s = ann.style || {};
-    span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', OVERLAY_BG_OPACITY);
+    span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', _globalBubbleOpacity);
     b.appendChild(span);
     b.appendChild(createBubbleReloadButton(this._onReload, ann, img));
 
@@ -3884,6 +3893,33 @@ function bootForPage() {
   const meta = adapter.getChapterMeta();
   console.log('[WebtoonTranslate] Active:', meta);
 
+  // Load global display settings (opacity, font) and apply before any bubbles render
+  chrome.storage.local.get({ 'wt:bubble-bg-opacity': OVERLAY_BG_OPACITY_DEFAULT, 'wt:bubble-font': '' }, (s) => {
+    _globalBubbleOpacity = s['wt:bubble-bg-opacity'];
+    _globalBubbleFont    = s['wt:bubble-font'];
+    if (_globalBubbleFont) loadGoogleFont(_globalBubbleFont);
+  });
+  // Re-apply when changed from the Settings page while this tab is open
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes['wt:bubble-bg-opacity']) {
+      _globalBubbleOpacity = changes['wt:bubble-bg-opacity'].newValue;
+      document.querySelectorAll('.wt-bubble-text').forEach(span => {
+        if (span.style.background !== 'transparent') {
+          const hex = span.style.background.match(/#[0-9a-f]{6}/i)?.[0] || '#ffffff';
+          span.style.background = hexToRgba(hex, _globalBubbleOpacity);
+        }
+      });
+    }
+    if (changes['wt:bubble-font']) {
+      _globalBubbleFont = changes['wt:bubble-font'] || '';
+      if (_globalBubbleFont) loadGoogleFont(_globalBubbleFont);
+      const font = _globalBubbleFont ? `'${_globalBubbleFont}', system-ui, sans-serif` : '';
+      document.querySelectorAll('.wt-translation-bubble').forEach(b => {
+        if (!b.dataset.customFont) b.style.fontFamily = font;
+      });
+    }
+  });
+
   const renderer    = new OverlayRenderer({ onReload: retranslateAnnotation });
   const isKakao     = adapter.usesFixedOverlay === true;
   const fixedLayer  = isKakao
@@ -3950,12 +3986,11 @@ function bootForPage() {
     });
   }
 
-  // Keyboard shortcut: T to toggle
+  // Keyboard shortcuts: T = toggle translations, S = toggle Quick OCR scan
   const keyHandler = (e) => {
-    if (e.key === 't' || e.key === 'T') {
-      if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
-      toggleTranslations();
-    }
+    if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+    if (e.key === 't' || e.key === 'T') toggleTranslations();
+    if (e.key === 's' || e.key === 'S') setReadScan(!readScanEnabled);
   };
   document.addEventListener('keydown', keyHandler);
 

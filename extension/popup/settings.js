@@ -176,6 +176,27 @@ async function initDisplaySettings() {
   }));
 }
 
+async function initAppearanceSettings() {
+  const stored = await chrome.storage.local.get({ 'wt:bubble-bg-opacity': 0.88, 'wt:bubble-font': '' });
+
+  const slider  = document.getElementById('bubble-bg-opacity');
+  const valSpan = document.getElementById('bubble-bg-opacity-val');
+  const pct     = Math.round(stored['wt:bubble-bg-opacity'] * 100);
+  slider.value        = pct;
+  valSpan.textContent = `${pct}%`;
+  slider.addEventListener('input', async () => {
+    valSpan.textContent = `${slider.value}%`;
+    await chrome.storage.local.set({ 'wt:bubble-bg-opacity': Number(slider.value) / 100 });
+  });
+
+  const fontSel = document.getElementById('bubble-font');
+  fontSel.value = stored['wt:bubble-font'] || '';
+  fontSel.addEventListener('change', async () => {
+    await chrome.storage.local.set({ 'wt:bubble-font': fontSel.value });
+  });
+}
+
 initTranslationSettings();
 initOcrSettings();
 initDisplaySettings();
+initAppearanceSettings();
