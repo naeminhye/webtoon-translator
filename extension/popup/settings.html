@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Webtoon Translate — Settings</title>
   <link rel="stylesheet" href="settings.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Pangolin&family=Patrick+Hand+SC&display=swap" />
   <script src="../shared/llm-adapters.js"></script>
 </head>
 <body>
@@ -324,21 +327,42 @@
 
           <!-- Default font -->
           <div class="field-group" style="margin-bottom:20px">
-            <label class="field-label" for="bubble-font">Default translation font</label>
-            <div class="lang-select-wrap">
-              <select id="bubble-font" class="lang-select">
-                <option value="">Default (Noto Sans)</option>
-                <option value="Noto Serif KR">Noto Serif KR</option>
-                <option value="Nanum Gothic">Nanum Gothic</option>
-                <option value="Nanum Myeongjo">Nanum Myeongjo</option>
-                <option value="Black Han Sans">Black Han Sans</option>
-                <option value="Gowun Dodum">Gowun Dodum</option>
-                <option value="Roboto">Roboto</option>
-                <option value="Open Sans">Open Sans</option>
-              </select>
-              <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            <label class="field-label">Translation font</label>
+            <div class="font-picker" id="font-picker">
+              <label class="font-option" data-font="">
+                <input type="radio" name="bubble-font" value="" checked />
+                <div class="font-option-inner">
+                  <span class="font-option-name">Default</span>
+                  <span class="font-option-preview" style="font-family:system-ui,-apple-system,'Segoe UI',sans-serif">Abc 가나다 123</span>
+                </div>
+              </label>
+              <label class="font-option" data-font="Pangolin">
+                <input type="radio" name="bubble-font" value="Pangolin" />
+                <div class="font-option-inner">
+                  <span class="font-option-name">Pangolin</span>
+                  <span class="font-option-preview font-preview-pangolin">Abc 가나다 123</span>
+                </div>
+              </label>
+              <label class="font-option" data-font="Patrick Hand SC">
+                <input type="radio" name="bubble-font" value="Patrick Hand SC" />
+                <div class="font-option-inner">
+                  <span class="font-option-name">Patrick Hand SC</span>
+                  <span class="font-option-preview font-preview-patrick">Abc 가나다 123</span>
+                </div>
+              </label>
+              <label class="font-option font-option-custom" data-font="__custom__" id="font-option-custom-label">
+                <input type="radio" name="bubble-font" value="__custom__" id="font-radio-custom" />
+                <div class="font-option-inner">
+                  <span class="font-option-name">Custom…</span>
+                  <span class="font-option-preview" id="font-custom-preview" style="color:#94a3b8">Enter a Google Font name</span>
+                </div>
+              </label>
             </div>
-            <p class="field-hint">Applied globally to all bubbles. Individual per-bubble fonts (set via the bubble toolbar) take priority.</p>
+            <div id="font-custom-row" class="field-row hidden" style="margin-top:8px">
+              <input type="text" id="font-custom-input" class="text-input" placeholder="e.g. Noto Serif KR" />
+              <button type="button" id="font-custom-apply" class="btn-primary" style="padding:9px 14px;flex-shrink:0">Apply</button>
+            </div>
+            <p class="field-hint" style="margin-top:6px">Applied to all translation bubbles. <span class="link-text" id="font-gfonts-link">Browse Google Fonts ↗</span></p>
           </div>
 
           <!-- Keyboard shortcuts -->

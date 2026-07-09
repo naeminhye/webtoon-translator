@@ -176,6 +176,8 @@ async function initDisplaySettings() {
   }));
 }
 
+const PRESET_FONTS = ['', 'Pangolin', 'Patrick Hand SC'];
+
 async function initAppearanceSettings() {
   const stored = await chrome.storage.local.get({ 'wt:bubble-bg-opacity': 0.88, 'wt:bubble-font': '' });
 
@@ -189,10 +191,71 @@ async function initAppearanceSettings() {
     await chrome.storage.local.set({ 'wt:bubble-bg-opacity': Number(slider.value) / 100 });
   });
 
-  const fontSel = document.getElementById('bubble-font');
-  fontSel.value = stored['wt:bubble-font'] || '';
-  fontSel.addEventListener('change', async () => {
-    await chrome.storage.local.set({ 'wt:bubble-font': fontSel.value });
+  // Font picker
+  const savedFont     = stored['wt:bubble-font'] || '';
+  const customRow     = document.getElementById('font-custom-row');
+  const customInput   = document.getElementById('font-custom-input');
+  const customPreview = document.getElementById('font-custom-preview');
+  const customApply   = document.getElementById('font-custom-apply');
+  const customRadio   = document.getElementById('font-radio-custom');
+  const radios        = document.querySelectorAll('input[name="bubble-font"]');
+
+  function loadGf(font) {
+    if (!font) return;
+    const id = 'gf-' + font.replace(/\s+/g, '-');
+    if (!document.getElementById(id)) {
+      const link = document.createElement('link');
+      link.id   = id;
+      link.rel  = 'stylesheet';
+      link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(font)}&display=swap`;
+      document.head.appendChild(link);
+    }
+  }
+
+  function setPickerValue(font) {
+    const isCustom = font && !PRESET_FONTS.includes(font);
+    radios.forEach(r => { r.checked = isCustom ? r.value === '__custom__' : r.value === font; });
+    customRow.classList.toggle('hidden', !isCustom);
+    if (isCustom) {
+      customInput.value = font;
+      customPreview.textContent = font;
+      customPreview.style.fontFamily = `'${font}', system-ui, sans-serif`;
+      customPreview.style.color = '';
+      loadGf(font);
+    }
+  }
+
+  loadGf('Pangolin');
+  loadGf('Patrick Hand SC');
+  setPickerValue(savedFont);
+
+  radios.forEach(r => r.addEventListener('change', async () => {
+    if (r.value === '__custom__') {
+      customRow.classList.remove('hidden');
+      customInput.focus();
+      return;
+    }
+    customRow.classList.add('hidden');
+    await chrome.storage.local.set({ 'wt:bubble-font': r.value });
+  }));
+
+  async function applyCustomFont() {
+    const font = customInput.value.trim();
+    customPreview.textContent = font || 'Enter a Google Font name';
+    customPreview.style.color = font ? '' : '#94a3b8';
+    if (font) {
+      customPreview.style.fontFamily = `'${font}', system-ui, sans-serif`;
+      loadGf(font);
+      customRadio.checked = true;
+      await chrome.storage.local.set({ 'wt:bubble-font': font });
+    }
+  }
+
+  customApply.addEventListener('click', applyCustomFont);
+  customInput.addEventListener('keydown', e => { if (e.key === 'Enter') applyCustomFont(); });
+
+  document.getElementById('font-gfonts-link').addEventListener('click', () => {
+    chrome.tabs.create({ url: 'https://fonts.google.com' });
   });
 }
 
