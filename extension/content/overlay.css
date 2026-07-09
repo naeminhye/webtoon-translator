@@ -965,7 +965,7 @@ body.wt-panel-open #wt-scan-btn { left: 24px; }
 
 #wt-dev-btn {
   position: fixed;
-  bottom: 28px;
+  bottom: 128px;
   left: 24px;
   z-index: 99997;
   width: 36px;
