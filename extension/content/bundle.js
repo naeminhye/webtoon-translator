@@ -4639,26 +4639,8 @@ function bootForPage() {
     window.addEventListener('resize', () => { fixedLayer?.repositionAll(); jobOverlayRenderer.repositionAll(); }, { passive: true });
   }
 
-  // ── chapter navigation (SPA) ───────────────────────────────────────────
-  // Naver is a SPA — URL changes via pushState without full page reload.
-  // We watch for URL changes and re-boot when chapter changes.
-
-  let lastUrl = location.href;
-  const urlObserver = new MutationObserver(() => {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      const newAdapter = findAdapter();
-      if (newAdapter) {
-        console.log('[WebtoonTranslate] SPA navigation detected, re-booting');
-        renderer.clearAll();
-        panel?.hide();
-        document.getElementById('wt-progress-bar')?.remove();
-        // Small delay for Naver to render new chapter DOM
-        setTimeout(() => bootForPage(), 800);
-      }
-    }
-  });
-  urlObserver.observe(document.body, { childList: true, subtree: true });
+  // URL observer is now global (see bottom of file) — handles both
+  // chapter→chapter and non-chapter→chapter transitions.
 
   // ── storage quota check ────────────────────────────────────────────────
 
@@ -4715,7 +4697,6 @@ function bootForPage() {
   bootCleanup = () => {
     disposed = true;
     stopWatching();
-    urlObserver.disconnect();
     chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     if (isKakao) { fixedLayer.disable(); fixedLayer.clearAll(); }
     else selector.disable();
@@ -4769,5 +4750,41 @@ chrome.storage.onChanged.addListener((changes, area) => {
     _overlayMode = changes[OVERLAY_MODE_KEY].newValue === 'side-by-side' ? 'side-by-side' : 'overlay';
   }
 });
+
+// ── Global SPA navigation watcher ────────────────────────────────────────────
+// Intercepts pushState/replaceState (React/Next.js SPAs) and popstate
+// (browser back/forward) so chapter transitions without a full page reload
+// correctly boot or tear down the extension UI.
+(function () {
+  let _lastUrl = location.href;
+  let _navDebounce = null;
+
+  function onUrlChange() {
+    if (location.href === _lastUrl) return;
+    _lastUrl = location.href;
+    clearTimeout(_navDebounce);
+    _navDebounce = setTimeout(() => {
+      if (!_wtEnabled) return;
+      const hasAdapter = !!findAdapter();
+      const isBooted   = !!bootCleanup;
+      if (hasAdapter && !isBooted) {
+        console.log('[WebtoonTranslate] SPA nav → chapter, booting');
+        bootForPage();
+      } else if (hasAdapter && isBooted) {
+        console.log('[WebtoonTranslate] SPA nav → chapter change, re-booting');
+        bootForPage();
+      } else if (!hasAdapter && isBooted) {
+        console.log('[WebtoonTranslate] SPA nav → non-chapter, tearing down');
+        teardown();
+      }
+    }, 600);
+  }
+
+  const _origPush    = history.pushState.bind(history);
+  const _origReplace = history.replaceState.bind(history);
+  history.pushState    = (...a) => { _origPush(...a);    onUrlChange(); };
+  history.replaceState = (...a) => { _origReplace(...a); onUrlChange(); };
+  window.addEventListener('popstate', onUrlChange);
+})();
 
 })();
