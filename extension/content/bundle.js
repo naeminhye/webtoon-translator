@@ -3972,6 +3972,133 @@ function bootForPage() {
   }
   scanBtn.addEventListener('click', () => setReadScan(!readScanEnabled));
 
+  // ── [DEV] Translation dump button ────────────────────────────────────────
+  // Shows story context + all translations sorted by panel/position for
+  // testing chapter-wide batch translation. Not shown in production builds.
+  const devBtn = document.createElement('button');
+  devBtn.id = 'wt-dev-btn';
+  devBtn.title = 'Dev: view all translations';
+  devBtn.setAttribute('aria-label', 'Dev translation dump');
+  devBtn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`;
+  document.body.appendChild(devBtn);
+
+  let _devNoteEl = null;
+
+  async function buildDevNote() {
+    const storyCtx = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
+    const { 'wt:translate-lang': targetLang } = await chrome.storage.local.get({ 'wt:translate-lang': 'vi' });
+
+    const lines = [];
+
+    // Story context block
+    lines.push('━━ Story Context ━━━━━━━━━━━━━━━━━━━━━━━━━');
+    if (storyCtx?.title)        lines.push(`Title:    ${storyCtx.title}`);
+    if (storyCtx?.tags?.length) lines.push(`Tags:     ${storyCtx.tags.join(', ')}`);
+    if (storyCtx?.synopsis)     lines.push(`Synopsis: ${storyCtx.synopsis}`);
+    lines.push(`Site: ${meta.site}  |  Title: ${meta.titleId}  |  Chapter: ${meta.chapterId}`);
+    lines.push(`Target lang: ${targetLang}`);
+    lines.push('');
+
+    // Sort annotations: by imageIndex then by bbox.y then bbox.x
+    const sorted = [...allAnnotations].sort((a, b) => {
+      const pi = (a.imageIndex ?? 0) - (b.imageIndex ?? 0);
+      if (pi !== 0) return pi;
+      const dy = (a.bbox?.y ?? 0) - (b.bbox?.y ?? 0);
+      if (Math.abs(dy) > 0.5) return dy;
+      return (a.bbox?.x ?? 0) - (b.bbox?.x ?? 0);
+    });
+
+    lines.push(`━━ Translations (${sorted.length} bubbles) ━━━━━━━━━━━━━━━━━`);
+    let currentPanel = -1;
+    sorted.forEach((ann, idx) => {
+      const panel = ann.imageIndex ?? 0;
+      if (panel !== currentPanel) {
+        if (currentPanel !== -1) lines.push('');
+        lines.push(`── Panel ${panel + 1} ─────────────────────────────────`);
+        currentPanel = panel;
+      }
+      const ocr  = ann.originalText  || '(no OCR)';
+      const trsl = ann.translatedText || '(no translation)';
+      lines.push(`[${idx + 1}] ${ocr}`);
+      lines.push(`     → ${trsl}`);
+    });
+
+    if (!sorted.length) lines.push('(no translations saved yet)');
+
+    return lines.join('\n');
+  }
+
+  function toggleDevNote() {
+    if (_devNoteEl) {
+      _devNoteEl.remove();
+      _devNoteEl = null;
+      return;
+    }
+
+    const note = document.createElement('div');
+    note.id = 'wt-dev-note';
+    // Positioned above the button cluster
+    const btnR = devBtn.getBoundingClientRect();
+    note.style.cssText = `
+      position:fixed;
+      bottom:${window.innerHeight - btnR.top + 8}px;
+      right:16px;
+      width:min(540px, calc(100vw - 32px));
+      max-height:60vh;
+      background:#0f172a;
+      color:#e2e8f0;
+      border:1px solid #334155;
+      border-radius:10px;
+      font-family:monospace;
+      font-size:12px;
+      line-height:1.55;
+      overflow-y:auto;
+      z-index:99999;
+      box-shadow:0 8px 32px rgba(0,0,0,0.6);
+    `;
+
+    // Header
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #1e293b;position:sticky;top:0;background:#0f172a;z-index:1;';
+    hdr.innerHTML = `<span style="font-weight:700;color:#818cf8;font-size:13px">Dev · Translation Dump</span>`;
+
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = 'Copy';
+    copyBtn.style.cssText = 'background:#6366f1;color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer;';
+    hdr.appendChild(copyBtn);
+    note.appendChild(hdr);
+
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'margin:0;padding:12px 14px;white-space:pre-wrap;word-break:break-word;';
+    pre.textContent = 'Loading…';
+    note.appendChild(pre);
+
+    document.body.appendChild(note);
+    _devNoteEl = note;
+
+    buildDevNote().then(text => {
+      pre.textContent = text;
+      copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(text).then(() => {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1800);
+        });
+      });
+    });
+
+    // Close when clicking outside
+    const outsideClick = (e) => {
+      if (!note.contains(e.target) && e.target !== devBtn) {
+        note.remove();
+        _devNoteEl = null;
+        document.removeEventListener('mousedown', outsideClick, true);
+      }
+    };
+    setTimeout(() => document.addEventListener('mousedown', outsideClick, true), 0);
+  }
+
+  devBtn.addEventListener('click', toggleDevNote);
+
   // One-time hint (persisted across sessions) explaining click-to-auto-detect,
   // since the overlay cursor alone doesn't make that obvious. Kakao only
   // supports drag-select (no auto-detect), so its crosshair cursor already
@@ -4708,6 +4835,8 @@ function bootForPage() {
     llmTestPopover.dismiss();
     toggleBtn.remove();
     scanBtn.remove();
+    devBtn.remove();
+    _devNoteEl?.remove(); _devNoteEl = null;
     panel?.hide();
     document.getElementById('wt-progress-bar')?.remove();
     document.getElementById('wt-job-badge')?.remove();
