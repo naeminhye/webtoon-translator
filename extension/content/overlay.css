@@ -223,7 +223,7 @@
 
 .wt-bubble-toolbar {
   position: absolute; /* left/top set inline — positioned relative to the bubble's parent, not the bubble itself */
-  z-index: 310; /* above .wt-resize-handle (300) */
+  z-index: 310; /* above .wt-resize-handle (300); overridden below for fixed-overlay sites */
   display: flex;
   gap: 5px;
 }
@@ -245,6 +245,10 @@
 .wt-bubble-toolbar button:active { transform: scale(0.92); }
 .wt-bubble-toolbar .wt-bt-delete:hover { background: #fef2f2; color: #b91c1c; }
 .wt-bubble-toolbar .wt-bt-llm-test:hover { background: #eef2ff; color: #6d28d9; }
+/* Fixed-overlay sites (Lezhin, Bomtoon, Kakao, Ridi): toolbar is a direct child of
+   document.body and shares the root stacking context with .wt-fixed-overlay (99980).
+   Must sit above the overlay and the bubble (99985). */
+body > .wt-bubble-toolbar { z-index: 99990; }
 
 /* ── LLM prompt preview/test popover (manual, per-region, BYOK only) ──────── */
 
