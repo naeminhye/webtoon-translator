@@ -40,6 +40,25 @@
     <!-- Cards grid -->
     <div class="cards">
 
+      <!-- Auto-detect card -->
+      <div class="card" id="card-auto-detect">
+        <div class="card-header">
+          <div class="card-icon card-icon-display">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
+            </svg>
+          </div>
+          <div style="flex:1">
+            <div class="card-title">Auto-detect bubbles</div>
+            <div class="card-desc">Automatically detect, OCR and translate speech bubbles as you scroll. Turn off to only translate regions you select manually.</div>
+          </div>
+          <label style="display:flex;align-items:center;cursor:pointer;padding:4px">
+            <input type="checkbox" id="auto-detect-toggle" style="width:18px;height:18px;accent-color:#6366f1;cursor:pointer" />
+          </label>
+        </div>
+      </div>
+
       <!-- Translation card -->
       <div class="card" id="card-translation">
         <div class="card-header">
@@ -287,17 +306,6 @@
             </label>
           </div>
 
-          <div class="field-group" style="margin-top:14px">
-            <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
-              <input type="checkbox" id="auto-detect-toggle" style="width:16px;height:16px;accent-color:#6366f1;cursor:pointer" />
-              <div>
-                <div style="font-weight:600;font-size:13px">Auto-detect bubbles</div>
-                <p class="field-hint" style="margin:2px 0 0">
-                  Automatically detect, OCR and translate speech bubbles as you scroll (uses the ONNX detector). Turn off to only translate regions you select manually.
-                </p>
-              </div>
-            </label>
-          </div>
         </div>
       </div>
 
