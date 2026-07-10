@@ -13,6 +13,14 @@ const IOU_THRESH  = 0.45;
 // Session singleton with warm-up
 // ---------------------------------------------------------------------------
 
+// The vendored ORT build only ships single-thread binaries (ort-wasm.wasm,
+// ort-wasm-simd.wasm). With COOP/COEP the page is crossOriginIsolated, which
+// makes ORT default to the threaded binary (ort-wasm-simd-threaded.wasm) —
+// not present → "no available backend found". Pin to 1 thread until the
+// threaded .wasm is added to vendor/ort/.
+ort.env.wasm.numThreads = 1;
+ort.env.wasm.wasmPaths  = chrome.runtime.getURL('vendor/ort/');
+
 let _sessionPromise = null;
 
 function getSession() {
