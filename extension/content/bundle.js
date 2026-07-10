@@ -2996,7 +2996,16 @@ const STORY_CONTEXT_SCHEMA_VERSION = 2;
  * user or allowed to block translation.
  */
 async function getStoryContext(adapter, site, titleId) {
-  if (typeof adapter.fetchStoryContext !== 'function') return null;
+  // Generic fallback for adapters without a real fetchStoryContext (every
+  // non-Naver site today): scrape the page's own og: meta tags. Not cached —
+  // it's synchronous DOM access, and titles differ per chapter page anyway.
+  if (typeof adapter.fetchStoryContext !== 'function') {
+    const og = (p) => document.querySelector(`meta[property="og:${p}"]`)?.content?.trim() || '';
+    const title    = og('title') || document.title?.trim() || '';
+    const synopsis = og('description');
+    if (!title && !synopsis) return null;
+    return { title, synopsis, tags: [], source: 'page-meta' };
+  }
   const key = `${STORY_CONTEXT_KEY_PREFIX}${site}:${titleId}`;
 
   const stored = await chrome.storage.local.get(key);
@@ -4095,9 +4104,9 @@ function bootForPage() {
     const lines = [];
 
     // Story context block
-    lines.push('━━ Story Context ━━━━━━━━━━━━━━━━━━━━━━━━━');
-    if (storyCtx?.title)        lines.push(`Title:    ${storyCtx.title}`);
-    if (storyCtx?.tags?.length) lines.push(`Tags:     ${storyCtx.tags.join(', ')}`);
+    lines.push('# Story Context');
+    if (storyCtx?.title)        lines.push(`Title: ${storyCtx.title}`);
+    if (storyCtx?.tags?.length) lines.push(`Tags: ${storyCtx.tags.join(', ')}`);
     if (storyCtx?.synopsis)     lines.push(`Synopsis: ${storyCtx.synopsis}`);
     lines.push(`Target lang: ${targetLang}`);
     lines.push('');
@@ -4111,13 +4120,14 @@ function bootForPage() {
       return (a.bbox?.x ?? 0) - (b.bbox?.x ?? 0);
     });
 
-    lines.push(`━━ Translations (${sorted.length} bubbles) ━━━━━━━━━━━━━━━━━`);
+    lines.push(`# Translations (${sorted.length} bubbles)`);
+    lines.push('');
     let currentPanel = -1;
     sorted.forEach((ann, idx) => {
       const panel = ann.imageIndex ?? 0;
       if (panel !== currentPanel) {
         if (currentPanel !== -1) lines.push('');
-        lines.push(`── Panel ${panel + 1} ─────────────────────────────────`);
+        lines.push(`## Panel ${panel + 1}`);
         currentPanel = panel;
       }
       const ocr  = ann.originalText  || '(no OCR)';
@@ -4129,7 +4139,7 @@ function bootForPage() {
     if (!sorted.length) lines.push('(no translations saved yet)');
 
     lines.push('');
-    lines.push('━━ Instructions ━━━━━━━━━━━━━━━━━━━━━━━━━');
+    lines.push('# Instructions');
     lines.push('Review the translations above for accuracy and naturalness.');
     lines.push('Output ONLY the lines that need correction, one per line:');
     lines.push('  [N] corrected translation');
@@ -5250,157 +5260,137 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 // ── Bubble detection tiling scheduler ────────────────────────────────────────
 //
-// Viewport-based YOLO bubble detection. Divides the page into 1024px tall
-// tiles with 128px overlap (so bubbles crossing tile boundaries are captured
-// by both tiles). Detects only tiles near the current viewport and prefetches
-// 2 tiles ahead in the scroll direction.
+// Per-IMAGE tiling: each panel image is divided into 1024px tall tiles (in
+// displayed coordinates) with 128px overlap, cached by image URL + tile index.
+// Tiling in image space instead of page space matters for two reasons:
+//  - Ridi/Kakao scroll inside an inner container, so window.scrollY never
+//    changes and page-Y based tiles go stale/never advance;
+//  - virtual-scroll layouts move images around the page, but an image-local
+//    tile stays valid wherever the image lands.
+// Boxes are mapped to page-absolute px at response time from the image's
+// current rect.
 //
 // Usage:
-//   bubbleDetector.detect()  — schedule detection around current viewport
-//   bubbleDetector.reset()   — clear cache (call on chapter navigation)
-//   bubbleDetector.getBoxes(y) — boxes for tiles covering document Y coord
+//   bubbleDetector.detect() — schedule detection for images near the viewport
+//   bubbleDetector.reset()  — clear cache (chapter navigation)
+//   bubbleDetector.onBoxes  — callback armed by bootForPage; null = dormant
 
 const bubbleDetector = (() => {
   const TILE_H  = 1024;
   const OVERLAP = 128;
   const STRIDE  = TILE_H - OVERLAP;
-  const PREFETCH_TILES = 2;
+  const PREFETCH_PX = 2048; // detect this far below the viewport
 
-  const tileCache  = new Map();  // tileIndex → Array<{x1,y1,x2,y2,score}>
-  const inFlight   = new Set();  // tileIndex → currently detecting
+  const doneTiles = new Set(); // `${src}#${tileIdx}` — completed (boxes emitted)
+  const inFlight  = new Set();
 
-  // ---- collect webtoon images intersecting a tile ----
-  function collectTileImages(tileIndex) {
-    const y0 = tileIndex * STRIDE;
-    const y1 = y0 + TILE_H;
-    const tileH = Math.min(TILE_H, document.documentElement.scrollHeight - y0);
-    if (tileH <= 0) return null;
-
-    const images = [];
-    for (const img of document.querySelectorAll('img')) {
-      if (!img.currentSrc || img.naturalWidth === 0) continue;
-      // skip lazy-load placeholders (1×1 data: GIFs) and decorative icons
-      if (img.currentSrc.startsWith('data:')) continue;
-      if (img.naturalWidth < 100 || img.naturalHeight < 100) continue;
-      const r = img.getBoundingClientRect();
-      const absTop    = r.top    + window.scrollY;
-      const absBottom = r.bottom + window.scrollY;
-      if (absBottom <= y0 || absTop >= y1) continue;
-      images.push({
-        el: img,
-        url: img.currentSrc,
-        x: r.left,          // tile-local: tile spans full page width
-        y: absTop - y0,
-        w: r.width,
-        h: r.height,
-      });
-    }
-    if (images.length === 0) return null;
-
-    return {
-      images,
-      tileW: document.documentElement.scrollWidth,
-      tileH,
-    };
+  function eligible(img) {
+    return img.currentSrc && img.naturalWidth >= 100 && img.naturalHeight >= 100 &&
+           !img.currentSrc.startsWith('data:');
   }
 
-  // Fast path: composite the tile right here from the already-loaded <img>
-  // elements. Works whenever the images don't taint the canvas — blob: URLs
-  // (Ridi/Lezhin, which the background can never fetch) and any CORS-clean
-  // host. Throws SecurityError on tainting hosts (e.g. Naver's pstatic.net),
-  // in which case detectTile falls back to background-side compositing.
-  function composeTileLocally({ images, tileW, tileH }) {
+  // Fast path: crop the tile from the already-loaded <img>. Works whenever the
+  // image doesn't taint the canvas — blob: URLs (Ridi/Lezhin, which the
+  // background can never fetch) and CORS-clean hosts. Throws SecurityError on
+  // tainting hosts (e.g. Naver's pstatic.net) → background fallback.
+  function composeTileLocally(img, rect, y0, tileH) {
     const canvas = document.createElement('canvas');
-    canvas.width  = tileW;
-    canvas.height = tileH;
+    canvas.width  = Math.max(1, Math.round(rect.width));
+    canvas.height = Math.max(1, Math.round(tileH));
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, tileW, tileH);
-    for (const im of images) ctx.drawImage(im.el, im.x, im.y, im.w, im.h);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, -y0, rect.width, rect.height);
     return canvas.toDataURL('image/jpeg', 0.85); // throws if tainted
   }
 
-  async function detectTile(tileIndex) {
-    if (tileCache.has(tileIndex) || inFlight.has(tileIndex)) return;
-    inFlight.add(tileIndex);
+  async function detectImageTile(img, tileIdx) {
+    const key = `${img.currentSrc}#${tileIdx}`;
+    if (doneTiles.has(key) || inFlight.has(key)) return;
+    inFlight.add(key);
     try {
-      const tile = collectTileImages(tileIndex);
-      if (!tile) { tileCache.set(tileIndex, []); return; }
+      const rect  = img.getBoundingClientRect();
+      const y0    = tileIdx * STRIDE;
+      const tileH = Math.min(TILE_H, rect.height - y0);
+      if (tileH <= 0) { doneTiles.add(key); return; }
 
-      let payload;
+      let payload, usedFallback = false;
       try {
-        payload = { dataUrl: composeTileLocally(tile), tileIndex };
+        payload = { dataUrl: composeTileLocally(img, rect, y0, tileH), tileIndex: key };
       } catch {
-        // Canvas tainted → background fetches & composites via host_permissions.
-        // blob: URLs are process-local and unfetchable there, so drop them.
+        if (img.currentSrc.startsWith('blob:')) { doneTiles.add(key); return; }
+        // Background fetches the original and crops this vertical slice
+        // (fractions of displayed height map 1:1 to natural height).
+        usedFallback = true;
         payload = {
-          images: tile.images
-            .filter(im => !im.url.startsWith('blob:'))
-            .map(({ el, ...rest }) => rest),
-          tileW: tile.tileW,
-          tileH: tile.tileH,
-          tileIndex,
+          imageUrl: img.currentSrc,
+          sy: y0 / rect.height,
+          sh: tileH / rect.height,
+          tileIndex: key,
         };
-        if (payload.images.length === 0) { tileCache.set(tileIndex, []); return; }
       }
 
-      const result = await sendToBackground({
-        type: MSG.DETECT_BUBBLES,
-        payload,
-      });
+      const result = await sendToBackground({ type: MSG.DETECT_BUBBLES, payload });
+      if (result?.error) throw new Error(result.error);
+      doneTiles.add(key);
 
       const boxes = result?.boxes ?? [];
-      // Translate box coords from tile-local to page-absolute
-      const y0 = tileIndex * STRIDE;
+      if (!boxes.length) return;
+
+      // Map tile-local boxes to page-absolute px using the image's CURRENT
+      // rect (virtual scrollers may have moved it since the request).
+      const r2   = img.getBoundingClientRect();
+      const left = r2.left + window.scrollX;
+      const top  = r2.top  + window.scrollY;
+      // Local path boxes are in displayed px; fallback boxes are in the
+      // original image's natural px.
+      const scale = usedFallback ? r2.width / img.naturalWidth : 1;
+      const yOff  = top + (y0 / rect.height) * r2.height;
       const absBoxes = boxes.map(b => ({
-        x1: b.x1, y1: b.y1 + y0,
-        x2: b.x2, y2: b.y2 + y0,
+        x1: left + b.x1 * scale, y1: yOff + b.y1 * scale,
+        x2: left + b.x2 * scale, y2: yOff + b.y2 * scale,
         score: b.score,
       }));
-      tileCache.set(tileIndex, absBoxes);
-      if (absBoxes.length) api.onBoxes?.(absBoxes);
+      api.onBoxes?.(absBoxes);
     } catch (err) {
-      console.warn('[bubbleDetector] tile', tileIndex, 'failed:', err);
-      tileCache.set(tileIndex, []);
+      console.warn('[bubbleDetector] tile', key, 'failed:', err);
+      doneTiles.add(key); // don't retry-loop a permanently failing tile
     } finally {
-      inFlight.delete(tileIndex);
+      inFlight.delete(key);
     }
   }
 
   function scheduleTiles() {
-    if (!api.onBoxes) return; // detection is armed by bootForPage; dormant otherwise
-    const vpTop    = window.scrollY;
-    const vpBottom = vpTop + window.innerHeight;
-    const first    = Math.max(0, Math.floor(vpTop    / STRIDE));
-    const last     = Math.ceil(vpBottom / STRIDE) + PREFETCH_TILES;
-    for (let i = first; i <= last; i++) {
-      detectTile(i);
+    if (!api.onBoxes) return; // armed by bootForPage; dormant otherwise
+    const vpBottom = window.innerHeight + PREFETCH_PX;
+    for (const img of document.querySelectorAll('img')) {
+      if (!eligible(img)) continue;
+      const r = img.getBoundingClientRect();
+      if (r.bottom <= 0 || r.top >= vpBottom || r.height === 0) continue;
+      // image-local displayed-px range currently in the extended viewport
+      const visTop    = Math.max(0, -r.top);
+      const visBottom = Math.min(r.height, vpBottom - r.top);
+      const first = Math.max(0, Math.floor(visTop / STRIDE));
+      const last  = Math.max(first, Math.floor(Math.max(0, visBottom - 1) / STRIDE));
+      for (let i = first; i <= last; i++) detectImageTile(img, i);
     }
   }
 
-  // throttled scroll listener (≤ 1 call per 150ms)
+  // Throttled scroll listener. capture:true so scrolls of INNER containers
+  // (Ridi/Kakao viewers scroll a div, not the window — scroll events don't
+  // bubble, but they do capture) reach us too.
   let _scrollTimer = null;
   window.addEventListener('scroll', () => {
     if (_scrollTimer) return;
     _scrollTimer = setTimeout(() => { _scrollTimer = null; scheduleTiles(); }, 150);
-  }, { passive: true });
+  }, { passive: true, capture: true });
 
   const api = {
     // Set by bootForPage to receive page-absolute boxes as tiles complete;
     // while null the whole detector (including the scroll listener) is dormant.
-    onBoxes:  null,
-    detect:   scheduleTiles,
-    reset()   { tileCache.clear(); inFlight.clear(); },
-    getBoxes(pageY) {
-      const tileIndex = Math.floor(pageY / STRIDE);
-      return [
-        ...(tileCache.get(tileIndex)     ?? []),
-        ...(tileCache.get(tileIndex + 1) ?? []),
-      ].filter((b, i, arr) =>
-        // deduplicate by reference (same object appears in both tiles)
-        arr.indexOf(b) === i && b.y1 <= pageY && b.y2 >= pageY,
-      );
-    },
+    onBoxes: null,
+    detect:  scheduleTiles,
+    reset()  { doneTiles.clear(); inFlight.clear(); },
   };
   return api;
 })();

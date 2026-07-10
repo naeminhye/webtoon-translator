@@ -95,36 +95,29 @@ async function _getTileBitmap(url) {
 // Composites the tile in the service worker (cross-origin fetch is allowed
 // here via host_permissions, so no canvas taint) and forwards the resulting
 // dataUrl to the offscreen ONNX runner.
-async function handleDetectBubbles({ dataUrl: precomposed, images, tileW, tileH, tileIndex }) {
-  // Content script composites locally when the canvas isn't tainted
-  // (blob:-image sites like Ridi/Lezhin, CORS-clean hosts) and sends the
-  // finished dataUrl; only tainting hosts take the fetch-and-composite path.
-  if (precomposed) {
-    await ensureOffscreen();
-    return chrome.runtime.sendMessage({ type: 'DETECT_RUN', payload: { dataUrl: precomposed, tileIndex } });
+// Two payload shapes from the content script:
+//  { dataUrl, tileIndex }            — tile already composited in-page (blob:
+//                                      image sites, CORS-clean hosts)
+//  { imageUrl, sy, sh, tileIndex }   — tainting hosts: fetch the original here
+//                                      (host_permissions bypasses CORS) and
+//                                      crop the [sy, sy+sh] height fraction
+async function handleDetectBubbles({ dataUrl: precomposed, imageUrl, sy, sh, tileIndex }) {
+  let dataUrl = precomposed;
+  if (!dataUrl) {
+    const bitmap = await _getTileBitmap(imageUrl);
+    const cropY = Math.round(sy * bitmap.height);
+    const cropH = Math.max(1, Math.min(bitmap.height - cropY, Math.round(sh * bitmap.height)));
+    const canvas = new OffscreenCanvas(bitmap.width, cropH);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, cropY, bitmap.width, cropH, 0, 0, bitmap.width, cropH);
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+    dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Failed to encode tile'));
+      reader.readAsDataURL(blob);
+    });
   }
-  const canvas = new OffscreenCanvas(tileW, tileH);
-  const ctx    = canvas.getContext('2d');
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, tileW, tileH);
-
-  for (const im of images) {
-    try {
-      const bitmap = await _getTileBitmap(im.url);
-      ctx.drawImage(bitmap, im.x, im.y, im.w, im.h);
-    } catch (err) {
-      console.warn('[detect] failed to fetch tile image', im.url, err);
-    }
-  }
-
-  const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
-  const dataUrl = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload  = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Failed to encode tile'));
-    reader.readAsDataURL(blob);
-  });
-
   await ensureOffscreen();
   return chrome.runtime.sendMessage({ type: 'DETECT_RUN', payload: { dataUrl, tileIndex } });
 }
