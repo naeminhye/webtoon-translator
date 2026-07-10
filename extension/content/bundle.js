@@ -3214,7 +3214,14 @@ class RidiAdapter {
         if (imgs.length) callback(imgs);
       }, 150);
     });
-    observer.observe(root, { subtree: true, attributes: true, attributeFilter: ['src'] });
+    // childList: true is required alongside the attribute watch — Ridi's
+    // virtual-scroll viewer inserts brand-new <img data-index> nodes as panels
+    // scroll into range (not just flips src: '' -> blob: on existing nodes).
+    // Without it, a fast scroll skips straight past a panel's mount before any
+    // attribute mutation fires, so the panel never gets picked up; a slow
+    // scroll "works" only because the node happens to already exist by the
+    // time some unrelated attribute mutation elsewhere triggers a rescan.
+    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['src'] });
     return () => observer.disconnect();
   }
 }
@@ -4250,16 +4257,22 @@ function bootForPage() {
         if (!patches.length) { applyStatus.textContent = 'No valid lines found.'; return; }
         applyBtn.disabled = true;
         applyBtn.textContent = 'Applying…';
-        let applied = 0;
+        let applied = 0, skipped = 0;
         for (const { ann, newText } of patches) {
           const key = annKeyOf(ann);
           const img = images[ann.imageIndex ?? 0];
+          // Virtual-scroll sites (Ridi/Lezhin) can unload/reindex `images`
+          // since the annotation was created — its imageIndex may no longer
+          // resolve. Skip rather than crash the whole apply loop on one bad entry.
+          if (!img) { skipped++; continue; }
           await applyTranslatedText(key, img, newText);
           applied++;
         }
         applyBtn.disabled = false;
         applyBtn.textContent = 'Apply';
-        applyStatus.textContent = `✓ ${applied} bubble${applied !== 1 ? 's' : ''} updated.`;
+        applyStatus.textContent = skipped
+          ? `✓ ${applied} updated, ${skipped} skipped (panel not loaded).`
+          : `✓ ${applied} bubble${applied !== 1 ? 's' : ''} updated.`;
         applyTextarea.value = '';
       });
     });
