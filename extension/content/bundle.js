@@ -2096,6 +2096,9 @@ class JobManager {
     }
     const overlapRatio = this._findOverlap(bbox, imageIndex, existingAnnKey);
     if (overlapRatio >= OVERLAP_THRESHOLD) {
+      // ONNX auto-detect is unattended — a duplicate region is dropped
+      // silently instead of interrupting the user with a confirm popup.
+      if (source === 'onnx-detect') return null;
       const proceed = await this._confirmOverlap(screenPos);
       if (!proceed) return null;
     }
@@ -4572,6 +4575,21 @@ function bootForPage() {
       job._ocrConfidence  = confidence;
       job._difficultyTier = difficulty.tier;
       job._ocrDataUrl     = dataUrl ?? null; // retained for vision-tier re-OCR via LLM
+
+      // Quality gate for unattended ONNX auto-detect jobs only: a detector
+      // false positive (box over art) or stylised SFX OCRs to garbage — e.g.
+      // digit strings like "29109" — or very low confidence. A manual
+      // selection is the user's explicit intent, so it always proceeds.
+      if (job.source === 'onnx-detect') {
+        const trimmed   = (text || '').trim();
+        const hasHangul = /[가-힣ㄱ-ㆎ]/.test(trimmed);
+        const confOk    = typeof confidence !== 'number' || confidence >= 55;
+        if (!trimmed || !hasHangul || !confOk) {
+          console.log(`[WebtoonTranslate] auto-detect region dropped (conf=${confidence ?? '?'}, text="${trimmed.slice(0, 30)}")`);
+          jobManager.cancel(job.id);
+          return '';
+        }
+      }
       return text;
     },
     runTranslate: async (job) => {
@@ -4709,12 +4727,50 @@ function bootForPage() {
     }));
   }
 
+  // Page-absolute-pixel overlap against existing jobs/annotations. The
+  // %-of-image check (findOverlapForBbox) can't compare across images, so a
+  // bubble spanning two stacked panels dodges it — its saved annotation lives
+  // on image A while the new detection's centre maps to image B. Comparing in
+  // page space catches that.
+  function _pageRectOf(imageEl, bboxPct) {
+    const r = imageEl.getBoundingClientRect();
+    const left = r.left + window.scrollX, top = r.top + window.scrollY;
+    return {
+      x1: left + (bboxPct.x / 100) * r.width,
+      y1: top  + (bboxPct.y / 100) * r.height,
+      x2: left + ((bboxPct.x + bboxPct.w) / 100) * r.width,
+      y2: top  + ((bboxPct.y + bboxPct.h) / 100) * r.height,
+    };
+  }
+
+  function overlapsExistingOnPage(box) {
+    const hits = (rect) => {
+      const iw = Math.min(box.x2, rect.x2) - Math.max(box.x1, rect.x1);
+      const ih = Math.min(box.y2, rect.y2) - Math.max(box.y1, rect.y1);
+      if (iw <= 0 || ih <= 0) return false;
+      const inter   = iw * ih;
+      const areaBox = (box.x2 - box.x1) * (box.y2 - box.y1);
+      const areaR   = (rect.x2 - rect.x1) * (rect.y2 - rect.y1);
+      return inter / Math.min(areaBox, areaR) > ONNX_MAX_OVERLAP;
+    };
+    for (const job of jobManager.jobs.values()) {
+      if (job.status === 'error' || !job.imageEl) continue;
+      if (hits(_pageRectOf(job.imageEl, job.bbox))) return true;
+    }
+    for (const a of allAnnotations) {
+      const img = images[a.imageIndex ?? 0];
+      if (img && hits(_pageRectOf(img, a.bbox))) return true;
+    }
+    return false;
+  }
+
   function onDetectedBoxes(absBoxes) {
     for (const b of mergeNearbyBoxes(absBoxes)) {
       const bw = b.x2 - b.x1, bh = b.y2 - b.y1;
       if (bw < ONNX_MIN_BOX_PX || bh < ONNX_MIN_BOX_PX) continue;
       if (bw > ONNX_MAX_BOX_PX || bh > ONNX_MAX_BOX_PX) continue;
       if (b.score < ONNX_AUTO_MIN_SCORE) continue;
+      if (overlapsExistingOnPage(b)) continue;
 
       // Locate the panel image containing the box centre.
       const cx = (b.x1 + b.x2) / 2;
