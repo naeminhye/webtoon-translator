@@ -5091,50 +5091,51 @@ const bubbleDetector = (() => {
   const tileCache  = new Map();  // tileIndex → Array<{x1,y1,x2,y2,score}>
   const inFlight   = new Set();  // tileIndex → currently detecting
 
-  // ---- crop a tile from the page's composite image ----
-  function cropTileDataUrl(tileIndex) {
-    const y0      = tileIndex * STRIDE;
-    const y1      = y0 + TILE_H;
-    const pageW   = document.documentElement.scrollWidth;
-    const tileH   = Math.min(TILE_H, document.documentElement.scrollHeight - y0);
+  // ---- collect layout of webtoon images intersecting a tile ----
+  // Webtoon images are cross-origin (pstatic.net, kakao CDN, …), so drawing
+  // them on a content-script canvas taints it and toDataURL throws. Instead we
+  // send only URLs + layout to the background, which fetches the images itself
+  // (host_permissions grants cross-origin fetch) and composites the tile there.
+  function collectTileImages(tileIndex) {
+    const y0 = tileIndex * STRIDE;
+    const y1 = y0 + TILE_H;
+    const tileH = Math.min(TILE_H, document.documentElement.scrollHeight - y0);
     if (tileH <= 0) return null;
 
-    // Collect all webtoon images in this vertical slice
-    const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
+    const images = [];
+    for (const img of document.querySelectorAll('img')) {
+      if (!img.currentSrc || img.naturalWidth === 0) continue;
       const r = img.getBoundingClientRect();
-      const absTop    = r.top  + window.scrollY;
+      const absTop    = r.top    + window.scrollY;
       const absBottom = r.bottom + window.scrollY;
-      return absBottom > y0 && absTop < y1 && img.naturalWidth > 0;
-    });
-
-    if (imgs.length === 0) return null;
-
-    const canvas = document.createElement('canvas');
-    canvas.width  = pageW;
-    canvas.height = tileH;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, pageW, tileH);
-
-    for (const img of imgs) {
-      const r = img.getBoundingClientRect();
-      const absTop = r.top + window.scrollY;
-      ctx.drawImage(img, r.left, absTop - y0, r.width, r.height);
+      if (absBottom <= y0 || absTop >= y1) continue;
+      images.push({
+        url: img.currentSrc,
+        x: r.left,          // tile-local: tile spans full page width
+        y: absTop - y0,
+        w: r.width,
+        h: r.height,
+      });
     }
+    if (images.length === 0) return null;
 
-    return canvas.toDataURL('image/jpeg', 0.85);
+    return {
+      images,
+      tileW: document.documentElement.scrollWidth,
+      tileH,
+    };
   }
 
   async function detectTile(tileIndex) {
     if (tileCache.has(tileIndex) || inFlight.has(tileIndex)) return;
     inFlight.add(tileIndex);
     try {
-      const dataUrl = cropTileDataUrl(tileIndex);
-      if (!dataUrl) { tileCache.set(tileIndex, []); return; }
+      const tile = collectTileImages(tileIndex);
+      if (!tile) { tileCache.set(tileIndex, []); return; }
 
       const result = await sendToBackground({
         type: MSG.DETECT_BUBBLES,
-        payload: { dataUrl, tileIndex },
+        payload: { ...tile, tileIndex },
       });
 
       const boxes = result?.boxes ?? [];

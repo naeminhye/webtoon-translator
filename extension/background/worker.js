@@ -68,9 +68,58 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-async function handleDetectBubbles(payload) {
+// Bitmap cache for tile compositing — adjacent tiles overlap by 128px, so the
+// same webtoon image is typically needed by 2+ tiles. Small LRU keyed by URL.
+const _tileBitmapCache = new Map(); // url → ImageBitmap
+const TILE_BITMAP_CACHE_MAX = 8;
+
+async function _getTileBitmap(url) {
+  if (_tileBitmapCache.has(url)) {
+    const bmp = _tileBitmapCache.get(url);
+    _tileBitmapCache.delete(url); // refresh LRU order
+    _tileBitmapCache.set(url, bmp);
+    return bmp;
+  }
+  const res    = await _fetchImage(url);
+  const blob   = await res.blob();
+  const bitmap = await createImageBitmap(blob);
+  _tileBitmapCache.set(url, bitmap);
+  if (_tileBitmapCache.size > TILE_BITMAP_CACHE_MAX) {
+    const [oldestUrl, oldest] = _tileBitmapCache.entries().next().value;
+    _tileBitmapCache.delete(oldestUrl);
+    oldest.close();
+  }
+  return bitmap;
+}
+
+// Composites the tile in the service worker (cross-origin fetch is allowed
+// here via host_permissions, so no canvas taint) and forwards the resulting
+// dataUrl to the offscreen ONNX runner.
+async function handleDetectBubbles({ images, tileW, tileH, tileIndex }) {
+  const canvas = new OffscreenCanvas(tileW, tileH);
+  const ctx    = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, tileW, tileH);
+
+  for (const im of images) {
+    try {
+      const bitmap = await _getTileBitmap(im.url);
+      ctx.drawImage(bitmap, im.x, im.y, im.w, im.h);
+    } catch (err) {
+      console.warn('[detect] failed to fetch tile image', im.url, err);
+    }
+  }
+
+  const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to encode tile'));
+    reader.readAsDataURL(blob);
+  });
+
   await ensureOffscreen();
-  return chrome.runtime.sendMessage({ type: 'DETECT_BUBBLES', payload });
+  return chrome.runtime.sendMessage({ type: 'DETECT_BUBBLES', payload: { dataUrl, tileIndex } });
 }
 
 async function handleSave({ site, titleId, chapterId, annotations }) {
