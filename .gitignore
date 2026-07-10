@@ -2,3 +2,7 @@
 
 dist/
 node_modules/
+
+# ONNX models — downloaded/converted locally, see extension/models/README.md
+extension/models/*.onnx
+extension/models/*.bak
