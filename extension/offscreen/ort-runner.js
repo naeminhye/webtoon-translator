@@ -20,6 +20,16 @@ const IOU_THRESH  = 0.45;
 ort.env.wasm.numThreads = 1;
 ort.env.wasm.wasmPaths  = chrome.runtime.getURL('vendor/ort/');
 
+// ORT 1.18 calls GPUAdapter.requestAdapterInfo(), which newer Chrome removed
+// in favour of the GPUAdapter.info property. Polyfill it so the WebGPU EP
+// can initialise. (Fixed upstream in onnxruntime-web ≥1.19 — drop this when
+// the vendored bundle is upgraded.)
+if (typeof GPUAdapter !== 'undefined' && !GPUAdapter.prototype.requestAdapterInfo) {
+  GPUAdapter.prototype.requestAdapterInfo = function () {
+    return Promise.resolve(this.info);
+  };
+}
+
 let _sessionPromise = null;
 
 function getSession() {
