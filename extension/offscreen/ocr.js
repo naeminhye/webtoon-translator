@@ -43,7 +43,10 @@ let workerPromise = null;
 function getWorker() {
   if (!workerPromise) {
     broadcast('initializing');
-    workerPromise = Tesseract.createWorker('kor', Tesseract.OEM.LSTM_ONLY, {
+    // kor+eng: the Korean traineddata is notoriously bad at digits/Latin
+    // (e.g. "30000" silently dropped from a bubble) — the eng model fills
+    // that gap. Both files ship in vendor/tesseract/lang/.
+    workerPromise = Tesseract.createWorker('kor+eng', Tesseract.OEM.LSTM_ONLY, {
       workerPath:    VENDOR + 'worker.min.js',
       corePath:      VENDOR + 'tesseract-core-simd-lstm.wasm.js',
       langPath:      VENDOR + 'lang',
