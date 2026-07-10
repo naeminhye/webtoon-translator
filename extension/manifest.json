@@ -30,6 +30,9 @@
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
 
+  "cross_origin_embedder_policy": { "value": "require-corp" },
+  "cross_origin_opener_policy": { "value": "same-origin" },
+
   "background": {
     "service_worker": "background/worker.js",
     "type": "module"
@@ -60,5 +63,10 @@
     "default_popup": "popup/popup.html"
   },
 
-  "web_accessible_resources": []
+  "web_accessible_resources": [
+    {
+      "resources": ["models/comic-text-detector.onnx"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

@@ -44,6 +44,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(sendResponse)
         .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
       return true;
+    case 'DETECT_BUBBLES':
+      handleDetectBubbles(message.payload)
+        .then(sendResponse)
+        .catch(err => sendResponse({ error: err.message || String(err), boxes: [], tileIndex: message.payload?.tileIndex }));
+      return true;
     case 'OCR_STATUS':
       // Relay engine progress from the offscreen document to content scripts
       // (runtime.sendMessage never reaches content scripts directly)
@@ -62,6 +67,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
   }
 });
+
+async function handleDetectBubbles(payload) {
+  await ensureOffscreen();
+  return chrome.runtime.sendMessage({ type: 'DETECT_BUBBLES', payload });
+}
 
 async function handleSave({ site, titleId, chapterId, annotations }) {
   const key      = storageKey(site, titleId, chapterId);

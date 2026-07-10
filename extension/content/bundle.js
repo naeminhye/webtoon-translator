@@ -21,7 +21,7 @@ const MSG    = {
   OCR_STITCH:        'OCR_STITCH',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
   CROP_IMAGE:        'CROP_IMAGE',
-
+  DETECT_BUBBLES:    'DETECT_BUBBLES',
 };
 
 // Background opacity for the translation caption box — a fully-opaque overlay
@@ -5068,6 +5068,123 @@ chrome.storage.onChanged.addListener((changes, area) => {
   history.pushState    = (...a) => { _origPush(...a);    onUrlChange(); };
   history.replaceState = (...a) => { _origReplace(...a); onUrlChange(); };
   window.addEventListener('popstate', onUrlChange);
+})();
+
+// ── Bubble detection tiling scheduler ────────────────────────────────────────
+//
+// Viewport-based YOLO bubble detection. Divides the page into 1024px tall
+// tiles with 128px overlap (so bubbles crossing tile boundaries are captured
+// by both tiles). Detects only tiles near the current viewport and prefetches
+// 2 tiles ahead in the scroll direction.
+//
+// Usage:
+//   bubbleDetector.detect()  — schedule detection around current viewport
+//   bubbleDetector.reset()   — clear cache (call on chapter navigation)
+//   bubbleDetector.getBoxes(y) — boxes for tiles covering document Y coord
+
+const bubbleDetector = (() => {
+  const TILE_H  = 1024;
+  const OVERLAP = 128;
+  const STRIDE  = TILE_H - OVERLAP;
+  const PREFETCH_TILES = 2;
+
+  const tileCache  = new Map();  // tileIndex → Array<{x1,y1,x2,y2,score}>
+  const inFlight   = new Set();  // tileIndex → currently detecting
+
+  // ---- crop a tile from the page's composite image ----
+  function cropTileDataUrl(tileIndex) {
+    const y0      = tileIndex * STRIDE;
+    const y1      = y0 + TILE_H;
+    const pageW   = document.documentElement.scrollWidth;
+    const tileH   = Math.min(TILE_H, document.documentElement.scrollHeight - y0);
+    if (tileH <= 0) return null;
+
+    // Collect all webtoon images in this vertical slice
+    const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
+      const r = img.getBoundingClientRect();
+      const absTop    = r.top  + window.scrollY;
+      const absBottom = r.bottom + window.scrollY;
+      return absBottom > y0 && absTop < y1 && img.naturalWidth > 0;
+    });
+
+    if (imgs.length === 0) return null;
+
+    const canvas = document.createElement('canvas');
+    canvas.width  = pageW;
+    canvas.height = tileH;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, pageW, tileH);
+
+    for (const img of imgs) {
+      const r = img.getBoundingClientRect();
+      const absTop = r.top + window.scrollY;
+      ctx.drawImage(img, r.left, absTop - y0, r.width, r.height);
+    }
+
+    return canvas.toDataURL('image/jpeg', 0.85);
+  }
+
+  async function detectTile(tileIndex) {
+    if (tileCache.has(tileIndex) || inFlight.has(tileIndex)) return;
+    inFlight.add(tileIndex);
+    try {
+      const dataUrl = cropTileDataUrl(tileIndex);
+      if (!dataUrl) { tileCache.set(tileIndex, []); return; }
+
+      const result = await sendToBackground({
+        type: MSG.DETECT_BUBBLES,
+        payload: { dataUrl, tileIndex },
+      });
+
+      const boxes = result?.boxes ?? [];
+      // Translate box coords from tile-local to page-absolute
+      const y0 = tileIndex * STRIDE;
+      const absBoxes = boxes.map(b => ({
+        x1: b.x1, y1: b.y1 + y0,
+        x2: b.x2, y2: b.y2 + y0,
+        score: b.score,
+      }));
+      tileCache.set(tileIndex, absBoxes);
+    } catch (err) {
+      console.warn('[bubbleDetector] tile', tileIndex, 'failed:', err);
+      tileCache.set(tileIndex, []);
+    } finally {
+      inFlight.delete(tileIndex);
+    }
+  }
+
+  function scheduleTiles() {
+    const vpTop    = window.scrollY;
+    const vpBottom = vpTop + window.innerHeight;
+    const first    = Math.max(0, Math.floor(vpTop    / STRIDE));
+    const last     = Math.ceil(vpBottom / STRIDE) + PREFETCH_TILES;
+    for (let i = first; i <= last; i++) {
+      detectTile(i);
+    }
+  }
+
+  // throttled scroll listener (≤ 1 call per 150ms)
+  let _scrollTimer = null;
+  window.addEventListener('scroll', () => {
+    if (_scrollTimer) return;
+    _scrollTimer = setTimeout(() => { _scrollTimer = null; scheduleTiles(); }, 150);
+  }, { passive: true });
+
+  return {
+    detect:   scheduleTiles,
+    reset()   { tileCache.clear(); inFlight.clear(); },
+    getBoxes(pageY) {
+      const tileIndex = Math.floor(pageY / STRIDE);
+      return [
+        ...(tileCache.get(tileIndex)     ?? []),
+        ...(tileCache.get(tileIndex + 1) ?? []),
+      ].filter((b, i, arr) =>
+        // deduplicate by reference (same object appears in both tiles)
+        arr.indexOf(b) === i && b.y1 <= pageY && b.y2 >= pageY,
+      );
+    },
+  };
 })();
 
 })();
