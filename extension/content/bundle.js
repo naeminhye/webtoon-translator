@@ -4393,7 +4393,15 @@ function bootForPage() {
       }
       setTimeout(tryGetImages, 600);
     } else {
-      loadAndRender().then(() => { updateProgressBar(); _hideLoadingBadge(); });
+      loadAndRender().then(() => {
+        updateProgressBar(); _hideLoadingBadge();
+        // Arm ONNX bubble detection only after saved annotations are loaded,
+        // so onDetectedBoxes' overlap dedup sees them and doesn't re-OCR
+        // bubbles translated in a previous session.
+        bubbleDetector.reset();
+        bubbleDetector.onBoxes = onDetectedBoxes;
+        bubbleDetector.detect();
+      });
       checkStorageQuota();
     }
   };
@@ -4647,6 +4655,52 @@ function bootForPage() {
       y: rect.top  + window.scrollY + (cleanBbox.y / 100) * rect.height,
     };
     return jobManager.create({ bbox: cleanBbox, imageEl, imageIndex, clips, screenPos, existingAnnKey, skewAngle, source });
+  }
+
+  // ── ONNX bubble detection → auto OCR jobs ──────────────────────────────────
+  // bubbleDetector (viewport tiling scheduler, end of file) emits page-absolute
+  // pixel boxes as each tile's inference completes. Map each box to the panel
+  // image under it, convert to the %-of-image bbox shape the job pipeline uses,
+  // and enqueue through createJobFromSelection — the same choke point as manual
+  // drag-select and click-to-detect, so OCR, translation, dedup and rendering
+  // all behave identically.
+  const ONNX_MIN_BOX_PX  = 24;   // discard sub-bubble noise
+  const ONNX_MAX_OVERLAP = 0.3;  // skip boxes already covered by a job/annotation
+
+  function onDetectedBoxes(absBoxes) {
+    for (const b of absBoxes) {
+      if (b.x2 - b.x1 < ONNX_MIN_BOX_PX || b.y2 - b.y1 < ONNX_MIN_BOX_PX) continue;
+
+      // Locate the panel image containing the box centre.
+      const cx = (b.x1 + b.x2) / 2;
+      const cy = (b.y1 + b.y2) / 2;
+      const imageIndex = images.findIndex(img => {
+        const r = img.getBoundingClientRect();
+        const left = r.left + window.scrollX, top = r.top + window.scrollY;
+        return cx >= left && cx <= left + r.width && cy >= top && cy <= top + r.height;
+      });
+      if (imageIndex === -1) continue;
+
+      const img  = images[imageIndex];
+      const r    = img.getBoundingClientRect();
+      const left = r.left + window.scrollX, top = r.top + window.scrollY;
+      if (r.width === 0 || r.height === 0) continue;
+
+      const bbox = {
+        x: Math.max(0, ((b.x1 - left) / r.width)  * 100),
+        y: Math.max(0, ((b.y1 - top)  / r.height) * 100),
+        w: Math.min(100, ((b.x2 - b.x1) / r.width)  * 100),
+        h: Math.min(100, ((b.y2 - b.y1) / r.height) * 100),
+        source: 'onnx-detect',
+      };
+
+      // Overlapping tiles detect the same bubble twice, and saved annotations
+      // from a previous session already cover their bubbles — both are caught
+      // by the same overlap check the manual flows use.
+      if (findOverlapForBbox(bbox, imageIndex) > ONNX_MAX_OVERLAP) continue;
+
+      createJobFromSelection({ bbox, imageEl: img, imageIndex });
+    }
   }
 
   // Shared click-to-detect handler — used by both BBoxSelector (normal sites)
@@ -4978,6 +5032,8 @@ function bootForPage() {
   bootCleanup = () => {
     disposed = true;
     stopWatching();
+    bubbleDetector.onBoxes = null;
+    bubbleDetector.reset();
     chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     if (isKakao) { fixedLayer.disable(); fixedLayer.clearAll(); }
     else selector.disable();
@@ -5150,6 +5206,7 @@ const bubbleDetector = (() => {
         score: b.score,
       }));
       tileCache.set(tileIndex, absBoxes);
+      if (absBoxes.length) api.onBoxes?.(absBoxes);
     } catch (err) {
       console.warn('[bubbleDetector] tile', tileIndex, 'failed:', err);
       tileCache.set(tileIndex, []);
@@ -5159,6 +5216,7 @@ const bubbleDetector = (() => {
   }
 
   function scheduleTiles() {
+    if (!api.onBoxes) return; // detection is armed by bootForPage; dormant otherwise
     const vpTop    = window.scrollY;
     const vpBottom = vpTop + window.innerHeight;
     const first    = Math.max(0, Math.floor(vpTop    / STRIDE));
@@ -5175,7 +5233,10 @@ const bubbleDetector = (() => {
     _scrollTimer = setTimeout(() => { _scrollTimer = null; scheduleTiles(); }, 150);
   }, { passive: true });
 
-  return {
+  const api = {
+    // Set by bootForPage to receive page-absolute boxes as tiles complete;
+    // while null the whole detector (including the scroll listener) is dormant.
+    onBoxes:  null,
     detect:   scheduleTiles,
     reset()   { tileCache.clear(); inFlight.clear(); },
     getBoxes(pageY) {
@@ -5189,6 +5250,7 @@ const bubbleDetector = (() => {
       );
     },
   };
+  return api;
 })();
 
 })();
