@@ -13,11 +13,11 @@ const IOU_THRESH  = 0.45;
 // Session singleton with warm-up
 // ---------------------------------------------------------------------------
 
-// vendor/ort/ ships ort.webgpu.min.js plus both threaded and single-thread
-// WASM binaries (.jsep variants for the WebGPU bundle). COOP/COEP in the
-// manifest makes this page crossOriginIsolated, so SharedArrayBuffer is
-// available and the threaded binary can be used.
-ort.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 1);
+// Multi-threaded WASM is unusable in MV3: ORT spawns its thread pool via
+// blob: worker scripts, and the extension-pages CSP cannot allow blob:
+// script sources (importScripts NetworkError). Keep WASM single-threaded;
+// WebGPU is the fast path.
+ort.env.wasm.numThreads = 1;
 ort.env.wasm.wasmPaths  = chrome.runtime.getURL('vendor/ort/');
 
 let _sessionPromise = null;
@@ -25,10 +25,29 @@ let _sessionPromise = null;
 function getSession() {
   if (_sessionPromise) return _sessionPromise;
   _sessionPromise = (async () => {
-    const session = await ort.InferenceSession.create(MODEL_URL, {
-      executionProviders: ['webgpu', 'wasm'], // auto-falls back to WASM if no GPU
-      graphOptimizationLevel: 'all',
-    });
+    // Try WebGPU first, fall back to WASM explicitly so the console shows
+    // which execution provider is actually in use.
+    let session;
+    if (navigator.gpu) {
+      try {
+        session = await ort.InferenceSession.create(MODEL_URL, {
+          executionProviders: ['webgpu'],
+          graphOptimizationLevel: 'all',
+        });
+        console.info('[ort-runner] execution provider: webgpu');
+      } catch (err) {
+        console.warn('[ort-runner] WebGPU init failed, falling back to WASM:', err);
+      }
+    } else {
+      console.warn('[ort-runner] navigator.gpu absent — WebGPU unavailable in this context');
+    }
+    if (!session) {
+      session = await ort.InferenceSession.create(MODEL_URL, {
+        executionProviders: ['wasm'],
+        graphOptimizationLevel: 'all',
+      });
+      console.info('[ort-runner] execution provider: wasm (single-thread)');
+    }
     // warm-up: compile graph so first real inference is not penalised
     const dummy = new ort.Tensor(
       'float32',
