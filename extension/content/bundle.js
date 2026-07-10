@@ -4087,7 +4087,6 @@ function bootForPage() {
     if (storyCtx?.title)        lines.push(`Title:    ${storyCtx.title}`);
     if (storyCtx?.tags?.length) lines.push(`Tags:     ${storyCtx.tags.join(', ')}`);
     if (storyCtx?.synopsis)     lines.push(`Synopsis: ${storyCtx.synopsis}`);
-    lines.push(`Site: ${meta.site}  |  Title: ${meta.titleId}  |  Chapter: ${meta.chapterId}`);
     lines.push(`Target lang: ${targetLang}`);
     lines.push('');
 
