@@ -852,6 +852,13 @@ const AUTO_DETECT_MAX_AREA_RATIO = 0.85; // bbox area / crop area — reject if 
 // longer flagging a box that's just wide OR just tall.
 const AUTO_DETECT_MAX_REGION_DIM_PX = AUTO_DETECT_CROP_RADIUS * 2.5;
 const AUTO_DETECT_MAX_ASPECT     = 5;
+// Fraction of the maximum row/column span below which a row/column is treated
+// as part of a tail appendage rather than the main bubble body. Rows (or
+// columns) whose span falls below this fraction of the widest row (or tallest
+// column) are excluded when computing the text-area bbox — the tail is always
+// much narrower than the oval body, so a moderate threshold like 0.30 reliably
+// separates them without cutting into the body itself.
+const AUTO_DETECT_BODY_THRESHOLD = 0.30;
 const AUTO_DETECT_MIN_ASPECT     = 0.2;
 // filledPixels / own-bbox-area — a solid oval/rounded-rect bubble is
 // ~0.7-0.9; an irregular leaked fragment (e.g. part of a connector fused
@@ -1004,14 +1011,18 @@ class BubbleAutoDetector {
     for (const r of regions) {
       const v = this._isValidRegion(r, cw, ch);
       if (!v.valid) { firstFailReason = firstFailReason || v.reason; continue; }
-      const bbox = this._regionToBbox(r, sx, segments.canvasTopFrameY, nw, nh);
+      // Shrink the region to exclude the narrow tail appendage so the bbox
+      // wraps the text-bearing body of the bubble, not the full flood-fill
+      // including the tail pointer.
+      const bodyR = shrinkBubbleTailFromBbox(region.mask, cw, r);
+      const bbox = this._regionToBbox(bodyR, sx, segments.canvasTopFrameY, nw, nh);
       // Difficulty-classifier signal, computed here while the mask is still in
       // scope (it isn't kept around once detect() returns). Reuses the
       // merged region's mask even for a waist-split half, since halves share
       // the same underlying canvas/mask — just a tighter minX/minY/maxX/maxY.
       // Callers must strip this before persisting `bbox` as an annotation —
       // it's debug/routing metadata, not part of the BBox shape.
-      bbox.skewAngle = minAreaRectAngle(extractRegionContour(region.mask, cw, r));
+      bbox.skewAngle = minAreaRectAngle(extractRegionContour(region.mask, cw, bodyR));
       // Marks this bbox as flood-fill-detected (vs. a hand-drawn/hand-resized
       // one) — gates the OCR-crop inset + text-cluster refinement, which only
       // make sense for a flood-fill shape's bounding box. See runOcr.
@@ -1265,6 +1276,80 @@ function floodFillBBox(imageData, startX, startY, tolerance, barrierMask) {
   }
 
   return { minX, minY, maxX, maxY, filledPixels, mask: visited };
+}
+
+/**
+ * Returns { start, end } of the largest contiguous run of values >= threshold.
+ * If no value meets threshold, returns a run covering the full array (fallback).
+ */
+function _largestContiguousBodyRun(spans, threshold) {
+  let bestStart = 0, bestLen = 0, curStart = -1, curLen = 0;
+  for (let i = 0; i < spans.length; i++) {
+    if (spans[i] >= threshold) {
+      if (curStart === -1) { curStart = i; curLen = 1; } else curLen++;
+      if (curLen > bestLen) { bestLen = curLen; bestStart = curStart; }
+    } else {
+      curStart = -1; curLen = 0;
+    }
+  }
+  return bestLen > 0 ? { start: bestStart, end: bestStart + bestLen - 1 } : { start: 0, end: spans.length - 1 };
+}
+
+/**
+ * Given a flood-fill region, returns a tighter region that excludes the
+ * narrow tail appendage of a speech bubble.
+ *
+ * For each axis the algorithm:
+ *   1. Computes the span (width or height of filled pixels) for every
+ *      row (then column) in the region.
+ *   2. Finds the largest contiguous run of rows (columns) whose span is
+ *      >= AUTO_DETECT_BODY_THRESHOLD × max span — this is the "body".
+ *   3. Clamps the region bounds to that body run.
+ *
+ * The tail is always far narrower than the oval body, so the threshold
+ * reliably separates them. The returned object shares the original mask
+ * (by reference) with tighter minX/minY/maxX/maxY.
+ */
+function shrinkBubbleTailFromBbox(mask, maskW, region) {
+  const { minX, minY, maxX, maxY } = region;
+
+  // --- Y axis: row spans ---
+  const rowCount = maxY - minY + 1;
+  const rowSpans = new Int32Array(rowCount);
+  for (let y = minY; y <= maxY; y++) {
+    let lo = maxX + 1, hi = minX - 1;
+    for (let x = minX; x <= maxX; x++) {
+      if (mask[y * maskW + x]) { if (x < lo) lo = x; if (x > hi) hi = x; }
+    }
+    rowSpans[y - minY] = hi >= lo ? hi - lo + 1 : 0;
+  }
+  let maxRowSpan = 0;
+  for (let i = 0; i < rowCount; i++) if (rowSpans[i] > maxRowSpan) maxRowSpan = rowSpans[i];
+  if (maxRowSpan === 0) return region;
+
+  const yRun = _largestContiguousBodyRun(rowSpans, maxRowSpan * AUTO_DETECT_BODY_THRESHOLD);
+  const bodyMinY = minY + yRun.start;
+  const bodyMaxY = minY + yRun.end;
+
+  // --- X axis: col spans within body Y range ---
+  const colCount = maxX - minX + 1;
+  const colSpans = new Int32Array(colCount);
+  for (let x = minX; x <= maxX; x++) {
+    let lo = bodyMaxY + 1, hi = bodyMinY - 1;
+    for (let y = bodyMinY; y <= bodyMaxY; y++) {
+      if (mask[y * maskW + x]) { if (y < lo) lo = y; if (y > hi) hi = y; }
+    }
+    colSpans[x - minX] = hi >= lo ? hi - lo + 1 : 0;
+  }
+  let maxColSpan = 0;
+  for (let i = 0; i < colCount; i++) if (colSpans[i] > maxColSpan) maxColSpan = colSpans[i];
+  if (maxColSpan === 0) return { ...region, minY: bodyMinY, maxY: bodyMaxY };
+
+  const xRun = _largestContiguousBodyRun(colSpans, maxColSpan * AUTO_DETECT_BODY_THRESHOLD);
+  const bodyMinX = minX + xRun.start;
+  const bodyMaxX = minX + xRun.end;
+
+  return { ...region, minX: bodyMinX, minY: bodyMinY, maxX: bodyMaxX, maxY: bodyMaxY };
 }
 
 // ── Edge barrier (dashed/dotted bubble border fallback) ────────────────────────
