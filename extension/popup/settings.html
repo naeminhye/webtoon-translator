@@ -185,15 +185,6 @@
             </div>
           </div>
 
-          <!-- Save translation settings -->
-          <div class="save-row">
-            <button id="save-translation" class="btn-primary btn-save">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Save
-            </button>
-            <span id="save-translation-feedback" class="save-feedback hidden"></span>
-          </div>
-
         </div>
       </div>
 
@@ -245,7 +236,6 @@
             </label>
             <div class="field-row">
               <input type="password" id="ocrspace-key" class="text-input" placeholder="Paste your API key here…" autocomplete="off" />
-              <button id="save-ocrspace-key" class="btn-primary">Save</button>
             </div>
             <p id="ocrspace-key-saved" class="field-success hidden">
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -293,6 +283,18 @@
                   Side-by-side
                 </div>
                 <p class="engine-detail">Translation is drawn beside the original region instead of on top of it, for direct comparison.</p>
+              </div>
+            </label>
+          </div>
+
+          <div class="field-group" style="margin-top:14px">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+              <input type="checkbox" id="auto-detect-toggle" style="width:16px;height:16px;accent-color:#6366f1;cursor:pointer" />
+              <div>
+                <div style="font-weight:600;font-size:13px">Auto-detect bubbles</div>
+                <p class="field-hint" style="margin:2px 0 0">
+                  Automatically detect, OCR and translate speech bubbles as you scroll (uses the ONNX detector). Turn off to only translate regions you select manually.
+                </p>
               </div>
             </label>
           </div>

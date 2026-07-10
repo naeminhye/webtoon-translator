@@ -3970,6 +3970,7 @@ let _wtEnabled  = true;
 // renderer classes, so a change takes effect for newly (re)positioned
 // bubbles without needing to re-instantiate anything.
 const OVERLAY_MODE_KEY = 'wt:overlay-mode';
+const AUTO_DETECT_KEY  = 'wt:auto-detect';
 let _overlayMode = 'overlay';
 const SIDE_BY_SIDE_GAP_PX   = 12; // gap between the panel's right edge and the side-by-side caption
 const SIDE_BY_SIDE_WIDTH_PX = 260; // fixed caption width in side-by-side mode — independent of the original bbox's width, since the box no longer overlays it
@@ -4185,7 +4186,9 @@ function bootForPage() {
 
       // ── Paste & Apply panel ──────────────────────────────────────
       const applySection = document.createElement('div');
-      applySection.style.cssText = 'border-top:1px solid #1e293b;padding:10px 14px;display:flex;flex-direction:column;gap:6px;';
+      // sticky bottom (mirrors the sticky header) so the corrections box stays
+      // visible while scrolling a long translation list
+      applySection.style.cssText = 'border-top:1px solid #1e293b;padding:10px 14px;display:flex;flex-direction:column;gap:6px;position:sticky;bottom:0;background:#0f172a;z-index:1;';
 
       const applyLabel = document.createElement('div');
       applyLabel.textContent = 'Paste LLM corrections (format: [N] text)';
@@ -4397,10 +4400,16 @@ function bootForPage() {
         updateProgressBar(); _hideLoadingBadge();
         // Arm ONNX bubble detection only after saved annotations are loaded,
         // so onDetectedBoxes' overlap dedup sees them and doesn't re-OCR
-        // bubbles translated in a previous session.
-        bubbleDetector.reset();
-        bubbleDetector.onBoxes = onDetectedBoxes;
-        bubbleDetector.detect();
+        // bubbles translated in a previous session. Gated by the
+        // wt:auto-detect setting (toggle in the settings page, live-applied
+        // via the storage listener below).
+        chrome.storage.local.get({ [AUTO_DETECT_KEY]: true }, (res) => {
+          bubbleDetector.reset();
+          if (res[AUTO_DETECT_KEY]) {
+            bubbleDetector.onBoxes = onDetectedBoxes;
+            bubbleDetector.detect();
+          }
+        });
       });
       checkStorageQuota();
     }
@@ -4664,12 +4673,48 @@ function bootForPage() {
   // and enqueue through createJobFromSelection — the same choke point as manual
   // drag-select and click-to-detect, so OCR, translation, dedup and rendering
   // all behave identically.
-  const ONNX_MIN_BOX_PX  = 24;   // discard sub-bubble noise
-  const ONNX_MAX_OVERLAP = 0.3;  // skip boxes already covered by a job/annotation
+  const ONNX_MIN_BOX_PX   = 24;   // discard sub-bubble noise
+  const ONNX_MAX_BOX_PX   = 1000; // a bubble is never this tall/wide — bad box, would OCR huge crops
+  const ONNX_MAX_OVERLAP  = 0.1;  // skip boxes already covered by a job/annotation
+  const ONNX_MERGE_PAD    = 12;   // px halo used to merge fragments of one text block
+  const ONNX_AUTO_MIN_SCORE = 0.45; // SFX/stylised text scores lower than bubble text;
+                                    // the model's 2 classes are languages (eng/ja), not
+                                    // bubble-vs-SFX, so score is the only usable signal
+
+  // Nearby fragments (multi-line text detected as separate boxes) become one
+  // OCR region; a merged box keeps the max score of its parts.
+  function mergeNearbyBoxes(absBoxes) {
+    const merged = [];
+    for (const b of absBoxes) {
+      const p = {
+        x1: b.x1 - ONNX_MERGE_PAD, y1: b.y1 - ONNX_MERGE_PAD,
+        x2: b.x2 + ONNX_MERGE_PAD, y2: b.y2 + ONNX_MERGE_PAD,
+        score: b.score,
+      };
+      const hit = merged.find(m => p.x1 < m.x2 && p.x2 > m.x1 && p.y1 < m.y2 && p.y2 > m.y1);
+      if (hit) {
+        hit.x1 = Math.min(hit.x1, p.x1); hit.y1 = Math.min(hit.y1, p.y1);
+        hit.x2 = Math.max(hit.x2, p.x2); hit.y2 = Math.max(hit.y2, p.y2);
+        hit.score = Math.max(hit.score, p.score);
+      } else {
+        merged.push(p);
+      }
+    }
+    // undo the pad so the final crop hugs the text with a small margin
+    const UNPAD = ONNX_MERGE_PAD - 4;
+    return merged.map(m => ({
+      x1: m.x1 + UNPAD, y1: m.y1 + UNPAD,
+      x2: m.x2 - UNPAD, y2: m.y2 - UNPAD,
+      score: m.score,
+    }));
+  }
 
   function onDetectedBoxes(absBoxes) {
-    for (const b of absBoxes) {
-      if (b.x2 - b.x1 < ONNX_MIN_BOX_PX || b.y2 - b.y1 < ONNX_MIN_BOX_PX) continue;
+    for (const b of mergeNearbyBoxes(absBoxes)) {
+      const bw = b.x2 - b.x1, bh = b.y2 - b.y1;
+      if (bw < ONNX_MIN_BOX_PX || bh < ONNX_MIN_BOX_PX) continue;
+      if (bw > ONNX_MAX_BOX_PX || bh > ONNX_MAX_BOX_PX) continue;
+      if (b.score < ONNX_AUTO_MIN_SCORE) continue;
 
       // Locate the panel image containing the box centre.
       const cx = (b.x1 + b.x2) / 2;
@@ -4702,6 +4747,18 @@ function bootForPage() {
       createJobFromSelection({ bbox, imageEl: img, imageIndex });
     }
   }
+
+  // Live-apply the auto-detect toggle without a page reload.
+  function onAutoDetectSettingChanged(changes, area) {
+    if (area !== 'local' || !(AUTO_DETECT_KEY in changes)) return;
+    if (changes[AUTO_DETECT_KEY].newValue) {
+      bubbleDetector.onBoxes = onDetectedBoxes;
+      bubbleDetector.detect();
+    } else {
+      bubbleDetector.onBoxes = null;
+    }
+  }
+  chrome.storage.onChanged.addListener(onAutoDetectSettingChanged);
 
   // Shared click-to-detect handler — used by both BBoxSelector (normal sites)
   // and FixedOverlayLayer (Ridi/Kakao's fixed-position overlay), so a click
@@ -5034,6 +5091,7 @@ function bootForPage() {
     stopWatching();
     bubbleDetector.onBoxes = null;
     bubbleDetector.reset();
+    chrome.storage.onChanged.removeListener(onAutoDetectSettingChanged);
     chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     if (isKakao) { fixedLayer.disable(); fixedLayer.clearAll(); }
     else selector.disable();

@@ -9,6 +9,7 @@ const BYOK_PROVIDER_KEY      = 'wt:byok-provider';
 const BYOK_MODEL_STR         = 'wt:byok-model';
 const BYOK_MODE_KEY          = 'wt:byok-mode';
 const OVERLAY_MODE_KEY       = 'wt:overlay-mode';
+const AUTO_DETECT_KEY        = 'wt:auto-detect';
 
 // Mirrors background/worker.js — keep in sync.
 const DEV_OCR_SPACE_KEY = '';
@@ -37,11 +38,15 @@ async function initOcrSettings() {
     applyProvider(r.value);
   }));
 
-  $('save-ocrspace-key').addEventListener('click', async () => {
-    const key = $('ocrspace-key').value.trim();
-    await chrome.storage.local.set({ [OCR_SPACE_KEY_STR]: key });
-    $('ocrspace-key-saved').classList.remove('hidden');
-    setTimeout(() => $('ocrspace-key-saved').classList.add('hidden'), 2500);
+  // Autosave the OCR.space key as it's typed (debounced) — no Save button.
+  let ocrKeyTimer = null;
+  $('ocrspace-key').addEventListener('input', () => {
+    clearTimeout(ocrKeyTimer);
+    ocrKeyTimer = setTimeout(async () => {
+      await chrome.storage.local.set({ [OCR_SPACE_KEY_STR]: $('ocrspace-key').value.trim() });
+      $('ocrspace-key-saved').classList.remove('hidden');
+      setTimeout(() => $('ocrspace-key-saved').classList.add('hidden'), 1500);
+    }, 400);
   });
 }
 
@@ -113,67 +118,59 @@ async function initTranslationSettings() {
     if (r.checked) await chrome.storage.local.set({ [BYOK_MODE_KEY]: r.value });
   }));
 
-  providerSelect.addEventListener('change', (e) => applyByokProviderPlaceholder(e.target.value));
-
-  radios.forEach(r => r.addEventListener('change', () => applyProvider(r.value)));
-
-  // Global Save button — validate then persist all translation settings at once
-  $('save-translation').addEventListener('click', async () => {
-    const provider = [...radios].find(r => r.checked)?.value || 'google';
-    const deeplKey = $('deepl-key').value.trim();
-    const byokKey  = $('byok-key').value.trim();
-    const byokProv = $('byok-provider').value;
-    const byokMod  = $('byok-model').value.trim();
-    const byokMode = [...document.querySelectorAll('input[name="byok-mode"]')].find(r => r.checked)?.value || 'always';
-    const lang     = $('target-lang').value;
-
-    // Validate: key required for paid providers
-    let valid = true;
-    $('deepl-key-error').classList.add('hidden');
-    $('byok-key-error').classList.add('hidden');
-    if (provider === 'deepl' && !deeplKey) {
-      $('deepl-key-error').classList.remove('hidden');
-      $('deepl-key').focus();
-      valid = false;
-    }
-    if (provider === 'byok' && !byokKey) {
-      $('byok-key-error').classList.remove('hidden');
-      $('byok-key').focus();
-      valid = false;
-    }
-    if (!valid) {
-      showSaveFeedback('Please enter an API key first.', 'error');
-      return;
-    }
-
-    await chrome.storage.local.set({
-      [TRANSLATE_PROVIDER_KEY]: provider,
-      [TRANSLATE_LANG_KEY]:     lang,
-      [DEEPL_KEY_STR]:          deeplKey,
-      [BYOK_KEY_STR]:           byokKey,
-      [BYOK_PROVIDER_KEY]:      byokProv,
-      [BYOK_MODEL_STR]:         byokMod,
-      [BYOK_MODE_KEY]:          byokMode,
-    });
-    showSaveFeedback('Settings saved!', 'success');
+  providerSelect.addEventListener('change', async (e) => {
+    applyByokProviderPlaceholder(e.target.value);
+    await chrome.storage.local.set({ [BYOK_PROVIDER_KEY]: e.target.value });
   });
 
-  function showSaveFeedback(msg, type) {
-    const el = $('save-translation-feedback');
-    el.textContent = msg;
-    el.className = `save-feedback ${type}`;
-    el.classList.remove('hidden');
-    setTimeout(() => el.classList.add('hidden'), 2500);
+  // ── Autosave: every control persists on change; no Save button ──
+  // Provider radios: warn (not block) when a paid provider is picked without
+  // a key — the key field autosaves as you type, so the warning clears itself.
+  function updateKeyWarnings() {
+    const provider = [...radios].find(r => r.checked)?.value || 'google';
+    $('deepl-key-error').classList.toggle('hidden', !(provider === 'deepl' && !$('deepl-key').value.trim()));
+    $('byok-key-error').classList.toggle('hidden', !(provider === 'byok' && !$('byok-key').value.trim()));
   }
+
+  radios.forEach(r => r.addEventListener('change', async () => {
+    applyProvider(r.value);
+    updateKeyWarnings();
+    await chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: r.value });
+  }));
+
+  $('target-lang').addEventListener('change', async (e) => {
+    await chrome.storage.local.set({ [TRANSLATE_LANG_KEY]: e.target.value });
+  });
+
+  // Debounced autosave for text inputs so we don't hammer storage per keystroke.
+  function autosaveInput(el, key) {
+    let t = null;
+    el.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(async () => {
+        await chrome.storage.local.set({ [key]: el.value.trim() });
+        updateKeyWarnings();
+      }, 400);
+    });
+  }
+  autosaveInput($('deepl-key'),   DEEPL_KEY_STR);
+  autosaveInput($('byok-key'),    BYOK_KEY_STR);
+  autosaveInput($('byok-model'),  BYOK_MODEL_STR);
 }
 
 async function initDisplaySettings() {
-  const stored = await chrome.storage.local.get({ [OVERLAY_MODE_KEY]: 'overlay' });
+  const stored = await chrome.storage.local.get({ [OVERLAY_MODE_KEY]: 'overlay', [AUTO_DETECT_KEY]: true });
   const radios = document.querySelectorAll('input[name="overlay-mode"]');
   radios.forEach(r => { r.checked = r.value === stored[OVERLAY_MODE_KEY]; });
   radios.forEach(r => r.addEventListener('change', async () => {
     await chrome.storage.local.set({ [OVERLAY_MODE_KEY]: r.value });
   }));
+
+  const autoDetect = $('auto-detect-toggle');
+  autoDetect.checked = !!stored[AUTO_DETECT_KEY];
+  autoDetect.addEventListener('change', async () => {
+    await chrome.storage.local.set({ [AUTO_DETECT_KEY]: autoDetect.checked });
+  });
 }
 
 const PRESET_FONTS = ['', 'Pangolin', 'Patrick Hand SC'];

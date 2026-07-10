@@ -6,7 +6,7 @@
 
 const MODEL_URL   = chrome.runtime.getURL('models/comic-text-detector.onnx');
 const INPUT_SIZE  = 1024;         // mayocream/comic-text-detector-onnx expects 1024×1024
-const CONF_THRESH = 0.35;
+const CONF_THRESH = 0.3; // recall-biased; the content script re-filters for auto-jobs
 const IOU_THRESH  = 0.45;
 
 // ---------------------------------------------------------------------------
