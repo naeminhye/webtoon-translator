@@ -1015,7 +1015,14 @@ class BubbleAutoDetector {
       // wraps the text-bearing body of the bubble, not the full flood-fill
       // including the tail pointer.
       const bodyR = shrinkBubbleTailFromBbox(region.mask, cw, r);
-      const bbox = this._regionToBbox(bodyR, sx, segments.canvasTopFrameY, nw, nh);
+      // Pass padding=0: shrinkBubbleTailFromBbox bounds are already the flood-
+      // fill interior (white area, stopping just inside the dark border ring).
+      // Adding outward padding would push the bbox back into the border, whose
+      // dark arc pixels appear at the corners of the rectangular crop and get
+      // misread by Tesseract as extra characters. The existing OCR_CROP_INSET_PCT
+      // (8%) and text-cluster refinement in the worker then apply inward, keeping
+      // the final OCR crop firmly inside the white interior.
+      const bbox = this._regionToBbox(bodyR, sx, segments.canvasTopFrameY, nw, nh, 0);
       // Difficulty-classifier signal, computed here while the mask is still in
       // scope (it isn't kept around once detect() returns). Reuses the
       // merged region's mask even for a waist-split half, since halves share
@@ -1047,11 +1054,11 @@ class BubbleAutoDetector {
   }
 
   /** Crop-local region -> bbox relative to the CURRENT image's natural size, padded. x stays clamped to this image's width; y is intentionally left unclamped — see detect()'s doc. */
-  _regionToBbox(region, sx, canvasTopFrameY, nw, nh) {
-    const px0 = Math.max(0,  sx + region.minX - AUTO_DETECT_PADDING);
-    const py0 = canvasTopFrameY + region.minY - AUTO_DETECT_PADDING;
-    const px1 = Math.min(nw, sx + region.maxX + 1 + AUTO_DETECT_PADDING);
-    const py1 = canvasTopFrameY + region.maxY + 1 + AUTO_DETECT_PADDING;
+  _regionToBbox(region, sx, canvasTopFrameY, nw, nh, padding = AUTO_DETECT_PADDING) {
+    const px0 = Math.max(0,  sx + region.minX - padding);
+    const py0 = canvasTopFrameY + region.minY - padding;
+    const px1 = Math.min(nw, sx + region.maxX + 1 + padding);
+    const py1 = canvasTopFrameY + region.maxY + 1 + padding;
     return {
       x: (px0 / nw) * 100,
       y: (py0 / nh) * 100,
