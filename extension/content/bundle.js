@@ -21,7 +21,7 @@ const MSG    = {
   OCR_STITCH:        'OCR_STITCH',
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
   CROP_IMAGE:        'CROP_IMAGE',
-
+  DETECT_BUBBLES:    'DETECT_BUBBLES',
 };
 
 // Background opacity for the translation caption box — a fully-opaque overlay
@@ -2096,6 +2096,9 @@ class JobManager {
     }
     const overlapRatio = this._findOverlap(bbox, imageIndex, existingAnnKey);
     if (overlapRatio >= OVERLAP_THRESHOLD) {
+      // ONNX auto-detect is unattended — a duplicate region is dropped
+      // silently instead of interrupting the user with a confirm popup.
+      if (source === 'onnx-detect') return null;
       const proceed = await this._confirmOverlap(screenPos);
       if (!proceed) return null;
     }
@@ -2178,6 +2181,14 @@ class JobManager {
       this.jobs.delete(job.id); // done jobs become regular annotations, no longer tracked as jobs
     } catch (err) {
       if (job.cancelled) return;
+      // Unattended ONNX auto-detect jobs fail silently (e.g. Lezhin's
+      // "Panel not loaded" on virtual-scrolled panels) — error pills are
+      // only meaningful for actions the user initiated.
+      if (job.source === 'onnx-detect') {
+        console.log('[WebtoonTranslate] auto-detect job dropped:', err?.message || err);
+        this.cancel(job.id);
+        return;
+      }
       job.status = 'error';
       job.errorMessage = err?.message || String(err);
       this._onStatusChange(job);
@@ -2985,7 +2996,16 @@ const STORY_CONTEXT_SCHEMA_VERSION = 2;
  * user or allowed to block translation.
  */
 async function getStoryContext(adapter, site, titleId) {
-  if (typeof adapter.fetchStoryContext !== 'function') return null;
+  // Generic fallback for adapters without a real fetchStoryContext (every
+  // non-Naver site today): scrape the page's own og: meta tags. Not cached —
+  // it's synchronous DOM access, and titles differ per chapter page anyway.
+  if (typeof adapter.fetchStoryContext !== 'function') {
+    const og = (p) => document.querySelector(`meta[property="og:${p}"]`)?.content?.trim() || '';
+    const title    = og('title') || document.title?.trim() || '';
+    const synopsis = og('description');
+    if (!title && !synopsis) return null;
+    return { title, synopsis, tags: [], source: 'page-meta' };
+  }
   const key = `${STORY_CONTEXT_KEY_PREFIX}${site}:${titleId}`;
 
   const stored = await chrome.storage.local.get(key);
@@ -3194,7 +3214,14 @@ class RidiAdapter {
         if (imgs.length) callback(imgs);
       }, 150);
     });
-    observer.observe(root, { subtree: true, attributes: true, attributeFilter: ['src'] });
+    // childList: true is required alongside the attribute watch — Ridi's
+    // virtual-scroll viewer inserts brand-new <img data-index> nodes as panels
+    // scroll into range (not just flips src: '' -> blob: on existing nodes).
+    // Without it, a fast scroll skips straight past a panel's mount before any
+    // attribute mutation fires, so the panel never gets picked up; a slow
+    // scroll "works" only because the node happens to already exist by the
+    // time some unrelated attribute mutation elsewhere triggers a rescan.
+    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['src'] });
     return () => observer.disconnect();
   }
 }
@@ -3970,6 +3997,7 @@ let _wtEnabled  = true;
 // renderer classes, so a change takes effect for newly (re)positioned
 // bubbles without needing to re-instantiate anything.
 const OVERLAY_MODE_KEY = 'wt:overlay-mode';
+const AUTO_DETECT_KEY  = 'wt:auto-detect';
 let _overlayMode = 'overlay';
 const SIDE_BY_SIDE_GAP_PX   = 12; // gap between the panel's right edge and the side-by-side caption
 const SIDE_BY_SIDE_WIDTH_PX = 260; // fixed caption width in side-by-side mode — independent of the original bbox's width, since the box no longer overlays it
@@ -4083,9 +4111,9 @@ function bootForPage() {
     const lines = [];
 
     // Story context block
-    lines.push('━━ Story Context ━━━━━━━━━━━━━━━━━━━━━━━━━');
-    if (storyCtx?.title)        lines.push(`Title:    ${storyCtx.title}`);
-    if (storyCtx?.tags?.length) lines.push(`Tags:     ${storyCtx.tags.join(', ')}`);
+    lines.push('# Story Context');
+    if (storyCtx?.title)        lines.push(`Title: ${storyCtx.title}`);
+    if (storyCtx?.tags?.length) lines.push(`Tags: ${storyCtx.tags.join(', ')}`);
     if (storyCtx?.synopsis)     lines.push(`Synopsis: ${storyCtx.synopsis}`);
     lines.push(`Target lang: ${targetLang}`);
     lines.push('');
@@ -4099,13 +4127,14 @@ function bootForPage() {
       return (a.bbox?.x ?? 0) - (b.bbox?.x ?? 0);
     });
 
-    lines.push(`━━ Translations (${sorted.length} bubbles) ━━━━━━━━━━━━━━━━━`);
+    lines.push(`# Translations (${sorted.length} bubbles)`);
+    lines.push('');
     let currentPanel = -1;
     sorted.forEach((ann, idx) => {
       const panel = ann.imageIndex ?? 0;
       if (panel !== currentPanel) {
         if (currentPanel !== -1) lines.push('');
-        lines.push(`── Panel ${panel + 1} ─────────────────────────────────`);
+        lines.push(`## Panel ${panel + 1}`);
         currentPanel = panel;
       }
       const ocr  = ann.originalText  || '(no OCR)';
@@ -4117,7 +4146,7 @@ function bootForPage() {
     if (!sorted.length) lines.push('(no translations saved yet)');
 
     lines.push('');
-    lines.push('━━ Instructions ━━━━━━━━━━━━━━━━━━━━━━━━━');
+    lines.push('# Instructions');
     lines.push('Review the translations above for accuracy and naturalness.');
     lines.push('Output ONLY the lines that need correction, one per line:');
     lines.push('  [N] corrected translation');
@@ -4185,7 +4214,9 @@ function bootForPage() {
 
       // ── Paste & Apply panel ──────────────────────────────────────
       const applySection = document.createElement('div');
-      applySection.style.cssText = 'border-top:1px solid #1e293b;padding:10px 14px;display:flex;flex-direction:column;gap:6px;';
+      // sticky bottom (mirrors the sticky header) so the corrections box stays
+      // visible while scrolling a long translation list
+      applySection.style.cssText = 'border-top:1px solid #1e293b;padding:10px 14px;display:flex;flex-direction:column;gap:6px;position:sticky;bottom:0;background:#0f172a;z-index:1;';
 
       const applyLabel = document.createElement('div');
       applyLabel.textContent = 'Paste LLM corrections (format: [N] text)';
@@ -4226,16 +4257,22 @@ function bootForPage() {
         if (!patches.length) { applyStatus.textContent = 'No valid lines found.'; return; }
         applyBtn.disabled = true;
         applyBtn.textContent = 'Applying…';
-        let applied = 0;
+        let applied = 0, skipped = 0;
         for (const { ann, newText } of patches) {
           const key = annKeyOf(ann);
           const img = images[ann.imageIndex ?? 0];
+          // Virtual-scroll sites (Ridi/Lezhin) can unload/reindex `images`
+          // since the annotation was created — its imageIndex may no longer
+          // resolve. Skip rather than crash the whole apply loop on one bad entry.
+          if (!img) { skipped++; continue; }
           await applyTranslatedText(key, img, newText);
           applied++;
         }
         applyBtn.disabled = false;
         applyBtn.textContent = 'Apply';
-        applyStatus.textContent = `✓ ${applied} bubble${applied !== 1 ? 's' : ''} updated.`;
+        applyStatus.textContent = skipped
+          ? `✓ ${applied} updated, ${skipped} skipped (panel not loaded).`
+          : `✓ ${applied} bubble${applied !== 1 ? 's' : ''} updated.`;
         applyTextarea.value = '';
       });
     });
@@ -4393,7 +4430,21 @@ function bootForPage() {
       }
       setTimeout(tryGetImages, 600);
     } else {
-      loadAndRender().then(() => { updateProgressBar(); _hideLoadingBadge(); });
+      loadAndRender().then(() => {
+        updateProgressBar(); _hideLoadingBadge();
+        // Arm ONNX bubble detection only after saved annotations are loaded,
+        // so onDetectedBoxes' overlap dedup sees them and doesn't re-OCR
+        // bubbles translated in a previous session. Gated by the
+        // wt:auto-detect setting (toggle in the settings page, live-applied
+        // via the storage listener below).
+        chrome.storage.local.get({ [AUTO_DETECT_KEY]: true }, (res) => {
+          bubbleDetector.reset();
+          if (res[AUTO_DETECT_KEY]) {
+            bubbleDetector.onBoxes = onDetectedBoxes;
+            bubbleDetector.detect();
+          }
+        });
+      });
       checkStorageQuota();
     }
   };
@@ -4555,6 +4606,21 @@ function bootForPage() {
       job._ocrConfidence  = confidence;
       job._difficultyTier = difficulty.tier;
       job._ocrDataUrl     = dataUrl ?? null; // retained for vision-tier re-OCR via LLM
+
+      // Quality gate for unattended ONNX auto-detect jobs only: a detector
+      // false positive (box over art) or stylised SFX OCRs to garbage — e.g.
+      // digit strings like "29109" — or very low confidence. A manual
+      // selection is the user's explicit intent, so it always proceeds.
+      if (job.source === 'onnx-detect') {
+        const trimmed   = (text || '').trim();
+        const hasHangul = /[가-힣ㄱ-ㆎ]/.test(trimmed);
+        const confOk    = typeof confidence !== 'number' || confidence >= 55;
+        if (!trimmed || !hasHangul || !confOk) {
+          console.log(`[WebtoonTranslate] auto-detect region dropped (conf=${confidence ?? '?'}, text="${trimmed.slice(0, 30)}")`);
+          jobManager.cancel(job.id);
+          return '';
+        }
+      }
       return text;
     },
     runTranslate: async (job) => {
@@ -4648,6 +4714,138 @@ function bootForPage() {
     };
     return jobManager.create({ bbox: cleanBbox, imageEl, imageIndex, clips, screenPos, existingAnnKey, skewAngle, source });
   }
+
+  // ── ONNX bubble detection → auto OCR jobs ──────────────────────────────────
+  // bubbleDetector (viewport tiling scheduler, end of file) emits page-absolute
+  // pixel boxes as each tile's inference completes. Map each box to the panel
+  // image under it, convert to the %-of-image bbox shape the job pipeline uses,
+  // and enqueue through createJobFromSelection — the same choke point as manual
+  // drag-select and click-to-detect, so OCR, translation, dedup and rendering
+  // all behave identically.
+  const ONNX_MIN_BOX_PX   = 24;   // discard sub-bubble noise
+  const ONNX_MAX_BOX_PX   = 1000; // a bubble is never this tall/wide — bad box, would OCR huge crops
+  const ONNX_MAX_OVERLAP  = 0.1;  // skip boxes already covered by a job/annotation
+  const ONNX_MERGE_PAD    = 12;   // px halo used to merge fragments of one text block
+  const ONNX_AUTO_MIN_SCORE = 0.45; // SFX/stylised text scores lower than bubble text;
+                                    // the model's 2 classes are languages (eng/ja), not
+                                    // bubble-vs-SFX, so score is the only usable signal
+
+  // Nearby fragments (multi-line text detected as separate boxes) become one
+  // OCR region; a merged box keeps the max score of its parts.
+  function mergeNearbyBoxes(absBoxes) {
+    const merged = [];
+    for (const b of absBoxes) {
+      const p = {
+        x1: b.x1 - ONNX_MERGE_PAD, y1: b.y1 - ONNX_MERGE_PAD,
+        x2: b.x2 + ONNX_MERGE_PAD, y2: b.y2 + ONNX_MERGE_PAD,
+        score: b.score,
+      };
+      const hit = merged.find(m => p.x1 < m.x2 && p.x2 > m.x1 && p.y1 < m.y2 && p.y2 > m.y1);
+      if (hit) {
+        hit.x1 = Math.min(hit.x1, p.x1); hit.y1 = Math.min(hit.y1, p.y1);
+        hit.x2 = Math.max(hit.x2, p.x2); hit.y2 = Math.max(hit.y2, p.y2);
+        hit.score = Math.max(hit.score, p.score);
+      } else {
+        merged.push(p);
+      }
+    }
+    // undo the pad so the final crop hugs the text with a small margin
+    const UNPAD = ONNX_MERGE_PAD - 4;
+    return merged.map(m => ({
+      x1: m.x1 + UNPAD, y1: m.y1 + UNPAD,
+      x2: m.x2 - UNPAD, y2: m.y2 - UNPAD,
+      score: m.score,
+    }));
+  }
+
+  // Page-absolute-pixel overlap against existing jobs/annotations. The
+  // %-of-image check (findOverlapForBbox) can't compare across images, so a
+  // bubble spanning two stacked panels dodges it — its saved annotation lives
+  // on image A while the new detection's centre maps to image B. Comparing in
+  // page space catches that.
+  function _pageRectOf(imageEl, bboxPct) {
+    const r = imageEl.getBoundingClientRect();
+    const left = r.left + window.scrollX, top = r.top + window.scrollY;
+    return {
+      x1: left + (bboxPct.x / 100) * r.width,
+      y1: top  + (bboxPct.y / 100) * r.height,
+      x2: left + ((bboxPct.x + bboxPct.w) / 100) * r.width,
+      y2: top  + ((bboxPct.y + bboxPct.h) / 100) * r.height,
+    };
+  }
+
+  function overlapsExistingOnPage(box) {
+    const hits = (rect) => {
+      const iw = Math.min(box.x2, rect.x2) - Math.max(box.x1, rect.x1);
+      const ih = Math.min(box.y2, rect.y2) - Math.max(box.y1, rect.y1);
+      if (iw <= 0 || ih <= 0) return false;
+      const inter   = iw * ih;
+      const areaBox = (box.x2 - box.x1) * (box.y2 - box.y1);
+      const areaR   = (rect.x2 - rect.x1) * (rect.y2 - rect.y1);
+      return inter / Math.min(areaBox, areaR) > ONNX_MAX_OVERLAP;
+    };
+    for (const job of jobManager.jobs.values()) {
+      if (job.status === 'error' || !job.imageEl) continue;
+      if (hits(_pageRectOf(job.imageEl, job.bbox))) return true;
+    }
+    for (const a of allAnnotations) {
+      const img = images[a.imageIndex ?? 0];
+      if (img && hits(_pageRectOf(img, a.bbox))) return true;
+    }
+    return false;
+  }
+
+  function onDetectedBoxes(absBoxes) {
+    for (const b of mergeNearbyBoxes(absBoxes)) {
+      const bw = b.x2 - b.x1, bh = b.y2 - b.y1;
+      if (bw < ONNX_MIN_BOX_PX || bh < ONNX_MIN_BOX_PX) continue;
+      if (bw > ONNX_MAX_BOX_PX || bh > ONNX_MAX_BOX_PX) continue;
+      if (b.score < ONNX_AUTO_MIN_SCORE) continue;
+      if (overlapsExistingOnPage(b)) continue;
+
+      // Locate the panel image containing the box centre.
+      const cx = (b.x1 + b.x2) / 2;
+      const cy = (b.y1 + b.y2) / 2;
+      const imageIndex = images.findIndex(img => {
+        const r = img.getBoundingClientRect();
+        const left = r.left + window.scrollX, top = r.top + window.scrollY;
+        return cx >= left && cx <= left + r.width && cy >= top && cy <= top + r.height;
+      });
+      if (imageIndex === -1) continue;
+
+      const img  = images[imageIndex];
+      const r    = img.getBoundingClientRect();
+      const left = r.left + window.scrollX, top = r.top + window.scrollY;
+      if (r.width === 0 || r.height === 0) continue;
+
+      const bbox = {
+        x: Math.max(0, ((b.x1 - left) / r.width)  * 100),
+        y: Math.max(0, ((b.y1 - top)  / r.height) * 100),
+        w: Math.min(100, ((b.x2 - b.x1) / r.width)  * 100),
+        h: Math.min(100, ((b.y2 - b.y1) / r.height) * 100),
+        source: 'onnx-detect',
+      };
+
+      // Overlapping tiles detect the same bubble twice, and saved annotations
+      // from a previous session already cover their bubbles — both are caught
+      // by the same overlap check the manual flows use.
+      if (findOverlapForBbox(bbox, imageIndex) > ONNX_MAX_OVERLAP) continue;
+
+      createJobFromSelection({ bbox, imageEl: img, imageIndex });
+    }
+  }
+
+  // Live-apply the auto-detect toggle without a page reload.
+  function onAutoDetectSettingChanged(changes, area) {
+    if (area !== 'local' || !(AUTO_DETECT_KEY in changes)) return;
+    if (changes[AUTO_DETECT_KEY].newValue) {
+      bubbleDetector.onBoxes = onDetectedBoxes;
+      bubbleDetector.detect();
+    } else {
+      bubbleDetector.onBoxes = null;
+    }
+  }
+  chrome.storage.onChanged.addListener(onAutoDetectSettingChanged);
 
   // Shared click-to-detect handler — used by both BBoxSelector (normal sites)
   // and FixedOverlayLayer (Ridi/Kakao's fixed-position overlay), so a click
@@ -4978,6 +5176,9 @@ function bootForPage() {
   bootCleanup = () => {
     disposed = true;
     stopWatching();
+    bubbleDetector.onBoxes = null;
+    bubbleDetector.reset();
+    chrome.storage.onChanged.removeListener(onAutoDetectSettingChanged);
     chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     if (isKakao) { fixedLayer.disable(); fixedLayer.clearAll(); }
     else selector.disable();
@@ -5068,6 +5269,143 @@ chrome.storage.onChanged.addListener((changes, area) => {
   history.pushState    = (...a) => { _origPush(...a);    onUrlChange(); };
   history.replaceState = (...a) => { _origReplace(...a); onUrlChange(); };
   window.addEventListener('popstate', onUrlChange);
+})();
+
+// ── Bubble detection tiling scheduler ────────────────────────────────────────
+//
+// Per-IMAGE tiling: each panel image is divided into 1024px tall tiles (in
+// displayed coordinates) with 128px overlap, cached by image URL + tile index.
+// Tiling in image space instead of page space matters for two reasons:
+//  - Ridi/Kakao scroll inside an inner container, so window.scrollY never
+//    changes and page-Y based tiles go stale/never advance;
+//  - virtual-scroll layouts move images around the page, but an image-local
+//    tile stays valid wherever the image lands.
+// Boxes are mapped to page-absolute px at response time from the image's
+// current rect.
+//
+// Usage:
+//   bubbleDetector.detect() — schedule detection for images near the viewport
+//   bubbleDetector.reset()  — clear cache (chapter navigation)
+//   bubbleDetector.onBoxes  — callback armed by bootForPage; null = dormant
+
+const bubbleDetector = (() => {
+  const TILE_H  = 1024;
+  const OVERLAP = 128;
+  const STRIDE  = TILE_H - OVERLAP;
+  const PREFETCH_PX = 2048; // detect this far below the viewport
+
+  const doneTiles = new Set(); // `${src}#${tileIdx}` — completed (boxes emitted)
+  const inFlight  = new Set();
+
+  function eligible(img) {
+    return img.currentSrc && img.naturalWidth >= 100 && img.naturalHeight >= 100 &&
+           !img.currentSrc.startsWith('data:');
+  }
+
+  // Fast path: crop the tile from the already-loaded <img>. Works whenever the
+  // image doesn't taint the canvas — blob: URLs (Ridi/Lezhin, which the
+  // background can never fetch) and CORS-clean hosts. Throws SecurityError on
+  // tainting hosts (e.g. Naver's pstatic.net) → background fallback.
+  function composeTileLocally(img, rect, y0, tileH) {
+    const canvas = document.createElement('canvas');
+    canvas.width  = Math.max(1, Math.round(rect.width));
+    canvas.height = Math.max(1, Math.round(tileH));
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, -y0, rect.width, rect.height);
+    return canvas.toDataURL('image/jpeg', 0.85); // throws if tainted
+  }
+
+  async function detectImageTile(img, tileIdx) {
+    const key = `${img.currentSrc}#${tileIdx}`;
+    if (doneTiles.has(key) || inFlight.has(key)) return;
+    inFlight.add(key);
+    try {
+      const rect  = img.getBoundingClientRect();
+      const y0    = tileIdx * STRIDE;
+      const tileH = Math.min(TILE_H, rect.height - y0);
+      if (tileH <= 0) { doneTiles.add(key); return; }
+
+      let payload, usedFallback = false;
+      try {
+        payload = { dataUrl: composeTileLocally(img, rect, y0, tileH), tileIndex: key };
+      } catch {
+        if (img.currentSrc.startsWith('blob:')) { doneTiles.add(key); return; }
+        // Background fetches the original and crops this vertical slice
+        // (fractions of displayed height map 1:1 to natural height).
+        usedFallback = true;
+        payload = {
+          imageUrl: img.currentSrc,
+          sy: y0 / rect.height,
+          sh: tileH / rect.height,
+          tileIndex: key,
+        };
+      }
+
+      const result = await sendToBackground({ type: MSG.DETECT_BUBBLES, payload });
+      if (result?.error) throw new Error(result.error);
+      doneTiles.add(key);
+
+      const boxes = result?.boxes ?? [];
+      if (!boxes.length) return;
+
+      // Map tile-local boxes to page-absolute px using the image's CURRENT
+      // rect (virtual scrollers may have moved it since the request).
+      const r2   = img.getBoundingClientRect();
+      const left = r2.left + window.scrollX;
+      const top  = r2.top  + window.scrollY;
+      // Local path boxes are in displayed px; fallback boxes are in the
+      // original image's natural px.
+      const scale = usedFallback ? r2.width / img.naturalWidth : 1;
+      const yOff  = top + (y0 / rect.height) * r2.height;
+      const absBoxes = boxes.map(b => ({
+        x1: left + b.x1 * scale, y1: yOff + b.y1 * scale,
+        x2: left + b.x2 * scale, y2: yOff + b.y2 * scale,
+        score: b.score,
+      }));
+      api.onBoxes?.(absBoxes);
+    } catch (err) {
+      console.warn('[bubbleDetector] tile', key, 'failed:', err);
+      doneTiles.add(key); // don't retry-loop a permanently failing tile
+    } finally {
+      inFlight.delete(key);
+    }
+  }
+
+  function scheduleTiles() {
+    if (!api.onBoxes) return; // armed by bootForPage; dormant otherwise
+    const vpBottom = window.innerHeight + PREFETCH_PX;
+    for (const img of document.querySelectorAll('img')) {
+      if (!eligible(img)) continue;
+      const r = img.getBoundingClientRect();
+      if (r.bottom <= 0 || r.top >= vpBottom || r.height === 0) continue;
+      // image-local displayed-px range currently in the extended viewport
+      const visTop    = Math.max(0, -r.top);
+      const visBottom = Math.min(r.height, vpBottom - r.top);
+      const first = Math.max(0, Math.floor(visTop / STRIDE));
+      const last  = Math.max(first, Math.floor(Math.max(0, visBottom - 1) / STRIDE));
+      for (let i = first; i <= last; i++) detectImageTile(img, i);
+    }
+  }
+
+  // Throttled scroll listener. capture:true so scrolls of INNER containers
+  // (Ridi/Kakao viewers scroll a div, not the window — scroll events don't
+  // bubble, but they do capture) reach us too.
+  let _scrollTimer = null;
+  window.addEventListener('scroll', () => {
+    if (_scrollTimer) return;
+    _scrollTimer = setTimeout(() => { _scrollTimer = null; scheduleTiles(); }, 150);
+  }, { passive: true, capture: true });
+
+  const api = {
+    // Set by bootForPage to receive page-absolute boxes as tiles complete;
+    // while null the whole detector (including the scroll listener) is dormant.
+    onBoxes: null,
+    detect:  scheduleTiles,
+    reset()  { doneTiles.clear(); inFlight.clear(); },
+  };
+  return api;
 })();
 
 })();

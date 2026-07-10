@@ -44,6 +44,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(sendResponse)
         .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
       return true;
+    case 'DETECT_BUBBLES':
+      handleDetectBubbles(message.payload)
+        .then(sendResponse)
+        .catch(err => sendResponse({ error: err.message || String(err), boxes: [], tileIndex: message.payload?.tileIndex }));
+      return true;
     case 'OCR_STATUS':
       // Relay engine progress from the offscreen document to content scripts
       // (runtime.sendMessage never reaches content scripts directly)
@@ -62,6 +67,60 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
   }
 });
+
+// Bitmap cache for tile compositing — adjacent tiles overlap by 128px, so the
+// same webtoon image is typically needed by 2+ tiles. Small LRU keyed by URL.
+const _tileBitmapCache = new Map(); // url → ImageBitmap
+const TILE_BITMAP_CACHE_MAX = 8;
+
+async function _getTileBitmap(url) {
+  if (_tileBitmapCache.has(url)) {
+    const bmp = _tileBitmapCache.get(url);
+    _tileBitmapCache.delete(url); // refresh LRU order
+    _tileBitmapCache.set(url, bmp);
+    return bmp;
+  }
+  const res    = await _fetchImage(url);
+  const blob   = await res.blob();
+  const bitmap = await createImageBitmap(blob);
+  _tileBitmapCache.set(url, bitmap);
+  if (_tileBitmapCache.size > TILE_BITMAP_CACHE_MAX) {
+    const [oldestUrl, oldest] = _tileBitmapCache.entries().next().value;
+    _tileBitmapCache.delete(oldestUrl);
+    oldest.close();
+  }
+  return bitmap;
+}
+
+// Composites the tile in the service worker (cross-origin fetch is allowed
+// here via host_permissions, so no canvas taint) and forwards the resulting
+// dataUrl to the offscreen ONNX runner.
+// Two payload shapes from the content script:
+//  { dataUrl, tileIndex }            — tile already composited in-page (blob:
+//                                      image sites, CORS-clean hosts)
+//  { imageUrl, sy, sh, tileIndex }   — tainting hosts: fetch the original here
+//                                      (host_permissions bypasses CORS) and
+//                                      crop the [sy, sy+sh] height fraction
+async function handleDetectBubbles({ dataUrl: precomposed, imageUrl, sy, sh, tileIndex }) {
+  let dataUrl = precomposed;
+  if (!dataUrl) {
+    const bitmap = await _getTileBitmap(imageUrl);
+    const cropY = Math.round(sy * bitmap.height);
+    const cropH = Math.max(1, Math.min(bitmap.height - cropY, Math.round(sh * bitmap.height)));
+    const canvas = new OffscreenCanvas(bitmap.width, cropH);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, cropY, bitmap.width, cropH, 0, 0, bitmap.width, cropH);
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+    dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Failed to encode tile'));
+      reader.readAsDataURL(blob);
+    });
+  }
+  await ensureOffscreen();
+  return chrome.runtime.sendMessage({ type: 'DETECT_RUN', payload: { dataUrl, tileIndex } });
+}
 
 async function handleSave({ site, titleId, chapterId, annotations }) {
   const key      = storageKey(site, titleId, chapterId);

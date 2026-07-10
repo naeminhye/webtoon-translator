@@ -16,7 +16,10 @@
     "https://rcdn.lezhin.com/*",
     "https://www.qtoon.co.kr/*",
     "https://c2.qtoon.co.kr/*",
+    "https://im.qtoon.co.kr/*",
     "https://*.pstatic.net/*",
+    "https://*.kakaoentcdn.com/*",
+    "https://page-edge.kakao.com/*",
     "https://api.ocr.space/*",
     "https://translate.googleapis.com/*",
     "https://api-free.deepl.com/*",
@@ -29,6 +32,9 @@
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
+
+  "cross_origin_embedder_policy": { "value": "require-corp" },
+  "cross_origin_opener_policy": { "value": "same-origin" },
 
   "background": {
     "service_worker": "background/worker.js",
@@ -60,5 +66,10 @@
     "default_popup": "popup/popup.html"
   },
 
-  "web_accessible_resources": []
+  "web_accessible_resources": [
+    {
+      "resources": ["models/comic-text-detector.onnx"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

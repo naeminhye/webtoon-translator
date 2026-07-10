@@ -40,6 +40,25 @@
     <!-- Cards grid -->
     <div class="cards">
 
+      <!-- Auto-detect card -->
+      <div class="card" id="card-auto-detect">
+        <div class="card-header">
+          <div class="card-icon card-icon-display">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
+            </svg>
+          </div>
+          <div style="flex:1">
+            <div class="card-title">Auto-detect bubbles</div>
+            <div class="card-desc">Automatically detect, OCR and translate speech bubbles as you scroll. Turn off to only translate regions you select manually.</div>
+          </div>
+          <label style="display:flex;align-items:center;cursor:pointer;padding:4px">
+            <input type="checkbox" id="auto-detect-toggle" style="width:18px;height:18px;accent-color:#6366f1;cursor:pointer" />
+          </label>
+        </div>
+      </div>
+
       <!-- Translation card -->
       <div class="card" id="card-translation">
         <div class="card-header">
@@ -185,15 +204,6 @@
             </div>
           </div>
 
-          <!-- Save translation settings -->
-          <div class="save-row">
-            <button id="save-translation" class="btn-primary btn-save">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Save
-            </button>
-            <span id="save-translation-feedback" class="save-feedback hidden"></span>
-          </div>
-
         </div>
       </div>
 
@@ -245,7 +255,6 @@
             </label>
             <div class="field-row">
               <input type="password" id="ocrspace-key" class="text-input" placeholder="Paste your API key here…" autocomplete="off" />
-              <button id="save-ocrspace-key" class="btn-primary">Save</button>
             </div>
             <p id="ocrspace-key-saved" class="field-success hidden">
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -296,6 +305,7 @@
               </div>
             </label>
           </div>
+
         </div>
       </div>
 
