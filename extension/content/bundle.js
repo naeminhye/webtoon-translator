@@ -852,6 +852,13 @@ const AUTO_DETECT_MAX_AREA_RATIO = 0.85; // bbox area / crop area — reject if 
 // longer flagging a box that's just wide OR just tall.
 const AUTO_DETECT_MAX_REGION_DIM_PX = AUTO_DETECT_CROP_RADIUS * 2.5;
 const AUTO_DETECT_MAX_ASPECT     = 5;
+// Fraction of the maximum row/column span below which a row/column is treated
+// as part of a tail appendage rather than the main bubble body. Rows (or
+// columns) whose span falls below this fraction of the widest row (or tallest
+// column) are excluded when computing the text-area bbox — the tail is always
+// much narrower than the oval body, so a moderate threshold like 0.30 reliably
+// separates them without cutting into the body itself.
+const AUTO_DETECT_BODY_THRESHOLD = 0.30;
 const AUTO_DETECT_MIN_ASPECT     = 0.2;
 // filledPixels / own-bbox-area — a solid oval/rounded-rect bubble is
 // ~0.7-0.9; an irregular leaked fragment (e.g. part of a connector fused
@@ -1004,14 +1011,25 @@ class BubbleAutoDetector {
     for (const r of regions) {
       const v = this._isValidRegion(r, cw, ch);
       if (!v.valid) { firstFailReason = firstFailReason || v.reason; continue; }
-      const bbox = this._regionToBbox(r, sx, segments.canvasTopFrameY, nw, nh);
+      // Shrink the region to exclude the narrow tail appendage so the bbox
+      // wraps the text-bearing body of the bubble, not the full flood-fill
+      // including the tail pointer.
+      const bodyR = shrinkBubbleTailFromBbox(region.mask, cw, r);
+      // Pass padding=0: shrinkBubbleTailFromBbox bounds are already the flood-
+      // fill interior (white area, stopping just inside the dark border ring).
+      // Adding outward padding would push the bbox back into the border, whose
+      // dark arc pixels appear at the corners of the rectangular crop and get
+      // misread by Tesseract as extra characters. The existing OCR_CROP_INSET_PCT
+      // (8%) and text-cluster refinement in the worker then apply inward, keeping
+      // the final OCR crop firmly inside the white interior.
+      const bbox = this._regionToBbox(bodyR, sx, segments.canvasTopFrameY, nw, nh, 0);
       // Difficulty-classifier signal, computed here while the mask is still in
       // scope (it isn't kept around once detect() returns). Reuses the
       // merged region's mask even for a waist-split half, since halves share
       // the same underlying canvas/mask — just a tighter minX/minY/maxX/maxY.
       // Callers must strip this before persisting `bbox` as an annotation —
       // it's debug/routing metadata, not part of the BBox shape.
-      bbox.skewAngle = minAreaRectAngle(extractRegionContour(region.mask, cw, r));
+      bbox.skewAngle = minAreaRectAngle(extractRegionContour(region.mask, cw, bodyR));
       // Marks this bbox as flood-fill-detected (vs. a hand-drawn/hand-resized
       // one) — gates the OCR-crop inset + text-cluster refinement, which only
       // make sense for a flood-fill shape's bounding box. See runOcr.
@@ -1036,11 +1054,11 @@ class BubbleAutoDetector {
   }
 
   /** Crop-local region -> bbox relative to the CURRENT image's natural size, padded. x stays clamped to this image's width; y is intentionally left unclamped — see detect()'s doc. */
-  _regionToBbox(region, sx, canvasTopFrameY, nw, nh) {
-    const px0 = Math.max(0,  sx + region.minX - AUTO_DETECT_PADDING);
-    const py0 = canvasTopFrameY + region.minY - AUTO_DETECT_PADDING;
-    const px1 = Math.min(nw, sx + region.maxX + 1 + AUTO_DETECT_PADDING);
-    const py1 = canvasTopFrameY + region.maxY + 1 + AUTO_DETECT_PADDING;
+  _regionToBbox(region, sx, canvasTopFrameY, nw, nh, padding = AUTO_DETECT_PADDING) {
+    const px0 = Math.max(0,  sx + region.minX - padding);
+    const py0 = canvasTopFrameY + region.minY - padding;
+    const px1 = Math.min(nw, sx + region.maxX + 1 + padding);
+    const py1 = canvasTopFrameY + region.maxY + 1 + padding;
     return {
       x: (px0 / nw) * 100,
       y: (py0 / nh) * 100,
@@ -1265,6 +1283,80 @@ function floodFillBBox(imageData, startX, startY, tolerance, barrierMask) {
   }
 
   return { minX, minY, maxX, maxY, filledPixels, mask: visited };
+}
+
+/**
+ * Returns { start, end } of the largest contiguous run of values >= threshold.
+ * If no value meets threshold, returns a run covering the full array (fallback).
+ */
+function _largestContiguousBodyRun(spans, threshold) {
+  let bestStart = 0, bestLen = 0, curStart = -1, curLen = 0;
+  for (let i = 0; i < spans.length; i++) {
+    if (spans[i] >= threshold) {
+      if (curStart === -1) { curStart = i; curLen = 1; } else curLen++;
+      if (curLen > bestLen) { bestLen = curLen; bestStart = curStart; }
+    } else {
+      curStart = -1; curLen = 0;
+    }
+  }
+  return bestLen > 0 ? { start: bestStart, end: bestStart + bestLen - 1 } : { start: 0, end: spans.length - 1 };
+}
+
+/**
+ * Given a flood-fill region, returns a tighter region that excludes the
+ * narrow tail appendage of a speech bubble.
+ *
+ * For each axis the algorithm:
+ *   1. Computes the span (width or height of filled pixels) for every
+ *      row (then column) in the region.
+ *   2. Finds the largest contiguous run of rows (columns) whose span is
+ *      >= AUTO_DETECT_BODY_THRESHOLD × max span — this is the "body".
+ *   3. Clamps the region bounds to that body run.
+ *
+ * The tail is always far narrower than the oval body, so the threshold
+ * reliably separates them. The returned object shares the original mask
+ * (by reference) with tighter minX/minY/maxX/maxY.
+ */
+function shrinkBubbleTailFromBbox(mask, maskW, region) {
+  const { minX, minY, maxX, maxY } = region;
+
+  // --- Y axis: row spans ---
+  const rowCount = maxY - minY + 1;
+  const rowSpans = new Int32Array(rowCount);
+  for (let y = minY; y <= maxY; y++) {
+    let lo = maxX + 1, hi = minX - 1;
+    for (let x = minX; x <= maxX; x++) {
+      if (mask[y * maskW + x]) { if (x < lo) lo = x; if (x > hi) hi = x; }
+    }
+    rowSpans[y - minY] = hi >= lo ? hi - lo + 1 : 0;
+  }
+  let maxRowSpan = 0;
+  for (let i = 0; i < rowCount; i++) if (rowSpans[i] > maxRowSpan) maxRowSpan = rowSpans[i];
+  if (maxRowSpan === 0) return region;
+
+  const yRun = _largestContiguousBodyRun(rowSpans, maxRowSpan * AUTO_DETECT_BODY_THRESHOLD);
+  const bodyMinY = minY + yRun.start;
+  const bodyMaxY = minY + yRun.end;
+
+  // --- X axis: col spans within body Y range ---
+  const colCount = maxX - minX + 1;
+  const colSpans = new Int32Array(colCount);
+  for (let x = minX; x <= maxX; x++) {
+    let lo = bodyMaxY + 1, hi = bodyMinY - 1;
+    for (let y = bodyMinY; y <= bodyMaxY; y++) {
+      if (mask[y * maskW + x]) { if (y < lo) lo = y; if (y > hi) hi = y; }
+    }
+    colSpans[x - minX] = hi >= lo ? hi - lo + 1 : 0;
+  }
+  let maxColSpan = 0;
+  for (let i = 0; i < colCount; i++) if (colSpans[i] > maxColSpan) maxColSpan = colSpans[i];
+  if (maxColSpan === 0) return { ...region, minY: bodyMinY, maxY: bodyMaxY };
+
+  const xRun = _largestContiguousBodyRun(colSpans, maxColSpan * AUTO_DETECT_BODY_THRESHOLD);
+  const bodyMinX = minX + xRun.start;
+  const bodyMaxX = minX + xRun.end;
+
+  return { ...region, minX: bodyMinX, minY: bodyMinY, maxX: bodyMaxX, maxY: bodyMaxY };
 }
 
 // ── Edge barrier (dashed/dotted bubble border fallback) ────────────────────────
@@ -3995,7 +4087,6 @@ function bootForPage() {
     if (storyCtx?.title)        lines.push(`Title:    ${storyCtx.title}`);
     if (storyCtx?.tags?.length) lines.push(`Tags:     ${storyCtx.tags.join(', ')}`);
     if (storyCtx?.synopsis)     lines.push(`Synopsis: ${storyCtx.synopsis}`);
-    lines.push(`Site: ${meta.site}  |  Title: ${meta.titleId}  |  Chapter: ${meta.chapterId}`);
     lines.push(`Target lang: ${targetLang}`);
     lines.push('');
 
@@ -4025,7 +4116,14 @@ function bootForPage() {
 
     if (!sorted.length) lines.push('(no translations saved yet)');
 
-    return lines.join('\n');
+    lines.push('');
+    lines.push('━━ Instructions ━━━━━━━━━━━━━━━━━━━━━━━━━');
+    lines.push('Review the translations above for accuracy and naturalness.');
+    lines.push('Output ONLY the lines that need correction, one per line:');
+    lines.push('  [N] corrected translation');
+    lines.push('Skip any bubble that is already correct. No explanations.');
+
+    return { text: lines.join('\n'), sorted };
   }
 
   function toggleDevNote() {
@@ -4076,13 +4174,69 @@ function bootForPage() {
     document.body.appendChild(note);
     _devNoteEl = note;
 
-    buildDevNote().then(text => {
+    buildDevNote().then(({ text, sorted }) => {
       pre.textContent = text;
       copyBtn.addEventListener('click', () => {
         navigator.clipboard.writeText(text).then(() => {
           copyBtn.textContent = 'Copied!';
           setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1800);
         });
+      });
+
+      // ── Paste & Apply panel ──────────────────────────────────────
+      const applySection = document.createElement('div');
+      applySection.style.cssText = 'border-top:1px solid #1e293b;padding:10px 14px;display:flex;flex-direction:column;gap:6px;';
+
+      const applyLabel = document.createElement('div');
+      applyLabel.textContent = 'Paste LLM corrections (format: [N] text)';
+      applyLabel.style.cssText = 'font-size:11px;color:#94a3b8;';
+      applySection.appendChild(applyLabel);
+
+      const applyTextarea = document.createElement('textarea');
+      applyTextarea.placeholder = '[7] Corrected line\n[16] Another fix';
+      applyTextarea.style.cssText = 'width:100%;box-sizing:border-box;height:72px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px 8px;font-family:monospace;font-size:11px;resize:vertical;';
+      applyTextarea.addEventListener('keydown', e => e.stopPropagation());
+      applySection.appendChild(applyTextarea);
+
+      const applyRow = document.createElement('div');
+      applyRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
+
+      const applyBtn = document.createElement('button');
+      applyBtn.textContent = 'Apply';
+      applyBtn.style.cssText = 'background:#10b981;color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer;';
+      applyRow.appendChild(applyBtn);
+
+      const applyStatus = document.createElement('span');
+      applyStatus.style.cssText = 'font-size:11px;color:#94a3b8;';
+      applyRow.appendChild(applyStatus);
+      applySection.appendChild(applyRow);
+      note.appendChild(applySection);
+
+      applyBtn.addEventListener('click', async () => {
+        const raw = applyTextarea.value;
+        const lineRe = /^\[(\d+)\]\s+(.+)$/;
+        const patches = [];
+        for (const line of raw.split('\n')) {
+          const m = line.trim().match(lineRe);
+          if (!m) continue;
+          const idx = parseInt(m[1], 10) - 1; // 0-based
+          const newText = m[2].trim();
+          if (idx >= 0 && idx < sorted.length) patches.push({ ann: sorted[idx], newText });
+        }
+        if (!patches.length) { applyStatus.textContent = 'No valid lines found.'; return; }
+        applyBtn.disabled = true;
+        applyBtn.textContent = 'Applying…';
+        let applied = 0;
+        for (const { ann, newText } of patches) {
+          const key = annKeyOf(ann);
+          const img = images[ann.imageIndex ?? 0];
+          await applyTranslatedText(key, img, newText);
+          applied++;
+        }
+        applyBtn.disabled = false;
+        applyBtn.textContent = 'Apply';
+        applyStatus.textContent = `✓ ${applied} bubble${applied !== 1 ? 's' : ''} updated.`;
+        applyTextarea.value = '';
       });
     });
 

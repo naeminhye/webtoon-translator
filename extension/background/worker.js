@@ -149,6 +149,13 @@ const TESSERACT_CONFIDENCE_THRESHOLD = 50;
 const OCR_TEXT_DILATE_PX              = 2;    // merges individual character strokes into connected line blocks; same separable-dilation algorithm as bundle.js's dilateMask (duplicated here — content script and service worker are separate execution contexts in this codebase, nothing to import between them)
 const OCR_TEXT_MERGE_DISTANCE_PX      = 14;   // gap (px) within which two SMALL text blocks are merged into the cluster; needs tuning against real multi-line bubbles. Large blocks ignore this entirely — see OCR_TEXT_MERGE_SIZE_RATIO
 const OCR_TEXT_MERGE_SIZE_RATIO       = 0.45; // a block whose own bbox area is >= this fraction of the largest block found in the crop is always merged in, regardless of gap distance — fixes irregular line spacing (e.g. a bubble narrowing near its tail) dropping a real, full-size text line just because it sits farther from the rest than OCR_TEXT_MERGE_DISTANCE_PX allows. Only blocks BELOW this ratio still go through the distance check. Needs tuning alongside OCR_TEXT_MERGE_DISTANCE_PX — too low and real noise blobs start qualifying as "large enough"; too high and irregular-spacing lines stop qualifying
+// Bubble borders (oval outline rings, spiky borders) appear as thin curved arcs
+// in the OCR crop. After dilation they have a large bbox but very few filled
+// pixels relative to that bbox — much lower fill-density than a text glyph.
+// Blobs below this density fraction (pixelCount / bboxArea) are pre-filtered
+// before the size-ratio / distance merge pass, so they can't be pulled in as
+// "large blocks" even when their bbox area meets OCR_TEXT_MERGE_SIZE_RATIO.
+const OCR_TEXT_MIN_BLOB_DENSITY       = 0.15; // needs tuning against real screenshots of various bubble border styles
 const OCR_TEXT_MIN_CLUSTER_W_PX       = 10;   // px — reject a merged cluster narrower than this as noise, not text
 const OCR_TEXT_MIN_CLUSTER_H_PX       = 8;    // px — reject a merged cluster shorter than this as noise, not text
 const OCR_TEXT_MIN_CLUSTER_AREA_RATIO = 0.02; // merged cluster bbox area / full crop area — reject specks too small relative to the crop to plausibly be the dialogue
@@ -285,11 +292,19 @@ function _mergeNearbyComponents(components, mergeDistancePx, sizeRatioThreshold)
 
   // Pass 1: large-enough blocks are in unconditionally (the single biggest
   // block always qualifies against itself, so `included` is never empty here).
+  // Pre-filter: skip thin arc-shaped blobs (bubble border segments) whose fill
+  // density (pixelCount / bboxArea) is too low to be a text glyph. These can
+  // have a large bbox but very few actual dark pixels, unlike real characters.
   for (const b of blocks) {
+    const density = b.pixelCount / b.area;
+    if (density < OCR_TEXT_MIN_BLOB_DENSITY) {
+      decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +(b.area / maxBlockArea).toFixed(3), gap: 0, density: +density.toFixed(3), includedBy: null, included: false });
+      continue;
+    }
     const areaRatio = b.area / maxBlockArea;
     if (areaRatio >= sizeRatioThreshold) {
       included.push(b);
-      decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +areaRatio.toFixed(3), gap: 0, includedBy: 'size', included: true });
+      decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +areaRatio.toFixed(3), density: +density.toFixed(3), gap: 0, includedBy: 'size', included: true });
     }
   }
 
@@ -305,7 +320,7 @@ function _mergeNearbyComponents(components, mergeDistancePx, sizeRatioThreshold)
       const gap = Math.min(...included.map(o => _componentGap(b, o)));
       if (gap <= mergeDistancePx) {
         included.push(b);
-        decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +(b.area / maxBlockArea).toFixed(3), gap, includedBy: 'distance', included: true });
+        decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +(b.area / maxBlockArea).toFixed(3), density: +(b.pixelCount / b.area).toFixed(3), gap, includedBy: 'distance', included: true });
         changed = true;
       }
     }
@@ -315,7 +330,7 @@ function _mergeNearbyComponents(components, mergeDistancePx, sizeRatioThreshold)
   for (const b of remaining) {
     if (included.includes(b)) continue;
     const gap = Math.min(...included.map(o => _componentGap(b, o)));
-    decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +(b.area / maxBlockArea).toFixed(3), gap, includedBy: null, included: false });
+    decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +(b.area / maxBlockArea).toFixed(3), density: +(b.pixelCount / b.area).toFixed(3), gap, includedBy: null, included: false });
   }
 
   if (!included.length) return { merged: null, decisions };
