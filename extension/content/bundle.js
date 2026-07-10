@@ -4117,7 +4117,14 @@ function bootForPage() {
 
     if (!sorted.length) lines.push('(no translations saved yet)');
 
-    return lines.join('\n');
+    lines.push('');
+    lines.push('━━ Instructions ━━━━━━━━━━━━━━━━━━━━━━━━━');
+    lines.push('Review the translations above for accuracy and naturalness.');
+    lines.push('Output ONLY the lines that need correction, one per line:');
+    lines.push('  [N] corrected translation');
+    lines.push('Skip any bubble that is already correct. No explanations.');
+
+    return { text: lines.join('\n'), sorted };
   }
 
   function toggleDevNote() {
@@ -4168,13 +4175,69 @@ function bootForPage() {
     document.body.appendChild(note);
     _devNoteEl = note;
 
-    buildDevNote().then(text => {
+    buildDevNote().then(({ text, sorted }) => {
       pre.textContent = text;
       copyBtn.addEventListener('click', () => {
         navigator.clipboard.writeText(text).then(() => {
           copyBtn.textContent = 'Copied!';
           setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1800);
         });
+      });
+
+      // ── Paste & Apply panel ──────────────────────────────────────
+      const applySection = document.createElement('div');
+      applySection.style.cssText = 'border-top:1px solid #1e293b;padding:10px 14px;display:flex;flex-direction:column;gap:6px;';
+
+      const applyLabel = document.createElement('div');
+      applyLabel.textContent = 'Paste LLM corrections (format: [N] text)';
+      applyLabel.style.cssText = 'font-size:11px;color:#94a3b8;';
+      applySection.appendChild(applyLabel);
+
+      const applyTextarea = document.createElement('textarea');
+      applyTextarea.placeholder = '[7] Corrected line\n[16] Another fix';
+      applyTextarea.style.cssText = 'width:100%;box-sizing:border-box;height:72px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px 8px;font-family:monospace;font-size:11px;resize:vertical;';
+      applyTextarea.addEventListener('keydown', e => e.stopPropagation());
+      applySection.appendChild(applyTextarea);
+
+      const applyRow = document.createElement('div');
+      applyRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
+
+      const applyBtn = document.createElement('button');
+      applyBtn.textContent = 'Apply';
+      applyBtn.style.cssText = 'background:#10b981;color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer;';
+      applyRow.appendChild(applyBtn);
+
+      const applyStatus = document.createElement('span');
+      applyStatus.style.cssText = 'font-size:11px;color:#94a3b8;';
+      applyRow.appendChild(applyStatus);
+      applySection.appendChild(applyRow);
+      note.appendChild(applySection);
+
+      applyBtn.addEventListener('click', async () => {
+        const raw = applyTextarea.value;
+        const lineRe = /^\[(\d+)\]\s+(.+)$/;
+        const patches = [];
+        for (const line of raw.split('\n')) {
+          const m = line.trim().match(lineRe);
+          if (!m) continue;
+          const idx = parseInt(m[1], 10) - 1; // 0-based
+          const newText = m[2].trim();
+          if (idx >= 0 && idx < sorted.length) patches.push({ ann: sorted[idx], newText });
+        }
+        if (!patches.length) { applyStatus.textContent = 'No valid lines found.'; return; }
+        applyBtn.disabled = true;
+        applyBtn.textContent = 'Applying…';
+        let applied = 0;
+        for (const { ann, newText } of patches) {
+          const key = annKeyOf(ann);
+          const img = images[ann.imageIndex ?? 0];
+          await applyTranslatedText(key, img, newText);
+          applied++;
+        }
+        applyBtn.disabled = false;
+        applyBtn.textContent = 'Apply';
+        applyStatus.textContent = `✓ ${applied} bubble${applied !== 1 ? 's' : ''} updated.`;
+        applyTextarea.value = '';
       });
     });
 
