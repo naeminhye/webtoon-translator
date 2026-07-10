@@ -5,8 +5,7 @@
 // ---------------------------------------------------------------------------
 
 const MODEL_URL   = chrome.runtime.getURL('models/comic-text-detector.onnx');
-const INPUT_SIZE  = 640;          // model expects 640×640
-const PAD_VALUE   = 114 / 255;   // YOLO letterbox grey
+const INPUT_SIZE  = 1024;         // mayocream/comic-text-detector-onnx expects 1024×1024
 const CONF_THRESH = 0.35;
 const IOU_THRESH  = 0.45;
 
@@ -85,33 +84,48 @@ async function preprocess(dataUrl, inputSize) {
 }
 
 // ---------------------------------------------------------------------------
-// Postprocess: YOLOv8n output [1,5,8400] → boxes in original coords
+// Postprocess: blk output [1, 64512, 7] → boxes in original coords
+//
+// mayocream/comic-text-detector-onnx uses YOLOv5-style HWC layout:
+//   each anchor row = [cx, cy, w, h, obj_conf, cls1_conf, cls2_conf]
+//   coords are in model-input pixel space (0..INPUT_SIZE)
+//   score = obj_conf * max(cls1_conf, cls2_conf)  — both already sigmoid'd
 // ---------------------------------------------------------------------------
 
+function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
+
 function postprocess(outputData, scale, padX, padY, srcW, srcH, confThresh, iouThresh) {
-  // outputData shape: [1, 5, 8400]  — transposed from usual [1,8400,5]
-  // rows: cx, cy, w, h, conf  (each of length 8400)
-  const numAnchors = 8400;
-  const cx   = outputData.subarray(0 * numAnchors, 1 * numAnchors);
-  const cy   = outputData.subarray(1 * numAnchors, 2 * numAnchors);
-  const bw   = outputData.subarray(2 * numAnchors, 3 * numAnchors);
-  const bh   = outputData.subarray(3 * numAnchors, 4 * numAnchors);
-  const conf = outputData.subarray(4 * numAnchors, 5 * numAnchors);
+  // outputData shape: [1, 64512, 7] flattened → stride 7 per anchor
+  const STRIDE = 7;
+  const numAnchors = outputData.length / STRIDE;
 
   const candidates = [];
   for (let i = 0; i < numAnchors; i++) {
-    if (conf[i] < confThresh) continue;
+    const base     = i * STRIDE;
+    const objConf  = sigmoid(outputData[base + 4]);
+    if (objConf < confThresh) continue;
+
+    const clsConf  = Math.max(sigmoid(outputData[base + 5]), sigmoid(outputData[base + 6]));
+    const score    = objConf * clsConf;
+    if (score < confThresh) continue;
+
+    const cx = outputData[base];
+    const cy = outputData[base + 1];
+    const bw = outputData[base + 2];
+    const bh = outputData[base + 3];
+
     // decode from model-input space back to original image coords
-    const x1 = ((cx[i] - bw[i] / 2) - padX) / scale;
-    const y1 = ((cy[i] - bh[i] / 2) - padY) / scale;
-    const x2 = ((cx[i] + bw[i] / 2) - padX) / scale;
-    const y2 = ((cy[i] + bh[i] / 2) - padY) / scale;
+    const x1 = ((cx - bw / 2) - padX) / scale;
+    const y1 = ((cy - bh / 2) - padY) / scale;
+    const x2 = ((cx + bw / 2) - padX) / scale;
+    const y2 = ((cy + bh / 2) - padY) / scale;
+
     candidates.push({
       x1: Math.max(0, x1),
       y1: Math.max(0, y1),
       x2: Math.min(srcW, x2),
       y2: Math.min(srcH, y2),
-      score: conf[i],
+      score,
     });
   }
 
@@ -163,7 +177,7 @@ async function runDetection({ dataUrl, tileIndex, confThreshold, iouThreshold })
   const results     = await session.run({ images: inputTensor });
   const t2 = performance.now();
 
-  const outputData = results['output0'].data;
+  const outputData = results['blk'].data;
   const boxes      = postprocess(outputData, scale, padX, padY, srcW, srcH, thresh, iouT);
   const t3 = performance.now();
 
