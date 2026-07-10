@@ -95,7 +95,14 @@ async function _getTileBitmap(url) {
 // Composites the tile in the service worker (cross-origin fetch is allowed
 // here via host_permissions, so no canvas taint) and forwards the resulting
 // dataUrl to the offscreen ONNX runner.
-async function handleDetectBubbles({ images, tileW, tileH, tileIndex }) {
+async function handleDetectBubbles({ dataUrl: precomposed, images, tileW, tileH, tileIndex }) {
+  // Content script composites locally when the canvas isn't tainted
+  // (blob:-image sites like Ridi/Lezhin, CORS-clean hosts) and sends the
+  // finished dataUrl; only tainting hosts take the fetch-and-composite path.
+  if (precomposed) {
+    await ensureOffscreen();
+    return chrome.runtime.sendMessage({ type: 'DETECT_RUN', payload: { dataUrl: precomposed, tileIndex } });
+  }
   const canvas = new OffscreenCanvas(tileW, tileH);
   const ctx    = canvas.getContext('2d');
   ctx.fillStyle = '#ffffff';

@@ -2181,6 +2181,14 @@ class JobManager {
       this.jobs.delete(job.id); // done jobs become regular annotations, no longer tracked as jobs
     } catch (err) {
       if (job.cancelled) return;
+      // Unattended ONNX auto-detect jobs fail silently (e.g. Lezhin's
+      // "Panel not loaded" on virtual-scrolled panels) — error pills are
+      // only meaningful for actions the user initiated.
+      if (job.source === 'onnx-detect') {
+        console.log('[WebtoonTranslate] auto-detect job dropped:', err?.message || err);
+        this.cancel(job.id);
+        return;
+      }
       job.status = 'error';
       job.errorMessage = err?.message || String(err);
       this._onStatusChange(job);
@@ -5261,11 +5269,7 @@ const bubbleDetector = (() => {
   const tileCache  = new Map();  // tileIndex → Array<{x1,y1,x2,y2,score}>
   const inFlight   = new Set();  // tileIndex → currently detecting
 
-  // ---- collect layout of webtoon images intersecting a tile ----
-  // Webtoon images are cross-origin (pstatic.net, kakao CDN, …), so drawing
-  // them on a content-script canvas taints it and toDataURL throws. Instead we
-  // send only URLs + layout to the background, which fetches the images itself
-  // (host_permissions grants cross-origin fetch) and composites the tile there.
+  // ---- collect webtoon images intersecting a tile ----
   function collectTileImages(tileIndex) {
     const y0 = tileIndex * STRIDE;
     const y1 = y0 + TILE_H;
@@ -5283,6 +5287,7 @@ const bubbleDetector = (() => {
       const absBottom = r.bottom + window.scrollY;
       if (absBottom <= y0 || absTop >= y1) continue;
       images.push({
+        el: img,
         url: img.currentSrc,
         x: r.left,          // tile-local: tile spans full page width
         y: absTop - y0,
@@ -5299,6 +5304,22 @@ const bubbleDetector = (() => {
     };
   }
 
+  // Fast path: composite the tile right here from the already-loaded <img>
+  // elements. Works whenever the images don't taint the canvas — blob: URLs
+  // (Ridi/Lezhin, which the background can never fetch) and any CORS-clean
+  // host. Throws SecurityError on tainting hosts (e.g. Naver's pstatic.net),
+  // in which case detectTile falls back to background-side compositing.
+  function composeTileLocally({ images, tileW, tileH }) {
+    const canvas = document.createElement('canvas');
+    canvas.width  = tileW;
+    canvas.height = tileH;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, tileW, tileH);
+    for (const im of images) ctx.drawImage(im.el, im.x, im.y, im.w, im.h);
+    return canvas.toDataURL('image/jpeg', 0.85); // throws if tainted
+  }
+
   async function detectTile(tileIndex) {
     if (tileCache.has(tileIndex) || inFlight.has(tileIndex)) return;
     inFlight.add(tileIndex);
@@ -5306,9 +5327,26 @@ const bubbleDetector = (() => {
       const tile = collectTileImages(tileIndex);
       if (!tile) { tileCache.set(tileIndex, []); return; }
 
+      let payload;
+      try {
+        payload = { dataUrl: composeTileLocally(tile), tileIndex };
+      } catch {
+        // Canvas tainted → background fetches & composites via host_permissions.
+        // blob: URLs are process-local and unfetchable there, so drop them.
+        payload = {
+          images: tile.images
+            .filter(im => !im.url.startsWith('blob:'))
+            .map(({ el, ...rest }) => rest),
+          tileW: tile.tileW,
+          tileH: tile.tileH,
+          tileIndex,
+        };
+        if (payload.images.length === 0) { tileCache.set(tileIndex, []); return; }
+      }
+
       const result = await sendToBackground({
         type: MSG.DETECT_BUBBLES,
-        payload: { ...tile, tileIndex },
+        payload,
       });
 
       const boxes = result?.boxes ?? [];
