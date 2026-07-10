@@ -13,12 +13,11 @@ const IOU_THRESH  = 0.45;
 // Session singleton with warm-up
 // ---------------------------------------------------------------------------
 
-// The vendored ORT build only ships single-thread binaries (ort-wasm.wasm,
-// ort-wasm-simd.wasm). With COOP/COEP the page is crossOriginIsolated, which
-// makes ORT default to the threaded binary (ort-wasm-simd-threaded.wasm) —
-// not present → "no available backend found". Pin to 1 thread until the
-// threaded .wasm is added to vendor/ort/.
-ort.env.wasm.numThreads = 1;
+// vendor/ort/ ships ort.webgpu.min.js plus both threaded and single-thread
+// WASM binaries (.jsep variants for the WebGPU bundle). COOP/COEP in the
+// manifest makes this page crossOriginIsolated, so SharedArrayBuffer is
+// available and the threaded binary can be used.
+ort.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 1);
 ort.env.wasm.wasmPaths  = chrome.runtime.getURL('vendor/ort/');
 
 let _sessionPromise = null;
@@ -27,7 +26,7 @@ function getSession() {
   if (_sessionPromise) return _sessionPromise;
   _sessionPromise = (async () => {
     const session = await ort.InferenceSession.create(MODEL_URL, {
-      executionProviders: ['wasm'],
+      executionProviders: ['webgpu', 'wasm'], // auto-falls back to WASM if no GPU
       graphOptimizationLevel: 'all',
     });
     // warm-up: compile graph so first real inference is not penalised
@@ -97,10 +96,10 @@ async function preprocess(dataUrl, inputSize) {
 // mayocream/comic-text-detector-onnx uses YOLOv5-style HWC layout:
 //   each anchor row = [cx, cy, w, h, obj_conf, cls1_conf, cls2_conf]
 //   coords are in model-input pixel space (0..INPUT_SIZE)
-//   score = obj_conf * max(cls1_conf, cls2_conf)  — both already sigmoid'd
+//   confidences are ALREADY sigmoid'd in the exported graph (standard YOLOv5
+//   Detect layer) — applying sigmoid again maps raw ~0 values to 0.5, which
+//   passes any sane threshold and floods NMS with tens of thousands of boxes
 // ---------------------------------------------------------------------------
-
-function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
 
 function postprocess(outputData, scale, padX, padY, srcW, srcH, confThresh, iouThresh) {
   // outputData shape: [1, 64512, 7] flattened → stride 7 per anchor
@@ -110,10 +109,10 @@ function postprocess(outputData, scale, padX, padY, srcW, srcH, confThresh, iouT
   const candidates = [];
   for (let i = 0; i < numAnchors; i++) {
     const base     = i * STRIDE;
-    const objConf  = sigmoid(outputData[base + 4]);
+    const objConf  = outputData[base + 4];
     if (objConf < confThresh) continue;
 
-    const clsConf  = Math.max(sigmoid(outputData[base + 5]), sigmoid(outputData[base + 6]));
+    const clsConf  = Math.max(outputData[base + 5], outputData[base + 6]);
     const score    = objConf * clsConf;
     if (score < confThresh) continue;
 
@@ -172,7 +171,18 @@ function nms(boxes, iouThresh) {
 // Main detection function
 // ---------------------------------------------------------------------------
 
-async function runDetection({ dataUrl, tileIndex, confThreshold, iouThreshold }) {
+// Serialize detections: the WASM backend runs on one thread, so concurrent
+// session.run calls just interleave and slow each other down (and make the
+// per-stage timings meaningless).
+let _detectQueue = Promise.resolve();
+
+function runDetection(payload) {
+  const job = _detectQueue.then(() => _runDetection(payload));
+  _detectQueue = job.catch(() => {}); // keep queue alive after a failed job
+  return job;
+}
+
+async function _runDetection({ dataUrl, tileIndex, confThreshold, iouThreshold }) {
   const session = await getSession();
   const thresh  = confThreshold ?? CONF_THRESH;
   const iouT    = iouThreshold  ?? IOU_THRESH;
