@@ -119,7 +119,7 @@ async function handleDetectBubbles({ images, tileW, tileH, tileIndex }) {
   });
 
   await ensureOffscreen();
-  return chrome.runtime.sendMessage({ type: 'DETECT_BUBBLES', payload: { dataUrl, tileIndex } });
+  return chrome.runtime.sendMessage({ type: 'DETECT_RUN', payload: { dataUrl, tileIndex } });
 }
 
 async function handleSave({ site, titleId, chapterId, annotations }) {

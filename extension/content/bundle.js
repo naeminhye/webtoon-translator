@@ -5105,6 +5105,9 @@ const bubbleDetector = (() => {
     const images = [];
     for (const img of document.querySelectorAll('img')) {
       if (!img.currentSrc || img.naturalWidth === 0) continue;
+      // skip lazy-load placeholders (1×1 data: GIFs) and decorative icons
+      if (img.currentSrc.startsWith('data:')) continue;
+      if (img.naturalWidth < 100 || img.naturalHeight < 100) continue;
       const r = img.getBoundingClientRect();
       const absTop    = r.top    + window.scrollY;
       const absBottom = r.bottom + window.scrollY;

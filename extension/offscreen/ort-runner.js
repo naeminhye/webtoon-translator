@@ -202,7 +202,11 @@ async function runDetection({ dataUrl, tileIndex, confThreshold, iouThreshold })
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type !== 'DETECT_BUBBLES') return false;
+  // 'DETECT_RUN' (not 'DETECT_BUBBLES'): runtime.sendMessage from a content
+  // script is delivered to ALL extension contexts including this offscreen
+  // document, so the background→offscreen leg needs a distinct type (same
+  // reason the OCR flow uses OCR_REGION vs OCR_RUN).
+  if (message.type !== 'DETECT_RUN') return false;
   runDetection(message.payload)
     .then(sendResponse)
     .catch(err => sendResponse({ error: err.message, boxes: [], tileIndex: message.payload?.tileIndex }));
