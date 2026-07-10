@@ -83,6 +83,26 @@ async function _upscaleForOcr(dataUrl, factor) {
   ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
 
+  // Grayscale + adaptive contrast stretch so Tesseract sees high-contrast
+  // black-on-white regardless of the panel's original background color.
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = imageData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const gray = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+    d[i] = d[i + 1] = d[i + 2] = gray;
+  }
+  let lo = 255, hi = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i] < lo) lo = d[i];
+    if (d[i] > hi) hi = d[i];
+  }
+  const range = hi - lo || 1;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = Math.round((d[i] - lo) / range * 255);
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  ctx.putImageData(imageData, 0, 0);
+
   const outBlob = await canvas.convertToBlob({ type: 'image/png' });
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

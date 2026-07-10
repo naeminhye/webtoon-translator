@@ -29,7 +29,9 @@ const MSG    = {
 // catch a bad OCR/translation). Needs visual tuning against real panels: light
 // backgrounds vs. dark/stylized-text panels (e.g. colored SFX) may want
 // different values; hold-to-peek is the primary fix for the latter case.
-const OVERLAY_BG_OPACITY = 0.88;
+const OVERLAY_BG_OPACITY_DEFAULT = 0.88;
+let _globalBubbleOpacity = OVERLAY_BG_OPACITY_DEFAULT;
+let _globalBubbleFont    = '';  // '' = use CSS default (Noto Sans)
 
 /** '#rrggbb' (or '#rgb') -> 'rgba(r, g, b, alpha)'. Non-hex input passes through unchanged. */
 function hexToRgba(hex, alpha) {
@@ -291,6 +293,8 @@ const COLOR_SAMPLE_INSET_FRAC = 0.15;
  * default style). Never throws.
  */
 async function detectBubbleColors(img, bbox) {
+  // For Bomtoon panel divs, sample from the canvas inside the div
+  img = _drawSource(img) || img;
   const nw = img.naturalWidth  || img.width  || img.offsetWidth  || 1;
   const nh = img.naturalHeight || img.height || img.offsetHeight || 1;
   const fullX = (bbox.x / 100) * nw, fullY = (bbox.y / 100) * nh;
@@ -558,7 +562,7 @@ class FixedOverlayLayer {
 
     this._el.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
-      if (e.target.closest('.wt-translation-bubble')) return;
+      if (e.target.closest('.wt-translation-bubble, .wt-bubble-toolbar')) return;
       e.preventDefault();
       startX = e.clientX; startY = e.clientY;
       this._selRect = document.createElement('div');
@@ -743,7 +747,12 @@ class FixedOverlayLayer {
       } else {
         b.style.textShadow = 'none';
       }
-      if (s.fontFamily) b.style.fontFamily = `'${s.fontFamily}', system-ui, sans-serif`;
+      const fontFamily = s.fontFamily || _globalBubbleFont;
+      if (fontFamily) {
+        b.style.fontFamily = `'${fontFamily}', system-ui, sans-serif`;
+        if (!s.fontFamily) loadGoogleFont(fontFamily);
+      }
+      if (s.fontFamily) b.dataset.customFont = '1'; // prevent global font live-update from overriding
       if (s.textAlign) {
         b.style.textAlign      = s.textAlign;
         b.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
@@ -758,7 +767,7 @@ class FixedOverlayLayer {
     span.className = 'wt-bubble-text';
     span.textContent = ann.translatedText;
     const s = ann.style || {};
-    span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', OVERLAY_BG_OPACITY);
+    span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', _globalBubbleOpacity);
     b.appendChild(span);
     b.appendChild(createBubbleReloadButton(this._onReload, ann, img));
 
@@ -882,8 +891,10 @@ class BubbleAutoDetector {
    * to manual drag).
    */
   async detect(img, clickX, clickY, imgRect, images, imageIndex) {
-    const nw = img.naturalWidth  || img.width  || imgRect.width;
-    const nh = img.naturalHeight || img.height || imgRect.height;
+    // For Bomtoon panel divs, pixel dimensions come from the canvas inside the div
+    const pixelSrc = _drawSource(img) || img;
+    const nw = pixelSrc.naturalWidth  || pixelSrc.width  || imgRect.width;
+    const nh = pixelSrc.naturalHeight || pixelSrc.height || imgRect.height;
     const scaleX = nw / imgRect.width, scaleY = nh / imgRect.height;
     const cx = clickX * scaleX, cy = clickY * scaleY; // click point in current image's natural px
 
@@ -1062,23 +1073,26 @@ class BubbleAutoDetector {
 
     if (syRaw < 0) {
       const prevImg = (images && imageIndex > 0) ? images[imageIndex - 1] : null;
-      const pnh = prevImg ? (prevImg.naturalHeight || prevImg.height || 0) : 0;
-      const want = prevImg ? Math.min(-syRaw, pnh) : 0;
+      const prevSrc = _drawSource(prevImg);
+      const pnh = prevSrc ? (prevSrc.naturalHeight || prevSrc.height || 0) : 0;
+      const want = prevSrc ? Math.min(-syRaw, pnh) : 0;
       canvasTopFrameY = -want;
-      if (want > 0) list.push({ source: prevImg, sy: pnh - want, sh: want, destY: 0 });
+      if (want > 0) list.push({ source: prevSrc, sy: pnh - want, sh: want, destY: 0 });
     }
 
+    const imgSrc = _drawSource(img) || img;
     const curSegStart = Math.max(0, syRaw);
     const curSegEnd   = Math.min(nh, eyRaw);
     const curH = curSegEnd - curSegStart;
-    if (curH > 0) list.push({ source: img, sy: curSegStart, sh: curH, destY: curSegStart - canvasTopFrameY });
+    if (curH > 0) list.push({ source: imgSrc, sy: curSegStart, sh: curH, destY: curSegStart - canvasTopFrameY });
 
     if (eyRaw > nh) {
       const nextImg = (images && imageIndex < images.length - 1) ? images[imageIndex + 1] : null;
-      if (nextImg) {
-        const nnh = nextImg.naturalHeight || nextImg.height || 0;
+      const nextSrc = _drawSource(nextImg);
+      if (nextSrc) {
+        const nnh = nextSrc.naturalHeight || nextSrc.height || 0;
         const want = Math.min(eyRaw - nh, nnh);
-        if (want > 0) list.push({ source: nextImg, sy: 0, sh: want, destY: nh - canvasTopFrameY });
+        if (want > 0) list.push({ source: nextSrc, sy: 0, sh: want, destY: nh - canvasTopFrameY });
       }
     }
 
@@ -1617,11 +1631,6 @@ function _classifyPostOcr(text, confidence, skewAngle) {
 
   if (hasHonorific) {
     return { ...base, tier: DIFFICULTY_TIERS.HARD, reason: 'honorific-detected' };
-  }
-
-  const hasStylizedPunctuation = DIFFICULTY_STYLIZED_PUNCTUATION_MARKERS.some(m => text.includes(m));
-  if (hasStylizedPunctuation) {
-    return { ...base, tier: DIFFICULTY_TIERS.HARD, reason: 'stylized-punctuation' };
   }
 
   return { ...base, tier: DIFFICULTY_TIERS.MEDIUM, reason: 'default' };
@@ -2354,7 +2363,7 @@ class BBoxSelector {
 
     const onMouseDown = (e) => {
       if (e.button !== 0) return;
-      if (e.target.closest('.wt-translation-bubble')) return; // let bubble clicks through
+      if (e.target.closest('.wt-translation-bubble, .wt-bubble-toolbar')) return; // let bubble clicks through
       e.preventDefault();
       this.onDragStart?.();
       overlay.classList.add('wt-dragging'); // pointer -> crosshair while an actual drag is happening
@@ -2540,24 +2549,27 @@ class OverlayRenderer {
     if (this.imageState.has(img)) return this.imageState.get(img).wrapper;
     let wrapper = img.parentElement;
     if (!wrapper?.classList.contains('wt-img-wrapper')) {
-      const displayW = img.offsetWidth;
       wrapper = document.createElement('div');
       wrapper.className = 'wt-img-wrapper';
+      // Base styles — width is NOT set here; _syncWrapperWidth handles it once
+      // the element is laid out (offsetWidth > 0). Setting width to an intrinsic
+      // canvas.width that differs from the rendered size misaligns all bubbles.
+      wrapper.style.cssText = 'position:relative;display:block;line-height:0;margin:0 auto;padding:0;';
       img.parentElement.insertBefore(wrapper, img);
       wrapper.appendChild(img);
       img.style.display = 'block';
-      const setW = () => {
-        const w = displayW || img.naturalWidth || img.offsetWidth;
-        if (w > 0) {
-          wrapper.style.cssText = `position:relative;display:block;width:${w}px;line-height:0;margin:0 auto;padding:0;`;
-        }
-      };
-      if (img.complete && img.naturalWidth > 0) setW();
-      else img.addEventListener('load', setW, { once: true });
     }
     this.imageState.set(img, { wrapper, bubbles: new Map() });
+    // Observe both the wrapper AND the element itself so any CSS-driven resize
+    // (Bomtoon scaling the canvas to fit the viewport) triggers repositioning.
     this._resizeObserver.observe(wrapper);
+    this._resizeObserver.observe(img);
     return wrapper;
+  }
+
+  _syncWrapperWidth(img, wrapper) {
+    const w = img.offsetWidth;
+    if (w > 0) wrapper.style.width = `${w}px`;
   }
 
   _createBubble(ann, img) {
@@ -2578,10 +2590,12 @@ class OverlayRenderer {
       } else {
         b.style.textShadow = 'none';
       }
-      if (s.fontFamily) {
-        b.style.fontFamily = `'${s.fontFamily}', system-ui, sans-serif`;
-        loadGoogleFont(s.fontFamily);
+      const fontFamily = s.fontFamily || _globalBubbleFont;
+      if (fontFamily) {
+        b.style.fontFamily = `'${fontFamily}', system-ui, sans-serif`;
+        loadGoogleFont(fontFamily);
       }
+      if (s.fontFamily) b.dataset.customFont = '1';
       if (s.textAlign) {
         b.style.textAlign      = s.textAlign;
         b.style.justifyContent = s.textAlign === 'left' ? 'flex-start' : s.textAlign === 'right' ? 'flex-end' : 'center';
@@ -2593,13 +2607,16 @@ class OverlayRenderer {
     span.className = 'wt-bubble-text';
     span.textContent = ann.translatedText;
     const s = ann.style || {};
-    span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', OVERLAY_BG_OPACITY);
+    span.style.background = s.noBg ? 'transparent' : hexToRgba(s.bg || '#ffffff', _globalBubbleOpacity);
     b.appendChild(span);
     b.appendChild(createBubbleReloadButton(this._onReload, ann, img));
 
     const rect = img.getBoundingClientRect();
-    const iw = img.naturalWidth  || rect.width  || img.offsetWidth  || 375;
-    const ih = img.naturalHeight || rect.height || img.offsetHeight || 500;
+    // Always use rendered dimensions for positioning — bbox percentages are relative
+    // to displayed size, not intrinsic size. For canvas, naturalWidth is undefined
+    // and img.width is the intrinsic pixel count which may differ from display size.
+    const iw = rect.width  || img.offsetWidth  || img.naturalWidth  || 375;
+    const ih = rect.height || img.offsetHeight || img.naturalHeight || 500;
     // side-by-side mode: a fixed-width caption in the page's own margin, not
     // an overlay on the (often oval) bubble shape — no oval-corner margin.
     const boxWidthPx = _overlayMode === 'side-by-side' ? SIDE_BY_SIDE_WIDTH_PX : (ann.bbox.w / 100) * iw;
@@ -2611,9 +2628,11 @@ class OverlayRenderer {
 
   _positionBubble(bubble, bbox, img) {
     const rect = img.getBoundingClientRect();
-    // Kakao uses padding-top ratio so rect.height may be 0 — fallback to naturalHeight
-    const iw = img.naturalWidth  || rect.width  || img.offsetWidth  || 375;
-    const ih = img.naturalHeight || rect.height || img.offsetHeight || 500;
+    // Always use rendered size — bbox % are relative to displayed dimensions.
+    // For canvas, naturalWidth is undefined and img.width is intrinsic (720px)
+    // which differs from the CSS-scaled display size, causing misalignment.
+    const iw = rect.width  || img.offsetWidth  || img.naturalWidth  || 375;
+    const ih = rect.height || img.offsetHeight || img.naturalHeight || 500;
     // autoFitHeightPx (set once at _createBubble time) may exceed the raw
     // bbox-derived height — see fitAndExpand(). Not recomputed on reposition/
     // resize; same pre-existing limitation the font-size styling already had.
@@ -2643,17 +2662,19 @@ class OverlayRenderer {
     }
   }
 
-  _repositionForWrapper(wrapper) {
-    const img   = wrapper.querySelector('img');
-    const state = img && this.imageState.get(img);
+  _repositionForWrapper(entry) {
+    // entry may be a wrapper div or the img/canvas itself (both observed)
+    const isCanvas = entry.tagName === 'CANVAS' || entry.tagName === 'IMG';
+    const imgEl    = isCanvas ? entry : entry.querySelector('img, canvas');
+    const state    = imgEl && this.imageState.get(imgEl);
     if (!state) return;
+    const wrapper = state.wrapper;
     requestAnimationFrame(() => {
-      const w = img.offsetWidth || img.naturalWidth;
-      if (w > 0) wrapper.style.width = `${w}px`;
+      this._syncWrapperWidth(imgEl, wrapper);
       state.bubbles.forEach(bubble => {
         const x = parseFloat(bubble.dataset.bboxX), y = parseFloat(bubble.dataset.bboxY);
         const bw = parseFloat(bubble.dataset.bboxW), h = parseFloat(bubble.dataset.bboxH);
-        if (!isNaN(x)) this._positionBubble(bubble, { x, y, w: bw, h }, img);
+        if (!isNaN(x)) this._positionBubble(bubble, { x, y, w: bw, h }, imgEl);
       });
     });
   }
@@ -2778,14 +2799,17 @@ class SidePanel {
         row.addEventListener('click', () => {
           const img    = this._images[imgIdx];
           const bubble = document.querySelector(`[data-ann-key="${key}"]`);
-          if (bubble && !bubble.classList.contains('wt-fixed-bubble')) {
+          if (bubble) {
+            // scrollIntoView handles all scroll containers (window, Ridi simplebar, etc.)
             bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
           } else if (img) {
-            const r = img.getBoundingClientRect();
-            const targetY = r.top + ((ann.bbox.y + ann.bbox.h / 2) / 100) * r.height;
-            scrollAncestorBy(img, targetY - window.innerHeight / 2);
-          } else if (bubble) {
-            bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            // Bubble not rendered yet — scroll to the approximate position in the image.
+            // Use getBoundingClientRect().height (rendered px) not img.height (intrinsic
+            // canvas attribute) because bbox percentages are relative to display size.
+            const r  = img.getBoundingClientRect();
+            const ih = r.height || img.offsetHeight || 500;
+            const targetAbsY = window.scrollY + r.top + ((ann.bbox.y + ann.bbox.h / 2) / 100) * ih;
+            window.scrollTo({ top: Math.max(0, targetAbsY - window.innerHeight / 2), behavior: 'smooth' });
           } else {
             return;
           }
@@ -3279,11 +3303,20 @@ async function ocrRegion(img, bbox, applyOcrRefinement = true) {
     dataUrl = _cropCanvas(img, cropBbox);
   } catch (e) {
     if (!(e instanceof DOMException) || e.name !== 'SecurityError') throw e;
+    // Virtual-scroll adapters (Bomtoon/Lezhin) use synthetic src keys like
+    // 'lezhin-panel-0' — not real URLs the background can fetch. If the panel's
+    // blob img is unloaded, show a helpful hint instead of a confusing network error.
+    if (!img.src?.match(/^https?:\/\//)) {
+      throw new Error('Panel not loaded — scroll so the image is fully visible, then try again');
+    }
   }
 
+  // Only pass imageUrl when it is a real HTTP(S) URL; synthetic panel keys and
+  // blob: URLs (process-local, unreachable by the service worker) must not be sent.
+  const imageUrl = (!dataUrl && img.src?.match(/^https?:\/\//)) ? img.src : null;
   const res = await sendToBackground({
     type: MSG.OCR_REGION,
-    payload: { dataUrl, imageUrl: dataUrl ? null : img.src, bbox: cropBbox, refineCrop: applyOcrRefinement },
+    payload: { dataUrl, imageUrl, bbox: cropBbox, refineCrop: applyOcrRefinement },
   });
   if (!res?.ok) throw new Error(res?.error || 'OCR failed');
   return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl };
@@ -3357,7 +3390,8 @@ async function ocrRegionStitched(img, rawBbox, images, applyOcrRefinement = true
   }
 
   // Cross-origin: send to background for fetch+stitch
-  const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src, bbox: { x, y, w, h }, dispW: dw }));
+  // Only include real HTTP URLs; synthetic panel keys (e.g. 'lezhin-panel-0') are not fetchable.
+  const bgClips = clips.map(({ img: i, x, y, w, h, dispW: dw }) => ({ imageUrl: i.src?.match(/^https?:\/\//) ? i.src : null, bbox: { x, y, w, h }, dispW: dw }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
   return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: null };
@@ -3389,7 +3423,7 @@ async function ocrClips(clips, applyOcrRefinement = true) {
     return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: clipsDataUrl };
   }
   // Cross-origin: background fetch+stitch
-  const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src, bbox: { x, y, w, h }, dispW }));
+  const bgClips = items.map(({ img, x, y, w, h, dispW }) => ({ imageUrl: img.src?.match(/^https?:\/\//) ? img.src : null, bbox: { x, y, w, h }, dispW }));
   const res = await sendToBackground({ type: MSG.OCR_STITCH, payload: { clips: bgClips, refineCrop: applyOcrRefinement } });
   if (!res?.ok) throw new Error(res?.error || 'OCR stitch failed');
   return { text: res.text, confidence: res.confidence, provider: res.provider, dataUrl: null };
@@ -3401,15 +3435,17 @@ async function ocrClips(clips, applyOcrRefinement = true) {
 function stitchClips(clips) {
   try {
     const items = clips.map(({ img, x, y, w, h, dispW }) => {
-      const nw = img.naturalWidth  || img.width  || img.offsetWidth;
-      const nh = img.naturalHeight || img.height || img.offsetHeight;
+      // For Bomtoon panel divs, draw from the canvas inside the div
+      const src = _drawSource(img) || img;
+      const nw = src.naturalWidth  || src.width  || src.offsetWidth;
+      const nh = src.naturalHeight || src.height || src.offsetHeight;
       const px = (x / 100) * nw;
       const py = (y / 100) * nh;
       const pw = Math.max(1, (w / 100) * nw);
       const ph = Math.max(1, (h / 100) * nh);
       // dispW is the display-pixel width; use it to normalize scale
       const dw = dispW || pw;
-      return { img, px, py, pw, ph, dw };
+      return { img: src, px, py, pw, ph, dw };
     });
 
     // Normalize: all clips rendered at TARGET_W pixels wide
@@ -3554,7 +3590,7 @@ function preprocessImageForVision(dataUrl, levels = 8) {
 // Called when Tesseract confidence is low: preprocess the crop and send to
 // the configured BYOK vision LLM for combined OCR + translation in one step.
 // Returns the translated string, or null if BYOK is not configured or fails.
-async function visionOcrTranslate(dataUrl) {
+async function visionOcrTranslate(dataUrl, storyCtx = null) {
   const s = await chrome.storage.local.get({
     'wt:translate-provider': 'google',
     'wt:byok-key':           '',
@@ -3576,7 +3612,15 @@ async function visionOcrTranslate(dataUrl) {
   const processed = await preprocessImageForVision(dataUrl);
   const base64    = processed.split(',')[1];
   const mime      = processed.match(/data:([^;]+);/)?.[1] ?? 'image/png';
-  const prompt    = `This is a speech bubble from a Korean webtoon. Read the Korean text and translate it to ${lang}. Return ONLY the translation, no explanation, no original text.`;
+
+  const ctxLines = [];
+  if (storyCtx?.title)        ctxLines.push(`Title: ${storyCtx.title}`);
+  if (storyCtx?.tags?.length) ctxLines.push(`Tags: ${storyCtx.tags.join(', ')}`);
+  if (storyCtx?.synopsis)     ctxLines.push(`Synopsis: ${storyCtx.synopsis}`);
+  const ctxPrefix = ctxLines.length ? ctxLines.join('\n') + '\n\n' : '';
+  const langName  = targetLanguageDisplayName(lang);
+  const prompt    = `${ctxPrefix}This is a speech bubble from a Korean webtoon. Read the Korean text in the image and translate it directly into ${langName}. Output ONLY the translated text — no alternatives, no explanation, no original text.`;
+
   try {
     return await adapter.callVisionApi(apiKey, model, base64, mime, prompt);
   } catch (err) {
@@ -3586,9 +3630,19 @@ async function visionOcrTranslate(dataUrl) {
 }
 
 
+// Returns the drawable pixel source for an element — for Bomtoon panel divs,
+// the <canvas> inside the div; for regular <img>/<canvas>, the element itself.
+function _drawSource(el) {
+  if (!el) return null;
+  return el._ocrCanvas || (el.tagName === 'DIV' ? el.querySelector('canvas') : el);
+}
+
 function _cropCanvas(img, bbox) {
-  const nw = img.naturalWidth  || img.width  || img.offsetWidth;
-  const nh = img.naturalHeight || img.height || img.offsetHeight;
+  // For Bomtoon panel divs, pixel data lives in the canvas inside (may be null if scrolled out)
+  const srcEl = _drawSource(img);
+  if (!srcEl) throw new DOMException('No canvas — panel scrolled out of view', 'SecurityError');
+  const nw = srcEl.naturalWidth  || srcEl.width  || srcEl.offsetWidth;
+  const nh = srcEl.naturalHeight || srcEl.height || srcEl.offsetHeight;
   const sx = (bbox.x / 100) * nw;
   const sy = (bbox.y / 100) * nh;
   const sw = Math.max(1, (bbox.w / 100) * nw);
@@ -3600,7 +3654,7 @@ function _cropCanvas(img, bbox) {
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  ctx.drawImage(srcEl, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL('image/png'); // throws SecurityError if canvas is tainted
 }
 
@@ -3686,40 +3740,37 @@ class BomtoonAdapter {
     return { site: 'bomtoon', titleId, chapterId };
   }
 
-  // Extract image URLs from __NEXT_DATA__ so we can identify panels by URL.
-  _getImageUrls() {
-    try {
-      const data = JSON.parse(document.getElementById('__NEXT_DATA__')?.textContent || '{}');
-      const images = data?.props?.pageProps?.episodeData?.result?.images || [];
-      return images.map(i => i.imagePath || i.url || '').filter(Boolean);
-    } catch { return []; }
-  }
-
   getImages() {
-    // Bomtoon renders panels as <canvas> elements (scrambled WebP tiles).
-    // Return the canvas elements directly so drawImage() works for OCR/cropping.
-    // We attach a .src property (JS-only) from __NEXT_DATA__ URLs for hashing.
-    const urls = this._getImageUrls();
-
-    const canvases = [...document.querySelectorAll('canvas')]
-      .filter(c => (c.width || 0) >= 200 && (c.height || 0) >= 200);
-
-    // Annotate each canvas with a stable .src for hashImage
-    canvases.forEach((el, i) => {
-      if (!el.src) el.src = urls[i] || `bomtoon-panel-${i}`;
+    // Bomtoon virtual-scrolls — only 3-4 <canvas> elements exist in DOM at once.
+    // The persistent <div width height> placeholder elements are always in DOM
+    // regardless of scroll position, making them stable panel anchors.
+    const panels = [...document.querySelectorAll('div[width][height]')]
+      .filter(d => parseInt(d.getAttribute('width')) >= 200);
+    panels.forEach((el, i) => {
+      if (!el.src) el.src = `bomtoon-panel-${i}`;
+      // Live getter so _drawSource() always gets the current canvas (null when scrolled out)
+      if (!Object.getOwnPropertyDescriptor(el, '_ocrCanvas')) {
+        Object.defineProperty(el, '_ocrCanvas', {
+          get() { return el.querySelector('canvas'); },
+          configurable: true,
+        });
+      }
     });
-
-    return canvases;
+    return panels;
   }
 
   watchNewImages(callback) {
     const root = document.body;
+    let seenCount = 0;
     let debounce = null;
     const observer = new MutationObserver(() => {
       clearTimeout(debounce);
       debounce = setTimeout(() => {
-        const imgs = this.getImages();
-        if (imgs.length) callback(imgs);
+        const panels = this.getImages();
+        if (panels.length !== seenCount) {
+          seenCount = panels.length;
+          callback(panels);
+        }
       }, 300);
     });
     observer.observe(root, { childList: true, subtree: true });
@@ -3727,9 +3778,92 @@ class BomtoonAdapter {
   }
 }
 
+class LezhinAdapter {
+  get usesFixedOverlay() { return true; }
+
+  detect() {
+    return location.hostname === 'www.lezhin.com' &&
+           /^\/[a-z]{2}\/comic\/[^/]+\/[^/?#]+/.test(location.pathname);
+  }
+
+  getChapterMeta() {
+    // /ko/comic/{titleSlug}/{episodeNum}
+    const parts = location.pathname.split('/').filter(Boolean);
+    return { site: 'lezhin', titleId: parts[2] || 'unknown', chapterId: parts[3] || 'unknown' };
+  }
+
+  getImages() {
+    const panels = [...document.querySelectorAll('div[data-cut-index]')];
+    panels.forEach((el, i) => {
+      if (!el.src) el.src = `lezhin-panel-${i}`;
+      if (!Object.getOwnPropertyDescriptor(el, '_ocrCanvas')) {
+        Object.defineProperty(el, '_ocrCanvas', {
+          get() {
+            return el.querySelector('img[src^="blob:"]') ||
+                   el.querySelector('img[src^="http"]') ||
+                   el.querySelector('canvas');
+          },
+          configurable: true,
+        });
+      }
+    });
+    return panels;
+  }
+
+  watchNewImages(callback) {
+    let seenCount = 0;
+    let debounce = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        const panels = this.getImages();
+        if (panels.length !== seenCount) {
+          seenCount = panels.length;
+          callback(panels);
+        }
+      }, 300);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }
+}
+
+class QtoonAdapter {
+  detect() {
+    return location.hostname === 'www.qtoon.co.kr' &&
+           location.pathname === '/toon/view.mg';
+  }
+
+  getChapterMeta() {
+    const params = new URLSearchParams(location.search);
+    return {
+      site: 'qtoon',
+      titleId: params.get('tcode') || 'unknown',
+      chapterId: params.get('cuid') || 'unknown',
+    };
+  }
+
+  getImages() {
+    return [...document.querySelectorAll('#img_area img')].filter(img => img.src && img.classList.contains('loaded'));
+  }
+
+  watchNewImages(callback) {
+    const root = document.querySelector('#img_area') || document.body;
+    let debounce = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        callback(this.getImages());
+      }, 150);
+    });
+    observer.observe(root, { subtree: true, attributes: true, attributeFilter: ['src', 'class'] });
+    return () => observer.disconnect();
+  }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter(), new BomtoonAdapter()];
+const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter(), new BomtoonAdapter(), new LezhinAdapter(), new QtoonAdapter()];
 
 function findAdapter() { return ADAPTERS.find(a => a.detect()); }
 
@@ -3758,6 +3892,33 @@ function bootForPage() {
 
   const meta = adapter.getChapterMeta();
   console.log('[WebtoonTranslate] Active:', meta);
+
+  // Load global display settings (opacity, font) and apply before any bubbles render
+  chrome.storage.local.get({ 'wt:bubble-bg-opacity': OVERLAY_BG_OPACITY_DEFAULT, 'wt:bubble-font': '' }, (s) => {
+    _globalBubbleOpacity = s['wt:bubble-bg-opacity'];
+    _globalBubbleFont    = s['wt:bubble-font'];
+    if (_globalBubbleFont) loadGoogleFont(_globalBubbleFont);
+  });
+  // Re-apply when changed from the Settings page while this tab is open
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes['wt:bubble-bg-opacity']) {
+      _globalBubbleOpacity = changes['wt:bubble-bg-opacity'].newValue;
+      document.querySelectorAll('.wt-bubble-text').forEach(span => {
+        if (span.style.background !== 'transparent') {
+          const hex = span.style.background.match(/#[0-9a-f]{6}/i)?.[0] || '#ffffff';
+          span.style.background = hexToRgba(hex, _globalBubbleOpacity);
+        }
+      });
+    }
+    if (changes['wt:bubble-font']) {
+      _globalBubbleFont = changes['wt:bubble-font'] || '';
+      if (_globalBubbleFont) loadGoogleFont(_globalBubbleFont);
+      const font = _globalBubbleFont ? `'${_globalBubbleFont}', system-ui, sans-serif` : '';
+      document.querySelectorAll('.wt-translation-bubble').forEach(b => {
+        if (!b.dataset.customFont) b.style.fontFamily = font;
+      });
+    }
+  });
 
   const renderer    = new OverlayRenderer({ onReload: retranslateAnnotation });
   const isKakao     = adapter.usesFixedOverlay === true;
@@ -3811,6 +3972,133 @@ function bootForPage() {
   }
   scanBtn.addEventListener('click', () => setReadScan(!readScanEnabled));
 
+  // ── [DEV] Translation dump button ────────────────────────────────────────
+  // Shows story context + all translations sorted by panel/position for
+  // testing chapter-wide batch translation. Not shown in production builds.
+  const devBtn = document.createElement('button');
+  devBtn.id = 'wt-dev-btn';
+  devBtn.title = 'Dev: view all translations';
+  devBtn.setAttribute('aria-label', 'Dev translation dump');
+  devBtn.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`;
+  document.body.appendChild(devBtn);
+
+  let _devNoteEl = null;
+
+  async function buildDevNote() {
+    const storyCtx = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
+    const { 'wt:translate-lang': targetLang } = await chrome.storage.local.get({ 'wt:translate-lang': 'vi' });
+
+    const lines = [];
+
+    // Story context block
+    lines.push('━━ Story Context ━━━━━━━━━━━━━━━━━━━━━━━━━');
+    if (storyCtx?.title)        lines.push(`Title:    ${storyCtx.title}`);
+    if (storyCtx?.tags?.length) lines.push(`Tags:     ${storyCtx.tags.join(', ')}`);
+    if (storyCtx?.synopsis)     lines.push(`Synopsis: ${storyCtx.synopsis}`);
+    lines.push(`Site: ${meta.site}  |  Title: ${meta.titleId}  |  Chapter: ${meta.chapterId}`);
+    lines.push(`Target lang: ${targetLang}`);
+    lines.push('');
+
+    // Sort annotations: by imageIndex then by bbox.y then bbox.x
+    const sorted = [...allAnnotations].sort((a, b) => {
+      const pi = (a.imageIndex ?? 0) - (b.imageIndex ?? 0);
+      if (pi !== 0) return pi;
+      const dy = (a.bbox?.y ?? 0) - (b.bbox?.y ?? 0);
+      if (Math.abs(dy) > 0.5) return dy;
+      return (a.bbox?.x ?? 0) - (b.bbox?.x ?? 0);
+    });
+
+    lines.push(`━━ Translations (${sorted.length} bubbles) ━━━━━━━━━━━━━━━━━`);
+    let currentPanel = -1;
+    sorted.forEach((ann, idx) => {
+      const panel = ann.imageIndex ?? 0;
+      if (panel !== currentPanel) {
+        if (currentPanel !== -1) lines.push('');
+        lines.push(`── Panel ${panel + 1} ─────────────────────────────────`);
+        currentPanel = panel;
+      }
+      const ocr  = ann.originalText  || '(no OCR)';
+      const trsl = ann.translatedText || '(no translation)';
+      lines.push(`[${idx + 1}] ${ocr}`);
+      lines.push(`     → ${trsl}`);
+    });
+
+    if (!sorted.length) lines.push('(no translations saved yet)');
+
+    return lines.join('\n');
+  }
+
+  function toggleDevNote() {
+    if (_devNoteEl) {
+      _devNoteEl.remove();
+      _devNoteEl = null;
+      return;
+    }
+
+    const note = document.createElement('div');
+    note.id = 'wt-dev-note';
+    // Positioned above the button cluster
+    const btnR = devBtn.getBoundingClientRect();
+    note.style.cssText = `
+      position:fixed;
+      bottom:${window.innerHeight - btnR.top + 8}px;
+      right:16px;
+      width:min(540px, calc(100vw - 32px));
+      max-height:60vh;
+      background:#0f172a;
+      color:#e2e8f0;
+      border:1px solid #334155;
+      border-radius:10px;
+      font-family:monospace;
+      font-size:12px;
+      line-height:1.55;
+      overflow-y:auto;
+      z-index:99999;
+      box-shadow:0 8px 32px rgba(0,0,0,0.6);
+    `;
+
+    // Header
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #1e293b;position:sticky;top:0;background:#0f172a;z-index:1;';
+    hdr.innerHTML = `<span style="font-weight:700;color:#818cf8;font-size:13px">Dev · Translation Dump</span>`;
+
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = 'Copy';
+    copyBtn.style.cssText = 'background:#6366f1;color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer;';
+    hdr.appendChild(copyBtn);
+    note.appendChild(hdr);
+
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'margin:0;padding:12px 14px;white-space:pre-wrap;word-break:break-word;';
+    pre.textContent = 'Loading…';
+    note.appendChild(pre);
+
+    document.body.appendChild(note);
+    _devNoteEl = note;
+
+    buildDevNote().then(text => {
+      pre.textContent = text;
+      copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(text).then(() => {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1800);
+        });
+      });
+    });
+
+    // Close when clicking outside
+    const outsideClick = (e) => {
+      if (!note.contains(e.target) && e.target !== devBtn) {
+        note.remove();
+        _devNoteEl = null;
+        document.removeEventListener('mousedown', outsideClick, true);
+      }
+    };
+    setTimeout(() => document.addEventListener('mousedown', outsideClick, true), 0);
+  }
+
+  devBtn.addEventListener('click', toggleDevNote);
+
   // One-time hint (persisted across sessions) explaining click-to-auto-detect,
   // since the overlay cursor alone doesn't make that obvious. Kakao only
   // supports drag-select (no auto-detect), so its crosshair cursor already
@@ -3825,12 +4113,11 @@ function bootForPage() {
     });
   }
 
-  // Keyboard shortcut: T to toggle
+  // Keyboard shortcuts: T = toggle translations, S = toggle Quick OCR scan
   const keyHandler = (e) => {
-    if (e.key === 't' || e.key === 'T') {
-      if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
-      toggleTranslations();
-    }
+    if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+    if (e.key === 't' || e.key === 'T') toggleTranslations();
+    if (e.key === 's' || e.key === 'S') setReadScan(!readScanEnabled);
   };
   document.addEventListener('keydown', keyHandler);
 
@@ -3901,6 +4188,44 @@ function bootForPage() {
 
   // ── image loading ──────────────────────────────────────────────────────
 
+  // Bomtoon: show a small non-blocking badge while waiting for panels to decode.
+  // Positioned at bottom-left so it never covers the comic or the right-side panel.
+  // pointer-events:none so the user can still scroll/interact freely.
+  const isBomtoon = location.hostname === 'www.bomtoon.com';
+  let _loadingBadge = null;
+  if (isBomtoon) {
+    if (!document.getElementById('wt-spin-style')) {
+      const st = document.createElement('style');
+      st.id = 'wt-spin-style';
+      st.textContent = '@keyframes wt-spin{to{transform:rotate(360deg)}}';
+      document.head.appendChild(st);
+    }
+    _loadingBadge = document.createElement('div');
+    _loadingBadge.id = 'wt-loading-badge';
+    _loadingBadge.style.cssText = [
+      'position:fixed', 'bottom:20px', 'left:20px', 'z-index:2147483646',
+      'display:flex', 'align-items:center', 'gap:8px',
+      'background:#1e1b4b', 'color:#e0e7ff',
+      'font-size:12px', 'font-family:system-ui,sans-serif',
+      'padding:8px 14px', 'border-radius:20px',
+      'box-shadow:0 2px 10px rgba(0,0,0,0.4)',
+      'pointer-events:none', 'user-select:none',
+    ].join(';');
+    _loadingBadge.innerHTML =
+      `<div style="width:14px;height:14px;border:2px solid rgba(165,180,252,0.3);border-top-color:#a5b4fc;border-radius:50%;animation:wt-spin 0.8s linear infinite;flex-shrink:0;"></div>` +
+      `<span>Đang tải bản dịch…</span>`;
+    document.body.appendChild(_loadingBadge);
+  }
+
+  function _hideLoadingBadge() {
+    if (_loadingBadge) {
+      _loadingBadge.style.transition = 'opacity 0.4s';
+      _loadingBadge.style.opacity = '0';
+      setTimeout(() => _loadingBadge?.remove(), 420);
+      _loadingBadge = null;
+    }
+  }
+
   let attempts = 0;
   const tryGetImages = () => {
     if (disposed) return;
@@ -3914,7 +4239,7 @@ function bootForPage() {
       }
       setTimeout(tryGetImages, 600);
     } else {
-      loadAndRender().then(updateProgressBar);
+      loadAndRender().then(() => { updateProgressBar(); _hideLoadingBadge(); });
       checkStorageQuota();
     }
   };
@@ -4075,36 +4400,10 @@ function bootForPage() {
       job._ocrProvider    = provider;
       job._ocrConfidence  = confidence;
       job._difficultyTier = difficulty.tier;
-      // Vision-tier: send crop to vision LLM for combined OCR+translate.
-      // Only fires when BYOK is configured; result stored so runTranslate can skip.
-      if (difficulty.tier === DIFFICULTY_TIERS.VISION) {
-        // dataUrl may be null for cross-origin images (background did the crop+OCR).
-        // In that case request the crop explicitly so we can send it to the vision LLM.
-        let cropUrl = dataUrl;
-        if (!cropUrl && job.imageEl) {
-          try {
-            cropUrl = _cropCanvas(job.imageEl, job.bbox);
-          } catch (_e) {
-            const res2 = await sendToBackground({ type: MSG.CROP_IMAGE, payload: { imageUrl: job.imageEl.src, bbox: job.bbox } });
-            cropUrl = res2?.dataUrl ?? null;
-          }
-        }
-        if (cropUrl) {
-          const visionResult = await visionOcrTranslate(cropUrl);
-          if (visionResult) {
-            job._visionTranslated = visionResult;
-            console.log(`[WebtoonTranslate] Vision LLM OCR+translate (tier=vision reason=${difficulty.reason}):`, visionResult);
-            // Return sentinel so the pipeline continues to runTranslate even
-            // when Tesseract returned empty text (otherwise _process would bail
-            // with "No text found" before runTranslate can use _visionTranslated).
-            return text || '[vision]';
-          }
-        }
-      }
+      job._ocrDataUrl     = dataUrl ?? null; // retained for vision-tier re-OCR via LLM
       return text;
     },
     runTranslate: async (job) => {
-      if (job._visionTranslated) return job._visionTranslated;
       const s = await chrome.storage.local.get({ 'wt:translate-provider': 'google', 'wt:byok-mode': 'always' });
       const prov     = s['wt:translate-provider'];
       const byokMode = s['wt:byok-mode'];
@@ -4119,7 +4418,16 @@ function bootForPage() {
         jobOverlayRenderer.render(job); // re-render with "Asking LLM…"
         const storyCtx = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
         try {
-          const result = await autoTranslate(job.originalText, { job, storyCtx, forceLlm: true });
+          // vision tier: send the cropped image to the LLM for combined OCR + translation
+          // so that low-confidence Tesseract text is bypassed entirely.
+          let result = null;
+          if (job._difficultyTier === DIFFICULTY_TIERS.VISION && job._ocrDataUrl) {
+            result = await visionOcrTranslate(job._ocrDataUrl, storyCtx);
+            if (result) {
+              job.originalText = '[vision]'; // mark that OCR came from the vision LLM
+            }
+          }
+          if (!result) result = await autoTranslate(job.originalText, { job, storyCtx, forceLlm: true });
           if (result) return result;
         } catch (llmErr) {
           console.warn('[WebtoonTranslate] LLM translate failed, falling back to Google:', llmErr?.message || llmErr);
@@ -4458,26 +4766,8 @@ function bootForPage() {
     window.addEventListener('resize', () => { fixedLayer?.repositionAll(); jobOverlayRenderer.repositionAll(); }, { passive: true });
   }
 
-  // ── chapter navigation (SPA) ───────────────────────────────────────────
-  // Naver is a SPA — URL changes via pushState without full page reload.
-  // We watch for URL changes and re-boot when chapter changes.
-
-  let lastUrl = location.href;
-  const urlObserver = new MutationObserver(() => {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      const newAdapter = findAdapter();
-      if (newAdapter) {
-        console.log('[WebtoonTranslate] SPA navigation detected, re-booting');
-        renderer.clearAll();
-        panel?.hide();
-        document.getElementById('wt-progress-bar')?.remove();
-        // Small delay for Naver to render new chapter DOM
-        setTimeout(() => bootForPage(), 800);
-      }
-    }
-  });
-  urlObserver.observe(document.body, { childList: true, subtree: true });
+  // URL observer is now global (see bottom of file) — handles both
+  // chapter→chapter and non-chapter→chapter transitions.
 
   // ── storage quota check ────────────────────────────────────────────────
 
@@ -4534,7 +4824,6 @@ function bootForPage() {
   bootCleanup = () => {
     disposed = true;
     stopWatching();
-    urlObserver.disconnect();
     chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     if (isKakao) { fixedLayer.disable(); fixedLayer.clearAll(); }
     else selector.disable();
@@ -4546,6 +4835,8 @@ function bootForPage() {
     llmTestPopover.dismiss();
     toggleBtn.remove();
     scanBtn.remove();
+    devBtn.remove();
+    _devNoteEl?.remove(); _devNoteEl = null;
     panel?.hide();
     document.getElementById('wt-progress-bar')?.remove();
     document.getElementById('wt-job-badge')?.remove();
@@ -4588,5 +4879,41 @@ chrome.storage.onChanged.addListener((changes, area) => {
     _overlayMode = changes[OVERLAY_MODE_KEY].newValue === 'side-by-side' ? 'side-by-side' : 'overlay';
   }
 });
+
+// ── Global SPA navigation watcher ────────────────────────────────────────────
+// Intercepts pushState/replaceState (React/Next.js SPAs) and popstate
+// (browser back/forward) so chapter transitions without a full page reload
+// correctly boot or tear down the extension UI.
+(function () {
+  let _lastUrl = location.href;
+  let _navDebounce = null;
+
+  function onUrlChange() {
+    if (location.href === _lastUrl) return;
+    _lastUrl = location.href;
+    clearTimeout(_navDebounce);
+    _navDebounce = setTimeout(() => {
+      if (!_wtEnabled) return;
+      const hasAdapter = !!findAdapter();
+      const isBooted   = !!bootCleanup;
+      if (hasAdapter && !isBooted) {
+        console.log('[WebtoonTranslate] SPA nav → chapter, booting');
+        bootForPage();
+      } else if (hasAdapter && isBooted) {
+        console.log('[WebtoonTranslate] SPA nav → chapter change, re-booting');
+        bootForPage();
+      } else if (!hasAdapter && isBooted) {
+        console.log('[WebtoonTranslate] SPA nav → non-chapter, tearing down');
+        teardown();
+      }
+    }, 600);
+  }
+
+  const _origPush    = history.pushState.bind(history);
+  const _origReplace = history.replaceState.bind(history);
+  history.pushState    = (...a) => { _origPush(...a);    onUrlChange(); };
+  history.replaceState = (...a) => { _origReplace(...a); onUrlChange(); };
+  window.addEventListener('popstate', onUrlChange);
+})();
 
 })();

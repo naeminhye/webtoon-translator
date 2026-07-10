@@ -12,6 +12,10 @@
     "https://ridibooks.com/*",
     "https://page.kakao.com/*",
     "https://www.bomtoon.com/*",
+    "https://www.lezhin.com/*",
+    "https://rcdn.lezhin.com/*",
+    "https://www.qtoon.co.kr/*",
+    "https://c2.qtoon.co.kr/*",
     "https://*.pstatic.net/*",
     "https://api.ocr.space/*",
     "https://translate.googleapis.com/*",
@@ -42,7 +46,9 @@
         "https://m.comic.naver.com/bestChallenge/detail*",
         "https://ridibooks.com/books/*/view",
         "https://page.kakao.com/content/*",
-        "https://www.bomtoon.com/viewer/*"
+        "https://www.bomtoon.com/viewer/*",
+        "https://www.lezhin.com/*/comic/*/*",
+        "https://www.qtoon.co.kr/toon/view.mg*"
       ],
       "js": ["shared/llm-adapters.js", "content/bundle.js"],
       "css": ["content/overlay.css"],
