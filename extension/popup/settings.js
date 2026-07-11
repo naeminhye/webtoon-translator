@@ -1,4 +1,57 @@
 const $ = id => document.getElementById(id);
+const THEME_KEY = 'wt:settings-theme';
+const TAB_KEY   = 'wt:settings-tab';
+
+// ── Theme (light/dark) ──────────────────────────────────────────────────
+// Persisted separately from every other 'wt:' setting below — this is a
+// UI preference for this settings page only, not an extension behavior.
+async function initTheme() {
+  const stored = await chrome.storage.local.get({ [THEME_KEY]: '' });
+  const btn = $('theme-toggle');
+
+  function apply(theme) {
+    // '' (no stored choice) leaves data-theme unset so the
+    // prefers-color-scheme media query in settings.css decides — the
+    // toggle button still needs a concrete label, so fall back to what
+    // the media query would currently resolve to.
+    const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const effective = theme || (systemDark ? 'dark' : 'light');
+    if (theme) document.documentElement.setAttribute('data-theme', theme);
+    else document.documentElement.removeAttribute('data-theme');
+    btn.textContent = effective === 'dark' ? 'Light' : 'Dark';
+  }
+
+  apply(stored[THEME_KEY]);
+
+  btn.addEventListener('click', async () => {
+    const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const current = document.documentElement.getAttribute('data-theme') || (systemDark ? 'dark' : 'light');
+    const next = current === 'dark' ? 'light' : 'dark';
+    apply(next);
+    await chrome.storage.local.set({ [THEME_KEY]: next });
+  });
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────────
+async function initTabs() {
+  const pills  = document.querySelectorAll('.tab-pill');
+  const panels = document.querySelectorAll('.tab-panel');
+  const stored = await chrome.storage.local.get({ [TAB_KEY]: 'general' });
+
+  function activate(tab) {
+    pills.forEach(p => p.classList.toggle('active', p.dataset.tab === tab));
+    panels.forEach(s => s.classList.toggle('hidden', s.dataset.tabPanel !== tab));
+  }
+
+  const initial = [...pills].some(p => p.dataset.tab === stored[TAB_KEY]) ? stored[TAB_KEY] : 'general';
+  activate(initial);
+
+  pills.forEach(p => p.addEventListener('click', async () => {
+    activate(p.dataset.tab);
+    await chrome.storage.local.set({ [TAB_KEY]: p.dataset.tab });
+  }));
+}
+
 const OCR_PROVIDER_KEY       = 'wt:ocr-provider';
 const OCR_SPACE_KEY_STR      = 'wt:ocrspace-key';
 const PADDLE_URL_KEY         = 'wt:paddleocr-url';
@@ -401,6 +454,8 @@ async function initOcrStatsSettings() {
   });
 }
 
+initTheme();
+initTabs();
 initTranslationSettings();
 initOcrSettings();
 initOcrStatsSettings();
