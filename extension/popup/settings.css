@@ -686,6 +686,59 @@ html, body {
 }
 .download-chip:hover { background: #e0e7ff; }
 
+/* ── PaddleOCR in-browser model status ──────────────────────────────────── */
+
+.model-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.model-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: #334155;
+}
+
+.model-status-name { display: flex; align-items: baseline; gap: 5px; }
+
+.model-status-size {
+  font-size: 10.5px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.model-status-text {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.model-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #cbd5e1;
+}
+.model-status-dot.is-ready       { background: #22c55e; }
+.model-status-dot.is-error       { background: #ef4444; }
+.model-status-dot.is-downloading {
+  background: #f59e0b;
+  animation: model-status-pulse 1s ease-in-out infinite;
+}
+@keyframes model-status-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
 /* ── Keyboard shortcut list ─────────────────────────────────────────────── */
 
 .shortcut-list {

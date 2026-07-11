@@ -37,6 +37,8 @@ async function initOcrSettings() {
     $('ocrspace-key-saved').classList.add('hidden');
     $('paddleocr-url-row').classList.toggle('hidden', provider !== 'paddleocr');
     $('paddleocr-url-saved').classList.add('hidden');
+    $('paddleocr-local-row').classList.toggle('hidden', provider !== 'paddleocr-local');
+    if (provider === 'paddleocr-local') refreshPaddleModelsStatus();
   }
 
   applyProvider(stored[OCR_PROVIDER_KEY]);
@@ -89,6 +91,76 @@ async function initOcrSettings() {
   ].forEach(([id, filename]) => {
     $(id).href = chrome.runtime.getURL(PADDLE_SERVER_ASSETS + filename);
   });
+
+  // ── PaddleOCR (in-browser) model status + download/remove ────────────────
+  // Model bytes live in the background service worker's Cache Storage (see
+  // worker.js paddleModelsDownload/Status/Clear) — this popup only ever
+  // asks it for status or tells it to download/clear, never touches the
+  // cache directly, so state stays correct even if a download that started
+  // from a since-closed popup is still running when this popup opens.
+
+  function setModelDot(key, state) {
+    const dot = $(`paddle-${key}-dot`);
+    dot.classList.remove('is-ready', 'is-downloading', 'is-error');
+    if (state === 'ready' || state === 'downloading' || state === 'error') {
+      dot.classList.add(`is-${state}`);
+    }
+    const text = $(`paddle-${key}-text`);
+    text.textContent = { ready: 'ready', downloading: 'downloading…', error: 'error', missing: 'not downloaded' }[state] || state;
+  }
+
+  function renderPaddleModelsStatus(status) {
+    setModelDot('det', status.det === 'cached' ? 'ready' : (status.downloading ? 'downloading' : 'missing'));
+    setModelDot('rec', status.rec === 'cached' ? 'ready' : (status.downloading ? 'downloading' : 'missing'));
+    const bothReady = status.det === 'cached' && status.rec === 'cached';
+    const btn = $('paddle-models-download-btn');
+    btn.disabled = status.downloading || bothReady;
+    btn.textContent = status.downloading ? 'Downloading…' : (bothReady ? 'Models ready' : 'Download models');
+    $('paddle-models-clear-btn').classList.toggle('hidden', !bothReady || status.downloading);
+    if (!status.downloading) $('paddle-models-error').classList.add('hidden');
+  }
+
+  async function refreshPaddleModelsStatus() {
+    const status = await chrome.runtime.sendMessage({ type: 'PADDLE_MODELS_STATUS' });
+    if (status) renderPaddleModelsStatus(status);
+  }
+
+  // Live progress while a download is in flight — also covers the case where
+  // a previously-opened popup started the download and was then closed; the
+  // background keeps downloading regardless, and this popup's listener still
+  // receives the remaining broadcast events.
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== 'PADDLE_MODELS_EVENT') return;
+    const { stage, state, error } = message.payload;
+    if (stage === 'det' || stage === 'rec') {
+      setModelDot(stage, state === 'done' ? 'ready' : 'downloading');
+    } else if (stage === 'all' && state === 'done') {
+      refreshPaddleModelsStatus();
+    } else if (stage === 'error') {
+      $('paddle-models-error').textContent = error || 'Download failed.';
+      $('paddle-models-error').classList.remove('hidden');
+      refreshPaddleModelsStatus();
+    }
+  });
+
+  $('paddle-models-download-btn').addEventListener('click', async () => {
+    $('paddle-models-download-btn').disabled = true;
+    $('paddle-models-download-btn').textContent = 'Downloading…';
+    $('paddle-models-error').classList.add('hidden');
+    const res = await chrome.runtime.sendMessage({ type: 'PADDLE_MODELS_DOWNLOAD' });
+    if (res && !res.ok) {
+      $('paddle-models-error').textContent = res.error || 'Download failed.';
+      $('paddle-models-error').classList.remove('hidden');
+    }
+    refreshPaddleModelsStatus();
+  });
+
+  $('paddle-models-clear-btn').addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: 'PADDLE_MODELS_CLEAR' });
+    refreshPaddleModelsStatus();
+  });
+
+  if (stored[OCR_PROVIDER_KEY] === 'paddleocr-local') refreshPaddleModelsStatus();
 }
 
 async function initTranslationSettings() {

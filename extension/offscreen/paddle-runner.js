@@ -7,13 +7,20 @@
  * Loads two ONNX models with the same onnxruntime-web setup as ort-runner.js
  * (which is loaded first and already configures ort.env.wasm.*):
  *
- *   models/paddle-det.onnx        DBNet text-line detector (language-agnostic)
- *   models/paddle-rec-korean.onnx PP-OCRv4 Korean CTC recognizer
- *   models/korean_dict.txt        recognizer charset (committed)
+ *   paddle-det.onnx        DBNet text-line detector (language-agnostic)
+ *   paddle-rec-korean.onnx PP-OCRv4 Korean CTC recognizer
+ *   models/korean_dict.txt recognizer charset (committed, bundled)
  *
- * The .onnx files are NOT bundled — scripts/fetch-paddle-models.py installs
- * them (see extension/models/README.md); a missing model produces an
- * actionable error instead of an ORT parse failure.
+ * The two .onnx files (~15 MB) are NOT bundled in the extension package —
+ * they're fetched at runtime from a GitHub Release into the Cache Storage
+ * API (see background/worker.js's paddleModelsDownload, triggered by the
+ * "Download models" button in Settings → OCR Engine → PaddleOCR
+ * (in-browser)). Cache Storage is shared across extension contexts by
+ * origin, so this file just reads whatever worker.js already cached — no
+ * message-passing needed for that part. A bundled extension/models/*.onnx
+ * (placed there by scripts/fetch-paddle-models.py for a "Load unpacked" dev
+ * setup) is tried as a secondary fallback; a genuinely missing model
+ * produces an actionable error instead of an ORT parse failure.
  *
  * Pipeline: crop → det (find text lines) → per-line rec → CTC greedy decode →
  * join in reading order. Det boxes use an axis-aligned approximation of DB's
@@ -150,24 +157,42 @@ function paddleCtcGreedyDecode(probs, T, C, charset) {
 
 if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
 
-  const DET_MODEL_URL = chrome.runtime.getURL('models/paddle-det.onnx');
-  const REC_MODEL_URL = chrome.runtime.getURL('models/paddle-rec-korean.onnx');
-  const DICT_URL      = chrome.runtime.getURL('models/korean_dict.txt');
+  // Mirrors background/worker.js's PADDLE_MODELS_RELEASE/PADDLE_CACHE_NAME —
+  // keep in sync. These are the URLs worker.js's "Download models" flow
+  // fetches into Cache Storage; reading with the identical URL as cache key
+  // is what makes the two contexts share the same cached bytes.
+  const PADDLE_MODELS_RELEASE = 'https://github.com/naeminhye/webtoon-translator/releases/download/paddle-models-v1/';
+  const PADDLE_CACHE_NAME     = 'paddle-ocr-models-v1';
+  const DET_REMOTE_URL = PADDLE_MODELS_RELEASE + 'paddle-det.onnx';
+  const REC_REMOTE_URL = PADDLE_MODELS_RELEASE + 'paddle-rec-korean.onnx';
+  const DICT_URL       = chrome.runtime.getURL('models/korean_dict.txt');
+
+  const NOT_INSTALLED_MSG = label =>
+    `PaddleOCR ${label} model not installed — open the extension popup, go to ` +
+    `OCR Engine → PaddleOCR (in-browser), and click "Download models".`;
 
   // ort.env.wasm.* (single-thread, wasmPaths) is configured by ort-runner.js,
   // loaded before this file — do not reconfigure here.
 
-  async function createSession(url, label) {
-    // Probe first: a missing (not installed) model otherwise surfaces as an
-    // opaque ORT protobuf parse error.
-    let res;
+  // Resolves model bytes in priority order: (1) Cache Storage, populated by
+  // worker.js's paddleModelsDownload — the primary path for every install
+  // type, including a packed Chrome-Web-Store extension; (2) a bundled
+  // extension/models/*.onnx — a "Load unpacked" dev convenience left over
+  // from scripts/fetch-paddle-models.py, tried only if the cache is empty.
+  async function loadModelBytes(remoteUrl, bundledPath, label) {
+    const cache = await caches.open(PADDLE_CACHE_NAME);
+    const cached = await cache.match(remoteUrl);
+    if (cached) return new Uint8Array(await cached.arrayBuffer());
+
     try {
-      res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (_) {
-      throw new Error('PaddleOCR models not installed — run scripts/fetch-paddle-models.py (see extension/models/README.md)');
-    }
-    const bytes = new Uint8Array(await res.arrayBuffer());
+      const res = await fetch(chrome.runtime.getURL(bundledPath));
+      if (res.ok) return new Uint8Array(await res.arrayBuffer());
+    } catch (_) { /* not bundled either — fall through to the error below */ }
+
+    throw new Error(NOT_INSTALLED_MSG(label));
+  }
+
+  async function createSession(bytes, label) {
     let session;
     if (navigator.gpu) {
       try {
@@ -193,9 +218,11 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
   // Lazy singletons — no eager warm-up: ~15 MB of models most users never
   // select shouldn't load on every offscreen-document creation.
   let _detPromise = null, _recPromise = null, _charsetPromise = null;
-  const getDet = () => (_detPromise ??= createSession(DET_MODEL_URL, 'det')
+  const getDet = () => (_detPromise ??= loadModelBytes(DET_REMOTE_URL, 'models/paddle-det.onnx', 'detector')
+    .then(bytes => createSession(bytes, 'det'))
     .catch(err => { _detPromise = null; throw err; }));
-  const getRec = () => (_recPromise ??= createSession(REC_MODEL_URL, 'rec')
+  const getRec = () => (_recPromise ??= loadModelBytes(REC_REMOTE_URL, 'models/paddle-rec-korean.onnx', 'recognizer')
+    .then(bytes => createSession(bytes, 'rec'))
     .catch(err => { _recPromise = null; throw err; }));
   const getCharset = () => (_charsetPromise ??= fetch(DICT_URL)
     .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })

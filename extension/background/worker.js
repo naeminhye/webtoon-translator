@@ -65,6 +65,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       });
       return false;
+    case 'PADDLE_MODELS_STATUS':
+      paddleModelsStatus().then(sendResponse);
+      return true;
+    case 'PADDLE_MODELS_DOWNLOAD':
+      paddleModelsDownload().then(sendResponse);
+      return true;
+    case 'PADDLE_MODELS_CLEAR':
+      paddleModelsClear().then(sendResponse);
+      return true;
   }
 });
 
@@ -729,6 +738,79 @@ async function paddleLocalRun(dataUrl) {
     await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
   }
   throw lastErr || new Error('PaddleOCR worker did not respond');
+}
+
+// ── PaddleOCR in-browser model download (Cache Storage API) ───────────────────
+// The packaged extension does NOT ship the ~15 MB det+rec ONNX files (they're
+// gitignored — see extension/models/README.md) because most users won't pick
+// this engine, and a Chrome-Web-Store-installed extension can't have files
+// written into its own package after install anyway. Instead, models are
+// fetched at runtime (from a GitHub Release of this repo) into the Cache
+// Storage API here in the service worker — a plain data fetch, which Web
+// Store policy explicitly allows (unlike fetching executable code).
+//
+// Cache Storage is same-origin (chrome-extension://<id>) regardless of which
+// extension context calls caches.open(), so offscreen/paddle-runner.js reads
+// the exact same cache when it builds the ONNX sessions — no message-passing
+// needed between this download step and actual OCR use.
+const PADDLE_MODELS_RELEASE = 'https://github.com/naeminhye/webtoon-translator/releases/download/paddle-models-v1/';
+const PADDLE_CACHE_NAME     = 'paddle-ocr-models-v1';
+const PADDLE_MODEL_FILES = {
+  det: { url: PADDLE_MODELS_RELEASE + 'paddle-det.onnx',        label: 'detector',   approxMB: 4.7 },
+  rec: { url: PADDLE_MODELS_RELEASE + 'paddle-rec-korean.onnx', label: 'recognizer', approxMB: 10.6 },
+};
+
+function broadcastPaddleModelsEvent(payload) {
+  chrome.runtime.sendMessage({ type: 'PADDLE_MODELS_EVENT', payload }, () => void chrome.runtime.lastError);
+}
+
+async function paddleModelsStatus() {
+  const cache = await caches.open(PADDLE_CACHE_NAME);
+  const status = { ok: true, downloading: _paddleDownloadInFlight };
+  for (const [key, { url }] of Object.entries(PADDLE_MODEL_FILES)) {
+    status[key] = (await cache.match(url)) ? 'cached' : 'missing';
+  }
+  return status;
+}
+
+let _paddleDownloadInFlight = false;
+
+async function paddleModelsDownload() {
+  if (_paddleDownloadInFlight) return { ok: false, error: 'A download is already in progress.' };
+  _paddleDownloadInFlight = true;
+  try {
+    const cache = await caches.open(PADDLE_CACHE_NAME);
+    for (const [key, { url, label }] of Object.entries(PADDLE_MODEL_FILES)) {
+      if (await cache.match(url)) {
+        broadcastPaddleModelsEvent({ stage: key, state: 'done', cached: true });
+        continue;
+      }
+      broadcastPaddleModelsEvent({ stage: key, state: 'downloading' });
+      let res;
+      try {
+        res = await fetch(url);
+      } catch (err) {
+        throw new Error(`Could not reach the ${label} model download (${err.message || err}) — check your connection.`);
+      }
+      if (!res.ok) throw new Error(`${label} model download failed: HTTP ${res.status}`);
+      await cache.put(url, res);
+      broadcastPaddleModelsEvent({ stage: key, state: 'done' });
+    }
+    broadcastPaddleModelsEvent({ stage: 'all', state: 'done' });
+    return { ok: true };
+  } catch (err) {
+    const error = err.message || String(err);
+    broadcastPaddleModelsEvent({ stage: 'error', state: 'error', error });
+    return { ok: false, error };
+  } finally {
+    _paddleDownloadInFlight = false;
+  }
+}
+
+async function paddleModelsClear() {
+  const cache = await caches.open(PADDLE_CACHE_NAME);
+  for (const { url } of Object.values(PADDLE_MODEL_FILES)) await cache.delete(url);
+  return { ok: true };
 }
 
 // ── Image fetch + crop (service-worker side, full cross-origin access) ────────

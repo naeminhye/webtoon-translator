@@ -106,7 +106,7 @@
                   PaddleOCR (in-browser)
                 </div>
                 <div class="engine-badge engine-badge-offline">Offline</div>
-                <p class="engine-detail">PP-OCR models run locally via WebGPU/WASM. Model files must be installed first (see extension/models/README.md).</p>
+                <p class="engine-detail">PP-OCR models run locally via WebGPU/WASM. One-time ~15 MB download, cached in the browser — see the model status below.</p>
               </div>
             </label>
             <label class="engine-card">
@@ -180,6 +180,33 @@
                 <p class="field-hint">The server binds to 127.0.0.1 by default (not reachable from other devices) and has no built-in authentication — keep it that way unless you trust your local network.</p>
               </div>
             </details>
+          </div>
+
+          <div id="paddleocr-local-row" class="field-group hidden">
+            <label class="field-label">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>
+              PaddleOCR Models
+            </label>
+            <div class="model-status">
+              <div class="model-status-row">
+                <span class="model-status-dot" id="paddle-det-dot"></span>
+                <span class="model-status-name">Detector <span class="model-status-size">≈4.7 MB</span></span>
+                <span class="model-status-text" id="paddle-det-text">checking…</span>
+              </div>
+              <div class="model-status-row">
+                <span class="model-status-dot" id="paddle-rec-dot"></span>
+                <span class="model-status-name">Recognizer <span class="model-status-size">≈10.6 MB</span></span>
+                <span class="model-status-text" id="paddle-rec-text">checking…</span>
+              </div>
+            </div>
+            <div class="field-row" style="margin-top:2px">
+              <button type="button" id="paddle-models-download-btn" class="btn-primary" disabled>Download models</button>
+              <button type="button" id="paddle-models-clear-btn" class="btn-ghost hidden">Remove downloaded models</button>
+            </div>
+            <p id="paddle-models-error" class="field-error hidden"></p>
+            <p class="field-hint">
+              Downloaded once (~15 MB total) and cached in the browser — not part of the extension package, so this works whether you loaded the extension unpacked or installed it from the Chrome Web Store. Fully offline after that.
+            </p>
           </div>
         </div>
       </div>
