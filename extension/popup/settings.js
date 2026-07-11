@@ -70,6 +70,25 @@ async function initOcrSettings() {
       setTimeout(() => $('paddleocr-url-saved').classList.add('hidden'), 1500);
     }, 400);
   });
+
+  // Setup-guide download chips: files bundled inside the extension package
+  // (extension/assets/paddleocr-server/, a mirror of server/paddleocr/ in the
+  // repo) so users who only installed the packed extension — no git/GitHub
+  // access — can still get server.py etc. onto their machine. chrome.runtime
+  // .getURL() resolves the per-install chrome-extension:// origin; no
+  // web_accessible_resources entry is needed since this popup page already
+  // shares that origin.
+  // chrome.runtime.getURL() is always rooted at the extension package root
+  // (extension/), not relative to this script's own location.
+  const PADDLE_SERVER_ASSETS = 'assets/paddleocr-server/';
+  [
+    ['dl-paddle-server-py',    'server.py'],
+    ['dl-paddle-requirements', 'requirements.txt'],
+    ['dl-paddle-dockerfile',   'Dockerfile'],
+    ['dl-paddle-readme',       'README.md'],
+  ].forEach(([id, filename]) => {
+    $(id).href = chrome.runtime.getURL(PADDLE_SERVER_ASSETS + filename);
+  });
 }
 
 async function initTranslationSettings() {
