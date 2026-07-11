@@ -59,6 +59,17 @@ curl -s -X POST http://127.0.0.1:8868/ocr \
 - OCR failures return `"ok": false` with HTTP 200; non-200 statuses mean
   transport-level problems.
 
+## Troubleshooting
+
+- **`PaddlePredictorOption.__init__() takes 1 positional argument but 2 were
+  given`** at startup — your environment resolved a `paddlex` version newer
+  than the one `paddleocr==3.1.0` expects (paddleocr's own dependency
+  constraint is unbounded: `paddlex>=3.1.0`). Fix: reinstall from
+  `requirements.txt`, which now pins `paddlex==3.1.0` too —
+  `pip install -r requirements.txt` will downgrade it. If you're in an
+  existing venv and pip doesn't downgrade automatically, force it:
+  `pip install --force-reinstall paddlex==3.1.0`.
+
 ## Notes
 
 - **Security**: the server binds `127.0.0.1` and has no authentication.
