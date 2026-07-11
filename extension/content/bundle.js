@@ -4640,8 +4640,8 @@ function bootForPage() {
       // every real region so thresholds can be tuned against actual
       // screenshots, WITHOUT changing what OCR/translation actually does yet
       // (no pipeline routing exists — see extension/content/bundle.js's
-      // Difficulty Classifier section). Tesseract/OCR.space confidence is
-      // 0-100 (or absent for OCR.space); the classifier's thresholds are 0-1.
+      // Difficulty Classifier section). Tesseract confidence is 0-100;
+      // the classifier's thresholds are 0-1.
       const confNorm = typeof confidence === 'number' ? confidence / 100 : null;
       const difficulty = _classifyPostOcr(text, confNorm, job.skewAngle ?? 0);
       console.log(`[DifficultyClassifier] tier=${difficulty.tier} reason=${difficulty.reason} skew=${difficulty.skewAngle?.toFixed(1)} conf=${confNorm?.toFixed(2)} text="${text?.slice(0, 40)}"`);

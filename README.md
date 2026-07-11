@@ -125,9 +125,9 @@ scripts/
 Open the extension icon → **Settings** (opens as a full tab, three sub-tabs):
 
 - **General**: auto-detect bubbles toggle, keyboard shortcuts
-- **OCR Engine**: Tesseract / OCR.space / PaddleOCR (in-browser) / PaddleOCR (self-hosted), provider-specific
+- **OCR Engine**: Tesseract / PaddleOCR (in-browser) / PaddleOCR (self-hosted), provider-specific
   fields (API key, server URL + setup guide, model download status), and the OCR Confidence Stats panel
-- **Translation & Appearance**: Google / DeepL / BYOK LLM provider, target language, display mode
+- **Translation & Appearance**: Google / BYOK LLM provider, target language, display mode
   (overlay vs. side-by-side), bubble background opacity, translation font
 
 A light/dark theme toggle lives in the top bar and follows your OS preference until you pick one explicitly.
@@ -155,5 +155,5 @@ The in-browser engine's models are fetched on demand from Settings (click "Downl
 ## Notes
 
 - The extension never modifies page content — overlays are injected as separate DOM elements
-- No data is sent to any server unless you configure a BYOK API key, OCR.space key, or a PaddleOCR server URL
+- No data is sent to any server unless you configure a BYOK API key, or a PaddleOCR server URL
 - Naver/Kakao CDN images are canvas-captured directly from the DOM to avoid hotlink-protection errors in the service worker
