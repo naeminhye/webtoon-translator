@@ -337,17 +337,22 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
     return { ok: true, text, confidence, provider: 'paddleocr-local' };
   }
 
-  // Serialize jobs — same rationale as ort-runner.js's detect queue: the WASM
-  // backend is single-threaded, concurrent runs just interleave.
-  let _paddleQueue = Promise.resolve();
+  // Shared with ort-runner.js's bubble detector via self._ortJobQueue — NOT
+  // a separate local queue. onnxruntime-web's WebGPU EP throws "Session
+  // mismatch" if .run() is called concurrently across different sessions on
+  // the same GPU device (e.g. auto-detect scanning bubbles while a
+  // PaddleOCR request is also in flight); serializing only within this
+  // file wouldn't prevent that race against ort-runner.js's own queue.
+  // `??=` also covers paddle-runner.js somehow evaluating first.
+  self._ortJobQueue ??= Promise.resolve();
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // Distinct from the background-facing OCR_REGION for the same reason
     // ort-runner.js uses DETECT_RUN vs DETECT_BUBBLES: runtime.sendMessage
     // reaches every extension context including this one.
     if (message.type !== 'PADDLE_OCR_RUN') return false;
-    const job = _paddleQueue.then(() => runPaddleOcr(message.payload.dataUrl));
-    _paddleQueue = job.catch(() => {});
+    const job = self._ortJobQueue.then(() => runPaddleOcr(message.payload.dataUrl));
+    self._ortJobQueue = job.catch(() => {});
     job.then(sendResponse)
        .catch(err => sendResponse({ ok: false, error: err.message || String(err) }));
     return true; // async response
