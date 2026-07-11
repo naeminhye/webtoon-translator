@@ -389,9 +389,14 @@ function _analyzeColorHistogram(data) {
 const CHUNK_SIZE = 64 * 1024;
 
 async function hashImage(img) {
-  if (img.__wtHash) return img.__wtHash;
   // Non-img elements (e.g., Bomtoon canvas containers) carry .src set by the adapter
   const src = img.src || img.dataset.src || '';
+  // Reused <img> nodes must not keep a stale hash from a previous src. Ridi's
+  // paged/2-page viewer swaps the blob: src on the SAME <img> element on every
+  // page turn — caching by node identity alone would then serve the previous
+  // page's hash (and therefore its annotations) for the new page.
+  if (img.__wtHash && img.__wtHashSrc === src) return img.__wtHash;
+  img.__wtHashSrc = src;
   if (!src.startsWith('http') && !src.startsWith('blob:') && src) {
     img.__wtHash = `bomtoon:${src}`;
     return img.__wtHash;
@@ -424,6 +429,12 @@ async function hashImage(img) {
   // is still in the <img> element, so draw a tiny sample to a canvas instead.
   if (img.src.startsWith('blob:')) {
     try {
+      // Ridi's paged viewer swaps in a brand-new blob URL on every page turn,
+      // and each URL is single-use (revoked after decode) — so the blob URL
+      // itself is NOT a stable identity across visits. The decoded pixels are.
+      // Wait for decode before sampling so the freshly-swapped image yields its
+      // real content hash instead of falling through to the unstable branch.
+      if (!img.complete || img.naturalWidth === 0) await img.decode().catch(() => {});
       const SAMPLE = 16;
       const canvas = document.createElement('canvas');
       canvas.width = SAMPLE; canvas.height = SAMPLE;
@@ -435,7 +446,8 @@ async function hashImage(img) {
         .map(b => b.toString(16).padStart(2, '0')).join('');
       img.__wtHash = `sha256:${hex}`;
     } catch {
-      // Canvas tainted or image not decoded — use data-index (stable per chapter)
+      // Canvas tainted or image still not decoded — use data-index when present
+      // (stable per chapter in the scroll viewer); the blob UUID is a last resort.
       const idx = img.dataset.index ?? img.src.split('/').pop();
       img.__wtHash = `blob-idx:${idx}`;
     }
@@ -4357,6 +4369,9 @@ function bootForPage() {
       } else {
         renderer.renderForImage(images[i], anns);
       }
+      // Record the src we just rendered so watchNewImages can tell when a
+      // reused <img> node's content has been swapped (Ridi paged/2-page view).
+      images[i].__wtRenderedSrc = images[i].src;
     }
     // Keep side panel in sync
     panel?.setImages(images);
@@ -4458,16 +4473,34 @@ function bootForPage() {
 
   const stopWatching = adapter.watchNewImages(async (newImages) => {
     const added = newImages.filter(img => !images.includes(img));
-    if (!added.length) return;
-    // Merge then sort by DOM position so imageIndex matches visual scroll order
-    // even when lazy-loaded images arrive out of sequence.
-    images = [...images, ...added].sort((a, b) =>
-      a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+    // Paged / 2-page viewers (Ridi's flip mode) reuse the SAME <img> nodes and
+    // only swap their src on each page turn — no nodes are added, but the panels'
+    // content (and therefore identity + annotations) changed. Detect that so the
+    // current page is re-hashed and re-rendered instead of silently doing nothing.
+    const contentChanged = newImages.some(
+      img => img.__wtRenderedSrc !== undefined && img.__wtRenderedSrc !== img.src
     );
-    if (readScanEnabled) {
-      if (isKakao) fixedLayer.enable(images);
-      else added.forEach(img => selector.attachImage(img, images.indexOf(img)));
+    if (!added.length && !contentChanged) return;
+
+    if (added.length) {
+      // Merge then sort by DOM position so imageIndex matches visual scroll order
+      // even when lazy-loaded images arrive out of sequence.
+      images = [...images, ...added].sort((a, b) =>
+        a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+      );
+      if (readScanEnabled) {
+        if (isKakao) fixedLayer.enable(images);
+        else added.forEach(img => selector.attachImage(img, images.indexOf(img)));
+      }
     }
+
+    // On a page turn the previous page's bubbles belong to a now-unloaded image
+    // hash — clear them before rendering the new page so they don't linger.
+    if (contentChanged) {
+      if (isKakao) fixedLayer.clearAll();
+      else renderer.clearAll();
+    }
+
     try {
       await loadAndRender();
     } catch (e) {
@@ -4475,6 +4508,10 @@ function bootForPage() {
       throw e;
     }
     updateProgressBar();
+    // Re-arm auto-detect for the freshly-shown panels (no-op while detection is
+    // dormant). Detector tiles are keyed by src, so the new blobs are treated
+    // as fresh work rather than skipped as already-done.
+    if (contentChanged) bubbleDetector.detect();
   });
 
   // ── job pipeline: bbox select → independent concurrent job ─────────────
