@@ -28,3 +28,27 @@ extension/models/comic-text-detector.onnx
    ```
 
 3. Place the file here as `comic-text-detector.onnx` (exact name required).
+
+## PaddleOCR (in-browser engine)
+
+The `paddleocr-local` OCR engine (`offscreen/paddle-runner.js`) loads:
+
+```
+extension/models/paddle-det.onnx        (PP-OCRv4 text detector, ~4.7 MB)
+extension/models/paddle-rec-korean.onnx (PP-OCRv4 Korean recognizer, ~10 MB)
+extension/models/korean_dict.txt        (recognizer charset — committed)
+```
+
+Fetch both models with the bundled script:
+
+```
+pip install paddle2onnx
+python scripts/fetch-paddle-models.py
+```
+
+It downloads the official PaddleOCR inference tars and converts them locally.
+If you'd rather not install paddle2onnx, `--fallback-only` downloads
+pre-converted ONNX files from the RapidOCR HuggingFace hub instead.
+
+Without these files the "PaddleOCR (in-browser)" engine shows a
+"models not installed" error; the other engines are unaffected.
