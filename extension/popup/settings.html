@@ -223,7 +223,7 @@
         </div>
 
         <div class="card-body">
-          <div class="engine-grid engine-grid-3">
+          <div class="engine-grid">
             <label class="engine-card">
               <input type="radio" name="ocr-provider" value="tesseract" class="engine-radio" />
               <div class="engine-card-inner">
@@ -255,6 +255,17 @@
                 </div>
                 <div class="engine-badge engine-badge-offline">Self-hosted</div>
                 <p class="engine-detail">Best Korean accuracy. Runs on your own machine — start the bundled server (see server/paddleocr/README.md).</p>
+              </div>
+            </label>
+            <label class="engine-card">
+              <input type="radio" name="ocr-provider" value="paddleocr-local" class="engine-radio" />
+              <div class="engine-card-inner">
+                <div class="engine-name">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg>
+                  PaddleOCR (in-browser)
+                </div>
+                <div class="engine-badge engine-badge-offline">Offline</div>
+                <p class="engine-detail">PP-OCR models run locally via WebGPU/WASM. Model files must be installed first (see extension/models/README.md).</p>
               </div>
             </label>
           </div>

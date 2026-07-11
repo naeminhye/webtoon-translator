@@ -169,8 +169,9 @@ async function handleClear({ site, titleId, chapterId }) {
 }
 
 // ── OCR ───────────────────────────────────────────────────────────────────────
-// Three providers: 'tesseract' (offline, offscreen doc), 'ocrspace' (online API)
-// and 'paddleocr' (self-hosted HTTP server, see server/paddleocr/).
+// Four providers: 'tesseract' (offline, offscreen doc), 'ocrspace' (online API),
+// 'paddleocr' (self-hosted HTTP server, see server/paddleocr/) and
+// 'paddleocr-local' (PP-OCR ONNX in the offscreen doc, see offscreen/paddle-runner.js).
 // If the content script couldn't crop (tainted canvas), imageUrl + bbox are sent
 // instead of dataUrl; the service worker fetches + crops here using OffscreenCanvas.
 
@@ -537,6 +538,10 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
     return paddleOcrRun(finalDataUrl, endpoint);
   }
 
+  if (provider === 'paddleocr-local') {
+    return paddleLocalRun(finalDataUrl);
+  }
+
   // Tesseract — primary OCR engine. Auto-fallback to OCR.space only when the
   // user has explicitly chosen 'ocrspace' as their provider in settings.
   // (Previously this fell back silently if a key existed; that caused surprise
@@ -703,6 +708,27 @@ async function tesseractRun(dataUrl, isSingleLine = false) {
     await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
   }
   throw lastErr || new Error('OCR worker did not respond');
+}
+
+// ── PaddleOCR in-browser (offscreen document, see offscreen/paddle-runner.js) ─
+
+async function paddleLocalRun(dataUrl) {
+  if (!chrome.offscreen?.createDocument) {
+    return { ok: false, error: 'Offscreen API unavailable — reload extension (Chrome 109+)' };
+  }
+  await ensureOffscreen();
+  let lastErr = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'PADDLE_OCR_RUN', payload: { dataUrl } });
+      if (res) return res;
+      lastErr = new Error('PaddleOCR worker did not respond');
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
+  }
+  throw lastErr || new Error('PaddleOCR worker did not respond');
 }
 
 // ── Image fetch + crop (service-worker side, full cross-origin access) ────────
