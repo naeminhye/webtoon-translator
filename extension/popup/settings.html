@@ -99,17 +99,6 @@
           </div>
         </label>
         <label class="engine-card">
-          <input type="radio" name="ocr-provider" value="ocrspace" class="engine-radio" />
-          <div class="engine-card-inner">
-            <div class="engine-card-top-row">
-              <div class="badge-letter">O</div>
-              <div class="engine-name">OCR.space</div>
-            </div>
-            <div class="engine-badge engine-badge-online">Online · Faster</div>
-            <p class="engine-detail">Cloud API with higher accuracy. Requires an API key. Free tier available at ocr.space.</p>
-          </div>
-        </label>
-        <label class="engine-card">
           <input type="radio" name="ocr-provider" value="paddleocr-local" class="engine-radio" />
           <div class="engine-card-inner">
             <div class="engine-card-top-row">
@@ -131,13 +120,6 @@
             <p class="engine-detail">Best Korean accuracy. Runs on your own machine — see the setup guide below.</p>
           </div>
         </label>
-      </div>
-
-      <div id="ocrspace-key-row" class="field-block hidden">
-        <div class="field-label">OCR.space API Key</div>
-        <input type="password" id="ocrspace-key" class="text-input" placeholder="Paste your API key here…" autocomplete="off" />
-        <p id="ocrspace-key-saved" class="field-success hidden">✓ API key saved successfully</p>
-        <p class="field-hint">Get a free key at <span class="link-text">ocr.space</span> — free tier supports up to 25,000 requests/month.</p>
       </div>
 
       <div id="paddleocr-url-row" class="field-block hidden">
@@ -219,11 +201,6 @@
                 <span class="stat-value" id="stat-tesseract-avg">–</span>
               </div>
               <div class="stat-row">
-                <span class="stat-name">OCR.space</span>
-                <span class="stat-calls" id="stat-ocrspace-count">0 calls</span>
-                <span class="stat-value" id="stat-ocrspace-avg">–</span>
-              </div>
-              <div class="stat-row">
                 <span class="stat-name">PaddleOCR (in-browser)</span>
                 <span class="stat-calls" id="stat-paddleocr-local-count">0 calls</span>
                 <span class="stat-value" id="stat-paddleocr-local-avg">–</span>
@@ -238,7 +215,7 @@
               <button type="button" id="ocr-stats-reset-btn" class="btn-ghost">Reset stats</button>
             </div>
             <p class="field-hint">
-              Confidence is each engine's own self-reported certainty, not a verified accuracy score — use it to compare relative trends between engines, not as an absolute quality measurement. OCR.space doesn't report a confidence value, so only its call count is shown. Stats never leave your device.
+              Confidence is each engine's own self-reported certainty, not a verified accuracy score — use it to compare relative trends between engines, not as an absolute quality measurement. Stats never leave your device.
             </p>
           </div>
         </details>
@@ -256,21 +233,13 @@
       </div>
 
       <div class="field-label" style="margin-bottom:8px">Translation API</div>
-      <div class="engine-grid engine-grid-3">
+      <div class="engine-grid">
         <label class="engine-card">
           <input type="radio" name="translate-provider" value="google" class="engine-radio" />
           <div class="engine-card-inner">
             <div class="engine-card-top-row"><div class="engine-name">Google Translate</div></div>
             <div class="engine-badge engine-badge-offline">Free · No key needed</div>
             <p class="engine-detail">Uses Google's unofficial API. Fast and supports 130+ languages. No sign-up required.</p>
-          </div>
-        </label>
-        <label class="engine-card" id="card-deepl">
-          <input type="radio" name="translate-provider" value="deepl" class="engine-radio" />
-          <div class="engine-card-inner">
-            <div class="engine-card-top-row"><div class="engine-name">DeepL</div></div>
-            <div class="engine-badge engine-badge-online">Higher Quality</div>
-            <p class="engine-detail">Superior accuracy for Asian languages. Free tier: 500,000 chars/month. API key required.</p>
           </div>
         </label>
         <label class="engine-card" id="card-byok">
@@ -313,14 +282,6 @@
             </span>
           </label>
         </div>
-      </div>
-
-      <!-- DeepL API key (shown when DeepL selected) -->
-      <div id="deepl-key-row" class="field-block hidden">
-        <div class="field-label">DeepL API Key</div>
-        <input type="password" id="deepl-key" class="text-input" placeholder="Paste your DeepL API key…" autocomplete="off" />
-        <p id="deepl-key-error" class="field-error hidden">An API key is required to use DeepL.</p>
-        <p class="field-hint">Get a free key at <span class="link-text">deepl.com/pro</span> — free tier gives 500k characters/month.</p>
       </div>
 
       <!-- Target language -->

@@ -3197,9 +3197,30 @@ class RidiAdapter {
   }
 
   getImages() {
-    return [...document.querySelectorAll('img[data-index]')].filter(
-      img => img.src && img.src.startsWith('blob:')
-    );
+    // A *loaded* panel's src is either a blob: URL (DRM-decrypted in-page) or
+    // a real http(s) CDN URL; an unloaded panel still holds the tiny inline
+    // SVG data: placeholder. The previous filter accepted blob: only, so on
+    // any book Ridi serves as direct CDN images (not DRM'd) no panels were
+    // ever picked up and nothing loaded. Accept both loaded forms.
+    const isLoaded = (img) => {
+      const src = img.src || '';
+      return src.startsWith('blob:') || src.startsWith('http');
+    };
+    // data-index is the reliable panel marker, but don't depend on it alone —
+    // if Ridi changes that attribute the whole viewer would silently stop
+    // working, so fall back to any large image in the scroll container.
+    const indexed = [...document.querySelectorAll('img[data-index]')].filter(isLoaded);
+    if (indexed.length) return indexed;
+
+    const root = document.querySelector('.simplebar-content') ||
+                 document.querySelector('.simplebar-content-wrapper') ||
+                 document.body;
+    return [...root.querySelectorAll('img')].filter(img => {
+      if (!isLoaded(img)) return false;
+      const w = img.naturalWidth || img.offsetWidth || 0;
+      const h = img.naturalHeight || img.offsetHeight || 0;
+      return w >= 200 && h >= 200; // skip UI icons / avatars
+    });
   }
 
   watchNewImages(callback) {
@@ -3603,11 +3624,12 @@ async function autoTranslate(text, { job, storyCtx, forceLlm = false, forceGoogl
   const s = await chrome.storage.local.get({
     'wt:translate-provider': 'google',
     'wt:translate-lang':     'vi',
-    'wt:deepl-key':          '',
     'wt:byok-key':           '',
     'wt:byok-provider':      '',
     'wt:byok-model':         '',
   });
+  // 'deepl' was removed as a provider — a legacy stored value falls through to
+  // the Google Translate default below.
   const provider   = forceGoogle ? 'google' : forceLlm ? 'byok' : s['wt:translate-provider'];
   const targetLang = s['wt:translate-lang'];
   if (provider === 'none') return null;
@@ -3622,22 +3644,6 @@ async function autoTranslate(text, { job, storyCtx, forceLlm = false, forceGoogl
     if (job) { job._translateProvider = 'byok'; }
     const prompt = formatLlmPrompt(storyCtx ?? null, text, targetLang);
     return llmAdapter.callApi(apiKey, model, prompt);
-  }
-
-  if (provider === 'deepl') {
-    const apiKey = s['wt:deepl-key'];
-    if (!apiKey) throw new Error('DeepL API key not set — add it in Settings');
-    const base = apiKey.endsWith(':fx')
-      ? 'https://api-free.deepl.com/v2/translate'
-      : 'https://api.deepl.com/v2/translate';
-    const res = await fetch(base, {
-      method: 'POST',
-      headers: { 'Authorization': `DeepL-Auth-Key ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: [text], target_lang: targetLang.toUpperCase().replace('-', '_') }),
-    });
-    if (!res.ok) throw new Error(`DeepL HTTP ${res.status}`);
-    const data = await res.json();
-    return data.translations[0].text;
   }
 
   // Google Translate (unofficial free endpoint)

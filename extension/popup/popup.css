@@ -13,7 +13,7 @@ header {
   align-items: center;
   justify-content: space-between;
   padding: 13px 16px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, #2a4da6, #8b5cf6);
   color: #fff;
 }
 
@@ -98,7 +98,7 @@ header {
   margin-top: 6px; overflow: hidden;
 }
 .progress-bar-fill {
-  height: 100%; background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  height: 100%; background: linear-gradient(90deg, #2a4da6, #8b5cf6);
   border-radius: 3px; width: 0%;
   transition: width 0.3s;
 }
@@ -117,7 +117,7 @@ header {
   background: #f8fafc; font-size: 12px; font-weight: 500; color: #475569;
   cursor: pointer; transition: background 0.15s, border-color 0.15s;
 }
-.action-btn:hover { background: #eef2ff; border-color: #c7d2fe; color: #4338ca; }
+.action-btn:hover { background: #eef2ff; border-color: #c7d2fe; color: #1e357e; }
 .action-btn-danger:hover { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
 
 /* ── OCR Settings ──────────────────────────────────────────────────────── */
@@ -144,13 +144,13 @@ header {
   transition: border-color 0.15s, background 0.15s;
 }
 .provider-opt:has(input:checked) {
-  border-color: #6366f1; background: #eef2ff; color: #4338ca;
+  border-color: #2a4da6; background: #eef2ff; color: #1e357e;
 }
 .provider-hint {
   margin-left: auto; font-size: 10px; font-weight: 400; color: #94a3b8;
 }
-.provider-opt:has(input:checked) .provider-hint { color: #818cf8; }
-.provider-opt input { accent-color: #6366f1; width: 13px; height: 13px; }
+.provider-opt:has(input:checked) .provider-hint { color: #6b86d6; }
+.provider-opt input { accent-color: #2a4da6; width: 13px; height: 13px; }
 
 #ocrspace-key-row {
   display: flex; gap: 6px; align-items: center;
@@ -159,13 +159,13 @@ header {
   flex: 1; padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 7px;
   font-size: 11px; color: #1e293b; outline: none;
 }
-#ocrspace-key:focus { border-color: #6366f1; }
+#ocrspace-key:focus { border-color: #2a4da6; }
 .key-save-btn {
   padding: 6px 10px; border: none; border-radius: 7px;
-  background: #6366f1; color: #fff; font-size: 11px; font-weight: 600;
+  background: #2a4da6; color: #fff; font-size: 11px; font-weight: 600;
   cursor: pointer; white-space: nowrap;
 }
-.key-save-btn:hover { background: #4f46e5; }
+.key-save-btn:hover { background: #22408a; }
 .key-saved { font-size: 11px; color: #16a34a; margin-top: 4px; }
 
 footer { padding: 6px 14px 10px; font-size: 10px; color: #cbd5e1; text-align: center; }
@@ -197,23 +197,23 @@ footer { padding: 6px 14px 10px; font-size: 10px; color: #cbd5e1; text-align: ce
 
 #sb-config-wrap { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 #sb-config-wrap input { font-size: 11px; padding: 5px 8px; border: 1px solid #e2e8f0; border-radius: 6px; outline: none; }
-#sb-config-wrap input:focus { border-color: #6366f1; }
+#sb-config-wrap input:focus { border-color: #2a4da6; }
 
 .key-save-btn {
-  padding: 6px 12px; background: #6366f1; color: #fff;
+  padding: 6px 12px; background: #2a4da6; color: #fff;
   border: none; border-radius: 6px; font-size: 12px;
   cursor: pointer; font-weight: 500;
 }
-.key-save-btn:hover { background: #4f46e5; }
+.key-save-btn:hover { background: #22408a; }
 
 #sb-auth-wrap { margin-top: 8px; }
 #sb-login-form { display: flex; flex-direction: column; gap: 6px; }
 #sb-login-form input { font-size: 12px; padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 6px; outline: none; }
-#sb-login-form input:focus { border-color: #6366f1; }
+#sb-login-form input:focus { border-color: #2a4da6; }
 
 .sb-auth-btns { display: flex; gap: 6px; align-items: center; margin-top: 2px; }
-.sb-link-btn { background: none; border: none; color: #6366f1; font-size: 12px; cursor: pointer; padding: 0; text-decoration: underline; }
-.sb-link-btn:hover { color: #4f46e5; }
+.sb-link-btn { background: none; border: none; color: #2a4da6; font-size: 12px; cursor: pointer; padding: 0; text-decoration: underline; }
+.sb-link-btn:hover { color: #22408a; }
 
 .sb-error { font-size: 11px; color: #ef4444; margin: 2px 0 0; }
 .sb-hint  { font-size: 11px; color: #64748b; margin: 4px 0 0; }

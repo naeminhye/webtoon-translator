@@ -53,20 +53,15 @@ async function initTabs() {
 }
 
 const OCR_PROVIDER_KEY       = 'wt:ocr-provider';
-const OCR_SPACE_KEY_STR      = 'wt:ocrspace-key';
 const PADDLE_URL_KEY         = 'wt:paddleocr-url';
 const TRANSLATE_PROVIDER_KEY = 'wt:translate-provider';
 const TRANSLATE_LANG_KEY     = 'wt:translate-lang';
-const DEEPL_KEY_STR          = 'wt:deepl-key';
 const BYOK_KEY_STR           = 'wt:byok-key';
 const BYOK_PROVIDER_KEY      = 'wt:byok-provider';
 const BYOK_MODEL_STR         = 'wt:byok-model';
 const BYOK_MODE_KEY          = 'wt:byok-mode';
 const OVERLAY_MODE_KEY       = 'wt:overlay-mode';
 const AUTO_DETECT_KEY        = 'wt:auto-detect';
-
-// Mirrors background/worker.js — keep in sync.
-const DEV_OCR_SPACE_KEY = '';
 
 // Mirrors background/worker.js — keep in sync. Shown as the input placeholder;
 // an empty stored URL means "use this default" (never persisted, so a future
@@ -76,43 +71,34 @@ const DEFAULT_PADDLE_URL = 'http://127.0.0.1:8868';
 async function initOcrSettings() {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
-    [OCR_SPACE_KEY_STR]: '',
     [PADDLE_URL_KEY]:    '',
   });
 
   const radios = document.querySelectorAll('input[name="ocr-provider"]');
-  const devKeyBundled = Boolean(DEV_OCR_SPACE_KEY);
 
   function applyProvider(provider) {
     radios.forEach(r => { r.checked = r.value === provider; });
-    const needsKey = provider === 'ocrspace' && !devKeyBundled;
-    $('ocrspace-key-row').classList.toggle('hidden', !needsKey);
-    $('ocrspace-key-saved').classList.add('hidden');
     $('paddleocr-url-row').classList.toggle('hidden', provider !== 'paddleocr');
     $('paddleocr-url-saved').classList.add('hidden');
     $('paddleocr-local-row').classList.toggle('hidden', provider !== 'paddleocr-local');
     if (provider === 'paddleocr-local') refreshPaddleModelsStatus();
   }
 
-  applyProvider(stored[OCR_PROVIDER_KEY]);
-  if (stored[OCR_SPACE_KEY_STR]) $('ocrspace-key').value = stored[OCR_SPACE_KEY_STR];
+  // 'ocrspace' was removed as an option — fall a stored legacy value back to
+  // the default engine so the UI doesn't render with nothing selected, and
+  // persist the fallback so it sticks.
+  let initialProvider = stored[OCR_PROVIDER_KEY];
+  if (initialProvider === 'ocrspace') {
+    initialProvider = 'tesseract';
+    chrome.storage.local.set({ [OCR_PROVIDER_KEY]: initialProvider });
+  }
+  applyProvider(initialProvider);
   if (stored[PADDLE_URL_KEY]) $('paddleocr-url').value = stored[PADDLE_URL_KEY];
 
   radios.forEach(r => r.addEventListener('change', async () => {
     await chrome.storage.local.set({ [OCR_PROVIDER_KEY]: r.value });
     applyProvider(r.value);
   }));
-
-  // Autosave the OCR.space key as it's typed (debounced) — no Save button.
-  let ocrKeyTimer = null;
-  $('ocrspace-key').addEventListener('input', () => {
-    clearTimeout(ocrKeyTimer);
-    ocrKeyTimer = setTimeout(async () => {
-      await chrome.storage.local.set({ [OCR_SPACE_KEY_STR]: $('ocrspace-key').value.trim() });
-      $('ocrspace-key-saved').classList.remove('hidden');
-      setTimeout(() => $('ocrspace-key-saved').classList.add('hidden'), 1500);
-    }, 400);
-  });
 
   // Autosave the PaddleOCR server URL the same way. An empty value is stored
   // as '' so the background falls back to DEFAULT_PADDLE_URL.
@@ -220,7 +206,6 @@ async function initTranslationSettings() {
   const stored = await chrome.storage.local.get({
     [TRANSLATE_PROVIDER_KEY]: 'google',
     [TRANSLATE_LANG_KEY]:     'vi',
-    [DEEPL_KEY_STR]:          '',
     [BYOK_KEY_STR]:           '',
     [BYOK_PROVIDER_KEY]:      '',
     [BYOK_MODEL_STR]:         '',
@@ -231,21 +216,19 @@ async function initTranslationSettings() {
 
   function applyProvider(provider) {
     radios.forEach(r => { r.checked = r.value === provider; });
-    $('deepl-key-row').classList.toggle('hidden', provider !== 'deepl');
     $('byok-key-row').classList.toggle('hidden', provider !== 'byok');
   }
 
-  // "none" (Disabled) was removed as an option — fall back a stored legacy
-  // value to the default provider so the UI doesn't render with nothing
-  // selected, and persist the fallback so it sticks.
+  // "none" (Disabled) and "deepl" were removed as options — fall a stored
+  // legacy value back to the default provider so the UI doesn't render with
+  // nothing selected, and persist the fallback so it sticks.
   let initialProvider = stored[TRANSLATE_PROVIDER_KEY];
-  if (initialProvider === 'none') {
+  if (initialProvider === 'none' || initialProvider === 'deepl') {
     initialProvider = 'google';
     chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: initialProvider });
   }
   applyProvider(initialProvider);
   $('target-lang').value = stored[TRANSLATE_LANG_KEY];
-  if (stored[DEEPL_KEY_STR]) $('deepl-key').value = stored[DEEPL_KEY_STR];
   if (stored[BYOK_KEY_STR]) $('byok-key').value = stored[BYOK_KEY_STR];
 
   // Provider dropdown is populated from the shared adapter registry
@@ -294,7 +277,6 @@ async function initTranslationSettings() {
   // a key — the key field autosaves as you type, so the warning clears itself.
   function updateKeyWarnings() {
     const provider = [...radios].find(r => r.checked)?.value || 'google';
-    $('deepl-key-error').classList.toggle('hidden', !(provider === 'deepl' && !$('deepl-key').value.trim()));
     $('byok-key-error').classList.toggle('hidden', !(provider === 'byok' && !$('byok-key').value.trim()));
   }
 
@@ -319,7 +301,6 @@ async function initTranslationSettings() {
       }, 400);
     });
   }
-  autosaveInput($('deepl-key'),   DEEPL_KEY_STR);
   autosaveInput($('byok-key'),    BYOK_KEY_STR);
   autosaveInput($('byok-model'),  BYOK_MODEL_STR);
 }
@@ -425,10 +406,8 @@ async function initAppearanceSettings() {
 // ── OCR confidence stats ──────────────────────────────────────────────────
 // Mirrors background/worker.js's OCR_STATS_KEY shape: { [provider]: { count,
 // confCount, confSum } }. Rendered per provider id, matching the four
-// ocr-provider radio values (see initOcrSettings) plus 'ocrspace', which
-// never reports a confidence (see worker.js's handleOcr — OCR.space's API
-// isn't asked for one).
-const OCR_STATS_PROVIDERS = ['tesseract', 'ocrspace', 'paddleocr-local', 'paddleocr'];
+// ocr-provider radio values (see initOcrSettings).
+const OCR_STATS_PROVIDERS = ['tesseract', 'paddleocr-local', 'paddleocr'];
 
 function renderOcrStats(stats) {
   for (const provider of OCR_STATS_PROVIDERS) {

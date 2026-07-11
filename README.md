@@ -17,10 +17,9 @@ Chrome extension (Manifest V3) that overlays translations on webtoon panels — 
 
 ### OCR
 
-Four interchangeable engines, picked in Settings → OCR Engine:
+Three interchangeable engines, picked in Settings → OCR Engine:
 
 - **Tesseract.js** (offline) — Korean LSTM model bundled in `vendor/tesseract/`, no internet required
-- **OCR.space** (optional) — cloud API, faster for some stylized fonts; requires a free API key
 - **PaddleOCR — in-browser** (offline) — PP-OCRv4 detector + Korean recognizer run locally via ONNX Runtime Web (WebGPU with WASM fallback). Models (~15 MB) aren't bundled in the extension package — they're fetched once from a GitHub Release into the browser's Cache Storage API from the Settings page, which works whether the extension was loaded unpacked or installed from the Chrome Web Store
 - **PaddleOCR — self-hosted** (optional) — best Korean accuracy; talks to a small Python/Flask server you run yourself (`server/paddleocr/`). Settings includes an in-page setup guide with one-click downloads for the server files, so it works even without a git checkout
 - **Vision LLM OCR+translate** — when OCR confidence is low (tier = `vision` per the difficulty classifier), the crop is sent to the configured BYOK vision LLM for combined OCR + translation in one step
@@ -30,7 +29,6 @@ An **OCR Confidence Stats** panel (Settings → OCR Engine) tracks each engine's
 ### Translation
 
 - **Google Translate** (free, no key) — default fallback
-- **DeepL** (optional) — higher quality; requires API key
 - **BYOK LLM** (optional) — bring your own key for OpenAI, Anthropic, or Gemini; enables LLM-quality translation and vision fallback
 
 ### Bubble detection
