@@ -12,9 +12,23 @@ The .onnx files are gitignored (see extension/models/README.md) — every
 developer/user who wants the in-browser engine runs this script once.
 
 Primary source: official PaddleOCR inference tars from paddleocr.bj.bcebos.com,
-converted locally with paddle2onnx (pip install paddle2onnx). Fallback source:
-pre-converted ONNX files from the RapidOCR model hub on HuggingFace (no
-paddle2onnx needed).
+converted locally with paddle2onnx (pip install paddle2onnx). Fallback
+sources, tried in order: (1) for the detector only, the identical official
+weights bundled inside the `rapidocr-onnxruntime` PyPI package — no PaddlePaddle
+or C++ toolchain needed, just pip; (2) pre-converted ONNX from the RapidOCR
+model hub on HuggingFace, for whichever model still needs one (this URL is
+best-effort and unverified against the live repo layout — if it 404s, please
+open an issue with the corrected path).
+
+Common paddle2onnx pitfall on Windows: `pip install paddle2onnx` with no
+version pin can silently resolve to the ancient 0.9.2 release (the only one
+with a Python-version-agnostic wheel) if your Python is newer than what the
+current paddle2onnx wheels (cp38-cp312) support — e.g. Python 3.13+. That old
+0.9.2 needs a live `paddle.fluid` runtime and fails with
+`ModuleNotFoundError: No module named 'paddle.fluid'`. Fix: use Python
+3.9-3.12 for this script (a throwaway venv is fine), or explicitly
+`pip install "paddle2onnx>=1.0"` so pip fails loudly instead of downgrading
+silently if your Python is too new.
 
 Usage:
   pip install paddle2onnx   # only needed for the primary source
@@ -47,7 +61,10 @@ DICT_URL = ('https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/'
             'release/2.7/ppocr/utils/dict/korean_dict.txt')
 
 # Pre-converted ONNX (RapidOCR model hub) — used with --fallback-only or when
-# the primary path fails. Mirrors the same official Paddle checkpoints.
+# the primary path fails. Mirrors the same official Paddle checkpoints. Path
+# layout is best-effort/unverified (see module docstring) — the det model has
+# a more reliable fallback below (det_via_rapidocr_pip), so this URL mainly
+# matters for rec, which has no pip-installable source.
 HF = 'https://huggingface.co/SWHL/RapidOCR/resolve/main'
 FALLBACK_DET = f'{HF}/PP-OCRv4/det/ch_PP-OCRv4_det_infer.onnx'
 FALLBACK_RECS = [
@@ -98,8 +115,41 @@ def convert_tar_to_onnx(tar_url: str, out_path: Path):
             '--save_file', str(out_path),
         ]
         log('converting: ' + ' '.join(cmd))
-        subprocess.run(cmd, check=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            if 'paddle.fluid' in proc.stderr:
+                raise RuntimeError(
+                    "installed paddle2onnx is the legacy pre-1.0 release (needs a live "
+                    "PaddlePaddle 'paddle.fluid' runtime this repo doesn't install) — this "
+                    "usually means pip silently picked an old version because no current "
+                    "paddle2onnx wheel supports your Python version. Use Python 3.9-3.12 for "
+                    "this script, or run `pip install \"paddle2onnx>=1.0\"` explicitly so pip "
+                    "fails loudly instead of downgrading if that's still not available."
+                )
+            sys.stderr.write(proc.stderr)
+            raise RuntimeError(f'paddle2onnx exited with status {proc.returncode}')
     log(f'  -> {out_path} ({out_path.stat().st_size / 1e6:.1f} MB)')
+
+
+def det_via_rapidocr_pip(out_path: Path):
+    """Detector-only fallback: rapidocr-onnxruntime bundles the identical
+    official ch_PP-OCRv4_det_infer.onnx as package data (the detector is
+    shared across every PP-OCR language pack, so "ch" here just means the
+    package's default install, not a language restriction). Pure pip, no
+    PaddlePaddle/C++ toolchain, no bcebos.com/HuggingFace network dependency —
+    the most reliable of the three det sources.
+    """
+    try:
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'rapidocr-onnxruntime'],
+                       check=True)
+        import rapidocr_onnxruntime
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f'pip install rapidocr-onnxruntime failed: {e}') from e
+    src = Path(rapidocr_onnxruntime.__file__).parent / 'models' / 'ch_PP-OCRv4_det_infer.onnx'
+    if not src.exists():
+        raise RuntimeError(f'rapidocr-onnxruntime installed but {src.name} not found at {src}')
+    shutil.copyfile(src, out_path)
+    log(f'  -> {out_path} ({out_path.stat().st_size / 1e6:.1f} MB, via rapidocr-onnxruntime)')
 
 
 def fetch_first(urls, fetch, label):
@@ -131,7 +181,7 @@ def main():
     else:
         log(f'{dict_path.name} already present, skipping')
 
-    def get(out_path, primary_urls, fallback_urls, label):
+    def get(out_path, primary_urls, fallback_fns, label):
         if out_path.exists():
             log(f'{out_path.name} already present, skipping (delete it to re-fetch)')
             return
@@ -140,11 +190,21 @@ def main():
                 fetch_first(primary_urls, lambda u: convert_tar_to_onnx(u, out_path), label)
                 return
             except Exception as e:  # noqa: BLE001
-                log(f'primary path failed for {label} ({e}); trying pre-converted ONNX')
-        fetch_first(fallback_urls, lambda u: download(u, out_path), label)
+                log(f'primary path failed for {label} ({e}); trying fallback source(s)')
+        last_err = None
+        for fn in fallback_fns:
+            try:
+                fn(out_path)
+                return
+            except Exception as e:  # noqa: BLE001
+                log(f'  {label} fallback failed: {e}')
+                last_err = e
+        raise RuntimeError(f'all {label} sources failed') from last_err
 
-    get(det_path, [DET_TAR], [FALLBACK_DET], 'det')
-    get(rec_path, REC_TARS, FALLBACK_RECS, 'rec')
+    get(det_path, [DET_TAR],
+        [det_via_rapidocr_pip, lambda p: download(FALLBACK_DET, p)], 'det')
+    get(rec_path, REC_TARS,
+        [lambda p: fetch_first(FALLBACK_RECS, lambda u: download(u, p), 'rec')], 'rec')
 
     log('done. Reload the extension and pick "PaddleOCR (in-browser)" in settings.')
 
