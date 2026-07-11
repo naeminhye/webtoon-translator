@@ -60,15 +60,21 @@ unpacked or installed from the Web Store. See `background/worker.js`'s
 The release the button downloads from doesn't populate itself — build it
 once (and again whenever the models change):
 
-1. Produce the two ONNX files locally:
+1. Produce the two ONNX files locally, ideally in a throwaway venv on
+   Python 3.9-3.12 (paddle2onnx has no wheel for newer Pythons yet, and pip
+   silently falls back to a broken ancient release instead of erroring —
+   see the script's module docstring for details):
    ```
-   pip install paddle2onnx
+   pip install paddle2onnx packaging paddlepaddle
    python scripts/fetch-paddle-models.py
    ```
    This downloads the official PaddleOCR inference tars and converts them
    (or, with `--fallback-only`, downloads pre-converted ONNX from the
-   RapidOCR HuggingFace hub instead — no paddle2onnx needed). Output lands in
-   `extension/models/paddle-det.onnx` and `extension/models/paddle-rec-korean.onnx`.
+   RapidOCR HuggingFace hub instead — no paddle2onnx/paddlepaddle needed,
+   though that fallback URL is unverified and may 404; the detector alone
+   also has a reliable pip-only fallback via `rapidocr-onnxruntime`, tried
+   automatically). Output lands in `extension/models/paddle-det.onnx` and
+   `extension/models/paddle-rec-korean.onnx`.
 2. Create a GitHub Release on this repo tagged **`paddle-models-v1`** and
    attach those two files as release assets, with these **exact** filenames
    (they're the cache keys `paddle-runner.js`/`worker.js` look up):

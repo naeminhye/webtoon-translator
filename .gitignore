@@ -3,6 +3,12 @@
 dist/
 node_modules/
 
+# Python virtual environments (server/paddleocr/, scripts/fetch-paddle-models.py
+# throwaway venvs like .venv-fetch, etc.) — matches at any nesting depth.
+.venv/
+.venv-*/
+venv/
+
 # ONNX models — downloaded/converted locally, see extension/models/README.md
 extension/models/*.onnx
 extension/models/*.bak

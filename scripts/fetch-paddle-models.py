@@ -20,23 +20,32 @@ model hub on HuggingFace, for whichever model still needs one (this URL is
 best-effort and unverified against the live repo layout — if it 404s, please
 open an issue with the corrected path).
 
-Common paddle2onnx pitfall on Windows: `pip install paddle2onnx` with no
-version pin can silently resolve to the ancient 0.9.2 release (the only one
-with a Python-version-agnostic wheel) if your Python is newer than what the
-current paddle2onnx wheels (cp38-cp312) support — e.g. Python 3.13+. That old
-0.9.2 needs a live `paddle.fluid` runtime and fails with
-`ModuleNotFoundError: No module named 'paddle.fluid'`. Fix: use Python
-3.9-3.12 for this script (a throwaway venv is fine), or explicitly
-`pip install "paddle2onnx>=1.0"` so pip fails loudly instead of downgrading
-silently if your Python is too new.
+Common paddle2onnx pitfalls:
+
+- On Windows, `pip install paddle2onnx` with no version pin can silently
+  resolve to the ancient 0.9.2 release (the only one with a
+  Python-version-agnostic wheel) if your Python is newer than what current
+  paddle2onnx wheels (cp38-cp312) support — e.g. Python 3.13+. That old
+  0.9.2 needs a live `paddle.fluid` runtime and fails with
+  `ModuleNotFoundError: No module named 'paddle.fluid'`. Fix: use Python
+  3.9-3.12 for this script (a throwaway venv is fine), or explicitly
+  `pip install "paddle2onnx>=1.0"` so pip fails loudly instead of
+  downgrading silently if your Python is too new.
+- Even the modern paddle2onnx (>=1.0) imports `paddlepaddle` (and
+  `packaging`) at startup regardless of whether the conversion itself needs
+  it — `pip install paddle2onnx` alone does NOT pull these in. In a fresh
+  venv: `pip install paddle2onnx packaging paddlepaddle` (plain
+  `paddlepaddle`, any recent version — no need to match the pin in
+  server/paddleocr/requirements.txt, this is a separate one-off venv).
 
 Usage:
-  pip install paddle2onnx   # only needed for the primary source
+  pip install paddle2onnx packaging paddlepaddle   # only needed for the primary source
   python scripts/fetch-paddle-models.py [--fallback-only]
 """
 
 import argparse
 import io
+import re
 import shutil
 import subprocess
 import sys
@@ -125,6 +134,20 @@ def convert_tar_to_onnx(tar_url: str, out_path: Path):
                     "paddle2onnx wheel supports your Python version. Use Python 3.9-3.12 for "
                     "this script, or run `pip install \"paddle2onnx>=1.0\"` explicitly so pip "
                     "fails loudly instead of downgrading if that's still not available."
+                )
+            # paddle2onnx>=1.0's own __init__.py unconditionally imports a few
+            # packages before it does anything else — none of them are pulled
+            # in automatically by `pip install paddle2onnx` alone, so a fresh
+            # venv hits these one at a time. Surface the fix instead of the
+            # raw traceback; ModuleNotFoundError's message is always exactly
+            # `No module named '<name>'`.
+            missing = re.search(r"No module named '([\w.]+)'", proc.stderr)
+            if missing:
+                mod = missing.group(1)
+                pip_name = 'paddlepaddle' if mod == 'paddle' else mod
+                raise RuntimeError(
+                    f"paddle2onnx failed to import '{mod}' — install it in the same "
+                    f"environment: pip install {pip_name}"
                 )
             sys.stderr.write(proc.stderr)
             raise RuntimeError(f'paddle2onnx exited with status {proc.returncode}')
