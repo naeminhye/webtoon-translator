@@ -211,6 +211,48 @@
         </div>
       </div>
 
+      <!-- OCR confidence stats card -->
+      <div class="card" id="card-ocr-stats">
+        <div class="card-header">
+          <div class="card-icon card-icon-ocr">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/>
+            </svg>
+          </div>
+          <div>
+            <div class="card-title">OCR Confidence Stats</div>
+            <div class="card-desc">Average self-reported confidence per engine, tracked locally on this device</div>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div class="model-status" id="ocr-stats-list">
+            <div class="model-status-row">
+              <span class="model-status-name">Tesseract.js <span class="model-status-size" id="stat-tesseract-count">0 calls</span></span>
+              <span class="model-status-text" id="stat-tesseract-avg">–</span>
+            </div>
+            <div class="model-status-row">
+              <span class="model-status-name">OCR.space <span class="model-status-size" id="stat-ocrspace-count">0 calls</span></span>
+              <span class="model-status-text" id="stat-ocrspace-avg">–</span>
+            </div>
+            <div class="model-status-row">
+              <span class="model-status-name">PaddleOCR (in-browser) <span class="model-status-size" id="stat-paddleocr-local-count">0 calls</span></span>
+              <span class="model-status-text" id="stat-paddleocr-local-avg">–</span>
+            </div>
+            <div class="model-status-row">
+              <span class="model-status-name">PaddleOCR (self-hosted) <span class="model-status-size" id="stat-paddleocr-count">0 calls</span></span>
+              <span class="model-status-text" id="stat-paddleocr-avg">–</span>
+            </div>
+          </div>
+          <div class="field-row" style="margin-top:10px">
+            <button type="button" id="ocr-stats-reset-btn" class="btn-ghost">Reset stats</button>
+          </div>
+          <p class="field-hint">
+            Confidence is each engine's own self-reported certainty, not a verified accuracy score — use it to compare relative trends between engines, not as an absolute quality measurement. OCR.space doesn't report a confidence value, so only its call count is shown. Stats never leave your device.
+          </p>
+        </div>
+      </div>
+
       <!-- Translation card -->
       <div class="card" id="card-translation">
         <div class="card-header">

@@ -74,6 +74,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'PADDLE_MODELS_CLEAR':
       paddleModelsClear().then(sendResponse);
       return true;
+    case 'GET_OCR_STATS':
+      chrome.storage.local.get({ [OCR_STATS_KEY]: {} })
+        .then(stored => sendResponse({ ok: true, stats: stored[OCR_STATS_KEY] }));
+      return true;
+    case 'RESET_OCR_STATS':
+      chrome.storage.local.set({ [OCR_STATS_KEY]: {} })
+        .then(() => sendResponse({ ok: true }));
+      return true;
   }
 });
 
@@ -198,6 +206,39 @@ const DEV_OCR_SPACE_KEY = '';
 // Tesseract results below this confidence threshold trigger an OCR.space fallback
 // when a key is available (complex backgrounds, small/stylised text).
 const TESSERACT_CONFIDENCE_THRESHOLD = 50;
+
+// ── OCR confidence stats (per-provider, local-only) ────────────────────────────
+// Tracks call count + running average confidence per provider so Settings can
+// show "which engine reports higher confidence on this device" — self-reported
+// certainty from each engine, NOT a verified accuracy measurement (there's no
+// ground truth here to compare against). Stored under one flat key rather than
+// per-chapter like annotations, since this is a device-wide rollup, not
+// per-title data.
+const OCR_STATS_KEY = 'wt:ocr-stats';
+
+// Serializes read-modify-write cycles against storage.local so concurrent OCR
+// completions (e.g. several auto-detect jobs finishing close together) can't
+// lose an update to each other — same rationale as offscreen/paddle-runner.js's
+// self._ortJobQueue.
+let _statsQueue = Promise.resolve();
+
+function recordOcrStat(provider, confidence) {
+  if (!provider) return;
+  const job = _statsQueue.then(async () => {
+    const stored = await chrome.storage.local.get({ [OCR_STATS_KEY]: {} });
+    const stats = stored[OCR_STATS_KEY];
+    const s = stats[provider] || { count: 0, confCount: 0, confSum: 0 };
+    s.count++;
+    if (typeof confidence === 'number') {
+      s.confCount++;
+      s.confSum += confidence;
+    }
+    stats[provider] = s;
+    await chrome.storage.local.set({ [OCR_STATS_KEY]: stats });
+  });
+  _statsQueue = job.catch(() => {}); // keep queue alive after a failed write
+  return job;
+}
 
 // ── OCR crop refinement: text-cluster detection within the inset crop ──────
 // The percentage-inset fix (bundle.js's OCR_CROP_INSET_PCT) assumes bubble
@@ -535,29 +576,41 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
     console.log('[OcrCropRefine]', { source: 'manual-skip' });
   }
 
+  let result;
   if (provider === 'ocrspace') {
     if (!ocrKey) {
       return { ok: false, error: 'OCR.space API key not set — open the extension popup to add it.' };
     }
-    return ocrSpaceRun(finalDataUrl, ocrKey);
-  }
-
-  if (provider === 'paddleocr') {
+    result = await ocrSpaceRun(finalDataUrl, ocrKey);
+    // ocrSpaceRun() doesn't tag its own result (unlike every other provider
+    // branch below) — added here rather than there so the tag only applies
+    // to real OCR attempts, not the early "no key" return above.
+    if (result.ok !== false) result = { ...result, provider: 'ocrspace' };
+  } else if (provider === 'paddleocr') {
     const endpoint = (stored[PADDLE_URL_KEY] || DEFAULT_PADDLE_URL).replace(/\/+$/, '');
-    return paddleOcrRun(finalDataUrl, endpoint);
+    result = await paddleOcrRun(finalDataUrl, endpoint);
+  } else if (provider === 'paddleocr-local') {
+    result = await paddleLocalRun(finalDataUrl);
+  } else {
+    // Tesseract — primary OCR engine. Auto-fallback to OCR.space only when the
+    // user has explicitly chosen 'ocrspace' as their provider in settings.
+    // (Previously this fell back silently if a key existed; that caused surprise
+    //  network calls without any user opt-in.)
+    const tessResult = await tesseractRun(finalDataUrl, isSingleLine);
+    const tessText   = cleanKoreanOcrText(tessResult.text || '') || tessResult.text || '';
+    result = { ...tessResult, text: tessText, provider: 'tesseract' };
   }
 
-  if (provider === 'paddleocr-local') {
-    return paddleLocalRun(finalDataUrl);
+  // Single choke point for every OCR result regardless of provider/branch —
+  // see recordOcrStat() for why this lives here instead of in bundle.js.
+  // Awaited (not fire-and-forget) so the write finishes before this async
+  // function itself resolves — an MV3 service worker can be torn down once
+  // nothing is tracking it as busy, and an un-awaited storage write here
+  // would race that teardown and could silently lose the update.
+  if (result?.ok !== false) {
+    await recordOcrStat(result.provider || provider, typeof result?.confidence === 'number' ? result.confidence : null);
   }
-
-  // Tesseract — primary OCR engine. Auto-fallback to OCR.space only when the
-  // user has explicitly chosen 'ocrspace' as their provider in settings.
-  // (Previously this fell back silently if a key existed; that caused surprise
-  //  network calls without any user opt-in.)
-  const tessResult = await tesseractRun(finalDataUrl, isSingleLine);
-  const tessText   = cleanKoreanOcrText(tessResult.text || '') || tessResult.text || '';
-  return { ...tessResult, text: tessText, provider: 'tesseract' };
+  return result;
 }
 
 // Strip non-Korean noise from OCR output while preserving valid Korean text

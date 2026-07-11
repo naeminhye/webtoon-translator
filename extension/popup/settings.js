@@ -369,7 +369,40 @@ async function initAppearanceSettings() {
   });
 }
 
+// ── OCR confidence stats ──────────────────────────────────────────────────
+// Mirrors background/worker.js's OCR_STATS_KEY shape: { [provider]: { count,
+// confCount, confSum } }. Rendered per provider id, matching the four
+// ocr-provider radio values (see initOcrSettings) plus 'ocrspace', which
+// never reports a confidence (see worker.js's handleOcr — OCR.space's API
+// isn't asked for one).
+const OCR_STATS_PROVIDERS = ['tesseract', 'ocrspace', 'paddleocr-local', 'paddleocr'];
+
+function renderOcrStats(stats) {
+  for (const provider of OCR_STATS_PROVIDERS) {
+    const s = stats[provider] || { count: 0, confCount: 0, confSum: 0 };
+    $(`stat-${provider}-count`).textContent = `${s.count} call${s.count === 1 ? '' : 's'}`;
+    $(`stat-${provider}-avg`).textContent = s.confCount > 0
+      ? `${(s.confSum / s.confCount).toFixed(1)}%`
+      : '–';
+  }
+}
+
+async function initOcrStatsSettings() {
+  async function refresh() {
+    const res = await chrome.runtime.sendMessage({ type: 'GET_OCR_STATS' });
+    renderOcrStats(res?.stats || {});
+  }
+
+  await refresh();
+
+  $('ocr-stats-reset-btn').addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: 'RESET_OCR_STATS' });
+    await refresh();
+  });
+}
+
 initTranslationSettings();
 initOcrSettings();
+initOcrStatsSettings();
 initDisplaySettings();
 initAppearanceSettings();
