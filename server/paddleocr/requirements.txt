@@ -1,0 +1,7 @@
+# Pinned: paddleocr 3.x result keys (rec_texts/rec_scores/rec_boxes) are what
+# server.py reads — bump both pins together and re-test /ocr before upgrading.
+paddlepaddle==3.0.0
+paddleocr==3.1.0
+flask==3.0.3
+pillow>=10
+numpy

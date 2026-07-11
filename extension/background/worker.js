@@ -169,12 +169,17 @@ async function handleClear({ site, titleId, chapterId }) {
 }
 
 // ── OCR ───────────────────────────────────────────────────────────────────────
-// Two providers: 'tesseract' (offline, offscreen doc) and 'ocrspace' (online API).
+// Three providers: 'tesseract' (offline, offscreen doc), 'ocrspace' (online API)
+// and 'paddleocr' (self-hosted HTTP server, see server/paddleocr/).
 // If the content script couldn't crop (tainted canvas), imageUrl + bbox are sent
 // instead of dataUrl; the service worker fetches + crops here using OffscreenCanvas.
 
 const OCR_PROVIDER_KEY  = 'wt:ocr-provider';
 const OCR_SPACE_KEY_STR = 'wt:ocrspace-key';
+const PADDLE_URL_KEY    = 'wt:paddleocr-url';
+
+// Mirrors popup/settings.js — keep in sync. Used when the stored URL is ''.
+const DEFAULT_PADDLE_URL = 'http://127.0.0.1:8868';
 
 // Developer-supplied OCR.space key — bundled so end users never need to paste one.
 // Leave blank ('') to require users to enter their own key in the popup.
@@ -488,6 +493,7 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
     [OCR_SPACE_KEY_STR]: '',
+    [PADDLE_URL_KEY]:    '',
   });
   const provider = stored[OCR_PROVIDER_KEY];
   const ocrKey   = stored[OCR_SPACE_KEY_STR] || DEV_OCR_SPACE_KEY;
@@ -524,6 +530,11 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
       return { ok: false, error: 'OCR.space API key not set — open the extension popup to add it.' };
     }
     return ocrSpaceRun(finalDataUrl, ocrKey);
+  }
+
+  if (provider === 'paddleocr') {
+    const endpoint = (stored[PADDLE_URL_KEY] || DEFAULT_PADDLE_URL).replace(/\/+$/, '');
+    return paddleOcrRun(finalDataUrl, endpoint);
   }
 
   // Tesseract — primary OCR engine. Auto-fallback to OCR.space only when the
@@ -626,6 +637,35 @@ async function ocrSpaceRun(dataUrl, apiKey) {
     .replace(/\s+/g, ' ')
     .trim();
   return { ok: true, text };
+}
+
+// ── PaddleOCR (self-hosted HTTP server, see server/paddleocr/) ────────────────
+
+// Like ocrSpaceRun, no cleanKoreanOcrText() here — that filter exists to scrub
+// Tesseract garbage and would strip digits/Latin from otherwise-good output.
+async function paddleOcrRun(dataUrl, endpoint) {
+  let res;
+  try {
+    res = await fetch(`${endpoint}/ocr`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: dataUrl }),
+    });
+  } catch (_) {
+    return { ok: false, error: `PaddleOCR server unreachable at ${endpoint} — is it running? (see server/paddleocr/README.md)` };
+  }
+  if (!res.ok) return { ok: false, error: `PaddleOCR server HTTP ${res.status}` };
+  let json;
+  try {
+    json = await res.json();
+  } catch (_) {
+    return { ok: false, error: 'PaddleOCR server returned invalid JSON' };
+  }
+  if (!json.ok) return { ok: false, error: `PaddleOCR: ${json.error || 'unknown error'}` };
+  const text = (json.text || '').replace(/\s+/g, ' ').trim();
+  // Server reports confidence on the 0-100 scale (see bundle.js's confNorm).
+  const confidence = typeof json.confidence === 'number' ? json.confidence : null;
+  return { ok: true, text, confidence, provider: 'paddleocr' };
 }
 
 // ── Tesseract (offscreen document) ────────────────────────────────────────────

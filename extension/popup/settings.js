@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
 const OCR_PROVIDER_KEY       = 'wt:ocr-provider';
 const OCR_SPACE_KEY_STR      = 'wt:ocrspace-key';
+const PADDLE_URL_KEY         = 'wt:paddleocr-url';
 const TRANSLATE_PROVIDER_KEY = 'wt:translate-provider';
 const TRANSLATE_LANG_KEY     = 'wt:translate-lang';
 const DEEPL_KEY_STR          = 'wt:deepl-key';
@@ -14,10 +15,16 @@ const AUTO_DETECT_KEY        = 'wt:auto-detect';
 // Mirrors background/worker.js — keep in sync.
 const DEV_OCR_SPACE_KEY = '';
 
+// Mirrors background/worker.js — keep in sync. Shown as the input placeholder;
+// an empty stored URL means "use this default" (never persisted, so a future
+// default change still takes effect for users who kept the default).
+const DEFAULT_PADDLE_URL = 'http://127.0.0.1:8868';
+
 async function initOcrSettings() {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
     [OCR_SPACE_KEY_STR]: '',
+    [PADDLE_URL_KEY]:    '',
   });
 
   const radios = document.querySelectorAll('input[name="ocr-provider"]');
@@ -28,10 +35,13 @@ async function initOcrSettings() {
     const needsKey = provider === 'ocrspace' && !devKeyBundled;
     $('ocrspace-key-row').classList.toggle('hidden', !needsKey);
     $('ocrspace-key-saved').classList.add('hidden');
+    $('paddleocr-url-row').classList.toggle('hidden', provider !== 'paddleocr');
+    $('paddleocr-url-saved').classList.add('hidden');
   }
 
   applyProvider(stored[OCR_PROVIDER_KEY]);
   if (stored[OCR_SPACE_KEY_STR]) $('ocrspace-key').value = stored[OCR_SPACE_KEY_STR];
+  if (stored[PADDLE_URL_KEY]) $('paddleocr-url').value = stored[PADDLE_URL_KEY];
 
   radios.forEach(r => r.addEventListener('change', async () => {
     await chrome.storage.local.set({ [OCR_PROVIDER_KEY]: r.value });
@@ -46,6 +56,18 @@ async function initOcrSettings() {
       await chrome.storage.local.set({ [OCR_SPACE_KEY_STR]: $('ocrspace-key').value.trim() });
       $('ocrspace-key-saved').classList.remove('hidden');
       setTimeout(() => $('ocrspace-key-saved').classList.add('hidden'), 1500);
+    }, 400);
+  });
+
+  // Autosave the PaddleOCR server URL the same way. An empty value is stored
+  // as '' so the background falls back to DEFAULT_PADDLE_URL.
+  let paddleUrlTimer = null;
+  $('paddleocr-url').addEventListener('input', () => {
+    clearTimeout(paddleUrlTimer);
+    paddleUrlTimer = setTimeout(async () => {
+      await chrome.storage.local.set({ [PADDLE_URL_KEY]: $('paddleocr-url').value.trim() });
+      $('paddleocr-url-saved').classList.remove('hidden');
+      setTimeout(() => $('paddleocr-url-saved').classList.add('hidden'), 1500);
     }, 400);
   });
 }

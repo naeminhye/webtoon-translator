@@ -21,6 +21,8 @@
     "https://*.kakaoentcdn.com/*",
     "https://page-edge.kakao.com/*",
     "https://api.ocr.space/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*",
     "https://translate.googleapis.com/*",
     "https://api-free.deepl.com/*",
     "https://api.deepl.com/*",

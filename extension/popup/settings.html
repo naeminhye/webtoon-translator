@@ -223,7 +223,7 @@
         </div>
 
         <div class="card-body">
-          <div class="engine-grid">
+          <div class="engine-grid engine-grid-3">
             <label class="engine-card">
               <input type="radio" name="ocr-provider" value="tesseract" class="engine-radio" />
               <div class="engine-card-inner">
@@ -246,6 +246,17 @@
                 <p class="engine-detail">Cloud API with higher accuracy. Requires an API key. Free tier available at ocr.space.</p>
               </div>
             </label>
+            <label class="engine-card">
+              <input type="radio" name="ocr-provider" value="paddleocr" class="engine-radio" />
+              <div class="engine-card-inner">
+                <div class="engine-name">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 18h.01M10 18h.01"/><path d="M12 14V6a2 2 0 0 1 2-2h6"/></svg>
+                  PaddleOCR
+                </div>
+                <div class="engine-badge engine-badge-offline">Self-hosted</div>
+                <p class="engine-detail">Best Korean accuracy. Runs on your own machine — start the bundled server (see server/paddleocr/README.md).</p>
+              </div>
+            </label>
           </div>
 
           <div id="ocrspace-key-row" class="field-group hidden">
@@ -262,6 +273,23 @@
             </p>
             <p class="field-hint">
               Get a free key at <span class="link-text">ocr.space</span> — free tier supports up to 25,000 requests/month.
+            </p>
+          </div>
+
+          <div id="paddleocr-url-row" class="field-group hidden">
+            <label class="field-label">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 18h.01M10 18h.01"/><path d="M12 14V6a2 2 0 0 1 2-2h6"/></svg>
+              PaddleOCR Server URL
+            </label>
+            <div class="field-row">
+              <input type="text" id="paddleocr-url" class="text-input" placeholder="http://127.0.0.1:8868" autocomplete="off" spellcheck="false" />
+            </div>
+            <p id="paddleocr-url-saved" class="field-success hidden">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Server URL saved successfully
+            </p>
+            <p class="field-hint">
+              Leave empty to use the default. Start the server with <span class="link-text">python server/paddleocr/server.py</span> — see the README in that folder.
             </p>
           </div>
         </div>
