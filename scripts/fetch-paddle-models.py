@@ -37,6 +37,13 @@ Common paddle2onnx pitfalls:
   venv: `pip install paddle2onnx packaging paddlepaddle` (plain
   `paddlepaddle`, any recent version — no need to match the pin in
   server/paddleocr/requirements.txt, this is a separate one-off venv).
+- On Windows specifically, the latest paddle2onnx (2.1.0 as of writing) can
+  fail with `ImportError: DLL load failed while importing
+  paddle2onnx_cpp2py_export: The specified procedure could not be found` —
+  a compiled-ABI mismatch with the installed paddlepaddle/onnx, not an
+  actually-missing DLL. Fix: pin a combination known to work together —
+  `pip uninstall -y paddlepaddle paddle2onnx onnx` then
+  `pip install paddlepaddle==3.0.0 paddle2onnx==2.0.2rc3 onnx`.
 
 Usage:
   pip install paddle2onnx packaging paddlepaddle   # only needed for the primary source
@@ -69,16 +76,24 @@ REC_TARS = [
 DICT_URL = ('https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/'
             'release/2.7/ppocr/utils/dict/korean_dict.txt')
 
-# Pre-converted ONNX (RapidOCR model hub) — used with --fallback-only or when
-# the primary path fails. Mirrors the same official Paddle checkpoints. Path
-# layout is best-effort/unverified (see module docstring) — the det model has
-# a more reliable fallback below (det_via_rapidocr_pip), so this URL mainly
-# matters for rec, which has no pip-installable source.
+# Pre-converted ONNX — used with --fallback-only or when the primary path
+# fails. The det model has a more reliable fallback below
+# (det_via_rapidocr_pip); these HF paths mainly matter for rec, which has no
+# pip-installable source. Best-effort/unverified against the live repo
+# layout (see module docstring) — if one 404s, please open an issue with the
+# corrected path; the next URL in the list is tried automatically either way.
 HF = 'https://huggingface.co/SWHL/RapidOCR/resolve/main'
 FALLBACK_DET = f'{HF}/PP-OCRv4/det/ch_PP-OCRv4_det_infer.onnx'
 FALLBACK_RECS = [
-    f'{HF}/PP-OCRv4/rec/korean_PP-OCRv4_rec_infer.onnx',
-    f'{HF}/PP-OCRv3/rec/korean_PP-OCRv3_rec_infer.onnx',
+    # Community conversions of the official PaddleOCR Korean checkpoints —
+    # SWHL/RapidOCR doesn't publish Korean recognizers. Filenames follow the
+    # `<lang>_PP-OCRv<N>_rec_infer.onnx` convention used across every other
+    # PP-OCR ONNX mirror (SWHL/RapidOCR's own ch_PP-OCRv4_rec_infer.onnx,
+    # cycloneboy's own sibling japan_PP-OCRv4_rec_infer repo, etc).
+    ('https://huggingface.co/cycloneboy/korean_PP-OCRv4_rec_infer/'
+     'resolve/main/korean_PP-OCRv4_rec_infer.onnx'),
+    ('https://huggingface.co/breezedeus/cnocr-ppocr-korean_PP-OCRv3/'
+     'resolve/main/korean_PP-OCRv3_rec_infer.onnx'),
 ]
 
 
@@ -87,11 +102,27 @@ def log(msg):
 
 
 def download(url, dest: Path):
+    """Download atomically (temp file + rename) so a failed/partial request
+    never leaves a corrupt or truncated model in place. Also catches the
+    case where a proxy or CDN returns an HTML error/login page with a 200
+    status instead of a real 404 — urlopen() alone wouldn't notice."""
     log(f'downloading {url}')
-    with urllib.request.urlopen(url) as res:
-        data = res.read()
-    dest.write_bytes(data)
-    log(f'  -> {dest} ({len(data) / 1e6:.1f} MB)')
+    tmp_dest = dest.with_suffix(dest.suffix + '.part')
+    try:
+        with urllib.request.urlopen(url) as res, tmp_dest.open('wb') as fh:
+            content_type = res.headers.get_content_type()
+            if content_type in {'text/html', 'text/plain'}:
+                prefix = res.read(512)
+                if b'<html' in prefix.lower() or b'not found' in prefix.lower():
+                    raise RuntimeError(f'unexpected {content_type} response')
+                fh.write(prefix)
+            shutil.copyfileobj(res, fh)
+        if tmp_dest.stat().st_size < 1_000_000:
+            raise RuntimeError('downloaded file is unexpectedly small')
+        tmp_dest.replace(dest)
+    finally:
+        tmp_dest.unlink(missing_ok=True)
+    log(f'  -> {dest} ({dest.stat().st_size / 1e6:.1f} MB)')
 
 
 def convert_tar_to_onnx(tar_url: str, out_path: Path):
@@ -126,6 +157,20 @@ def convert_tar_to_onnx(tar_url: str, out_path: Path):
         log('converting: ' + ' '.join(cmd))
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
+            dll_error = ('DLL load failed' in proc.stderr and
+                         'paddle2onnx_cpp2py_export' in proc.stderr)
+            if dll_error:
+                raise RuntimeError(
+                    "paddle2onnx's native Windows extension failed to load — usually a "
+                    "compiled-ABI mismatch between the installed paddle2onnx build and "
+                    "paddlepaddle/onnx, not a missing DLL per se. Pin both to a combination "
+                    "known to work together: `pip uninstall -y paddlepaddle paddle2onnx onnx`, "
+                    "then `pip install paddlepaddle==3.0.0 paddle2onnx==2.0.2rc3 onnx`. "
+                    "(paddlepaddle==3.0.0 matches what server/paddleocr/requirements.txt "
+                    "already pins, so if that install works for you the pair is proven "
+                    "compatible on your machine.) The script will also try a pre-converted "
+                    "Korean ONNX fallback automatically either way."
+                )
             if 'paddle.fluid' in proc.stderr:
                 raise RuntimeError(
                     "installed paddle2onnx is the legacy pre-1.0 release (needs a live "
