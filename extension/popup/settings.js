@@ -1,6 +1,60 @@
 const $ = id => document.getElementById(id);
+const THEME_KEY = 'wt:settings-theme';
+const TAB_KEY   = 'wt:settings-tab';
+
+// ── Theme (light/dark) ──────────────────────────────────────────────────
+// Persisted separately from every other 'wt:' setting below — this is a
+// UI preference for this settings page only, not an extension behavior.
+async function initTheme() {
+  const stored = await chrome.storage.local.get({ [THEME_KEY]: '' });
+  const btn = $('theme-toggle');
+
+  function apply(theme) {
+    // '' (no stored choice) leaves data-theme unset so the
+    // prefers-color-scheme media query in settings.css decides — the
+    // toggle button still needs a concrete label, so fall back to what
+    // the media query would currently resolve to.
+    const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const effective = theme || (systemDark ? 'dark' : 'light');
+    if (theme) document.documentElement.setAttribute('data-theme', theme);
+    else document.documentElement.removeAttribute('data-theme');
+    btn.textContent = effective === 'dark' ? 'Light' : 'Dark';
+  }
+
+  apply(stored[THEME_KEY]);
+
+  btn.addEventListener('click', async () => {
+    const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const current = document.documentElement.getAttribute('data-theme') || (systemDark ? 'dark' : 'light');
+    const next = current === 'dark' ? 'light' : 'dark';
+    apply(next);
+    await chrome.storage.local.set({ [THEME_KEY]: next });
+  });
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────────
+async function initTabs() {
+  const pills  = document.querySelectorAll('.tab-pill');
+  const panels = document.querySelectorAll('.tab-panel');
+  const stored = await chrome.storage.local.get({ [TAB_KEY]: 'general' });
+
+  function activate(tab) {
+    pills.forEach(p => p.classList.toggle('active', p.dataset.tab === tab));
+    panels.forEach(s => s.classList.toggle('hidden', s.dataset.tabPanel !== tab));
+  }
+
+  const initial = [...pills].some(p => p.dataset.tab === stored[TAB_KEY]) ? stored[TAB_KEY] : 'general';
+  activate(initial);
+
+  pills.forEach(p => p.addEventListener('click', async () => {
+    activate(p.dataset.tab);
+    await chrome.storage.local.set({ [TAB_KEY]: p.dataset.tab });
+  }));
+}
+
 const OCR_PROVIDER_KEY       = 'wt:ocr-provider';
 const OCR_SPACE_KEY_STR      = 'wt:ocrspace-key';
+const PADDLE_URL_KEY         = 'wt:paddleocr-url';
 const TRANSLATE_PROVIDER_KEY = 'wt:translate-provider';
 const TRANSLATE_LANG_KEY     = 'wt:translate-lang';
 const DEEPL_KEY_STR          = 'wt:deepl-key';
@@ -14,10 +68,16 @@ const AUTO_DETECT_KEY        = 'wt:auto-detect';
 // Mirrors background/worker.js — keep in sync.
 const DEV_OCR_SPACE_KEY = '';
 
+// Mirrors background/worker.js — keep in sync. Shown as the input placeholder;
+// an empty stored URL means "use this default" (never persisted, so a future
+// default change still takes effect for users who kept the default).
+const DEFAULT_PADDLE_URL = 'http://127.0.0.1:8868';
+
 async function initOcrSettings() {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
     [OCR_SPACE_KEY_STR]: '',
+    [PADDLE_URL_KEY]:    '',
   });
 
   const radios = document.querySelectorAll('input[name="ocr-provider"]');
@@ -28,10 +88,15 @@ async function initOcrSettings() {
     const needsKey = provider === 'ocrspace' && !devKeyBundled;
     $('ocrspace-key-row').classList.toggle('hidden', !needsKey);
     $('ocrspace-key-saved').classList.add('hidden');
+    $('paddleocr-url-row').classList.toggle('hidden', provider !== 'paddleocr');
+    $('paddleocr-url-saved').classList.add('hidden');
+    $('paddleocr-local-row').classList.toggle('hidden', provider !== 'paddleocr-local');
+    if (provider === 'paddleocr-local') refreshPaddleModelsStatus();
   }
 
   applyProvider(stored[OCR_PROVIDER_KEY]);
   if (stored[OCR_SPACE_KEY_STR]) $('ocrspace-key').value = stored[OCR_SPACE_KEY_STR];
+  if (stored[PADDLE_URL_KEY]) $('paddleocr-url').value = stored[PADDLE_URL_KEY];
 
   radios.forEach(r => r.addEventListener('change', async () => {
     await chrome.storage.local.set({ [OCR_PROVIDER_KEY]: r.value });
@@ -48,6 +113,107 @@ async function initOcrSettings() {
       setTimeout(() => $('ocrspace-key-saved').classList.add('hidden'), 1500);
     }, 400);
   });
+
+  // Autosave the PaddleOCR server URL the same way. An empty value is stored
+  // as '' so the background falls back to DEFAULT_PADDLE_URL.
+  let paddleUrlTimer = null;
+  $('paddleocr-url').addEventListener('input', () => {
+    clearTimeout(paddleUrlTimer);
+    paddleUrlTimer = setTimeout(async () => {
+      await chrome.storage.local.set({ [PADDLE_URL_KEY]: $('paddleocr-url').value.trim() });
+      $('paddleocr-url-saved').classList.remove('hidden');
+      setTimeout(() => $('paddleocr-url-saved').classList.add('hidden'), 1500);
+    }, 400);
+  });
+
+  // Setup-guide download chips: files bundled inside the extension package
+  // (extension/assets/paddleocr-server/, a mirror of server/paddleocr/ in the
+  // repo) so users who only installed the packed extension — no git/GitHub
+  // access — can still get server.py etc. onto their machine. chrome.runtime
+  // .getURL() resolves the per-install chrome-extension:// origin; no
+  // web_accessible_resources entry is needed since this popup page already
+  // shares that origin.
+  // chrome.runtime.getURL() is always rooted at the extension package root
+  // (extension/), not relative to this script's own location.
+  const PADDLE_SERVER_ASSETS = 'assets/paddleocr-server/';
+  [
+    ['dl-paddle-server-py',    'server.py'],
+    ['dl-paddle-requirements', 'requirements.txt'],
+    ['dl-paddle-dockerfile',   'Dockerfile'],
+    ['dl-paddle-readme',       'README.md'],
+  ].forEach(([id, filename]) => {
+    $(id).href = chrome.runtime.getURL(PADDLE_SERVER_ASSETS + filename);
+  });
+
+  // ── PaddleOCR (in-browser) model status + download/remove ────────────────
+  // Model bytes live in the background service worker's Cache Storage (see
+  // worker.js paddleModelsDownload/Status/Clear) — this popup only ever
+  // asks it for status or tells it to download/clear, never touches the
+  // cache directly, so state stays correct even if a download that started
+  // from a since-closed popup is still running when this popup opens.
+
+  function setModelDot(key, state) {
+    const dot = $(`paddle-${key}-dot`);
+    dot.classList.remove('is-ready', 'is-downloading', 'is-error');
+    if (state === 'ready' || state === 'downloading' || state === 'error') {
+      dot.classList.add(`is-${state}`);
+    }
+    const text = $(`paddle-${key}-text`);
+    text.textContent = { ready: 'ready', downloading: 'downloading…', error: 'error', missing: 'not downloaded' }[state] || state;
+  }
+
+  function renderPaddleModelsStatus(status) {
+    setModelDot('det', status.det === 'cached' ? 'ready' : (status.downloading ? 'downloading' : 'missing'));
+    setModelDot('rec', status.rec === 'cached' ? 'ready' : (status.downloading ? 'downloading' : 'missing'));
+    const bothReady = status.det === 'cached' && status.rec === 'cached';
+    const btn = $('paddle-models-download-btn');
+    btn.disabled = status.downloading || bothReady;
+    btn.textContent = status.downloading ? 'Downloading…' : (bothReady ? 'Models ready' : 'Download models');
+    $('paddle-models-clear-btn').classList.toggle('hidden', !bothReady || status.downloading);
+    if (!status.downloading) $('paddle-models-error').classList.add('hidden');
+  }
+
+  async function refreshPaddleModelsStatus() {
+    const status = await chrome.runtime.sendMessage({ type: 'PADDLE_MODELS_STATUS' });
+    if (status) renderPaddleModelsStatus(status);
+  }
+
+  // Live progress while a download is in flight — also covers the case where
+  // a previously-opened popup started the download and was then closed; the
+  // background keeps downloading regardless, and this popup's listener still
+  // receives the remaining broadcast events.
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== 'PADDLE_MODELS_EVENT') return;
+    const { stage, state, error } = message.payload;
+    if (stage === 'det' || stage === 'rec') {
+      setModelDot(stage, state === 'done' ? 'ready' : 'downloading');
+    } else if (stage === 'all' && state === 'done') {
+      refreshPaddleModelsStatus();
+    } else if (stage === 'error') {
+      $('paddle-models-error').textContent = error || 'Download failed.';
+      $('paddle-models-error').classList.remove('hidden');
+      refreshPaddleModelsStatus();
+    }
+  });
+
+  $('paddle-models-download-btn').addEventListener('click', async () => {
+    $('paddle-models-download-btn').disabled = true;
+    $('paddle-models-download-btn').textContent = 'Downloading…';
+    $('paddle-models-error').classList.add('hidden');
+    const res = await chrome.runtime.sendMessage({ type: 'PADDLE_MODELS_DOWNLOAD' });
+    if (res && !res.ok) {
+      $('paddle-models-error').textContent = res.error || 'Download failed.';
+      $('paddle-models-error').classList.remove('hidden');
+    }
+    refreshPaddleModelsStatus();
+  });
+
+  $('paddle-models-clear-btn').addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: 'PADDLE_MODELS_CLEAR' });
+    refreshPaddleModelsStatus();
+  });
+
+  if (stored[OCR_PROVIDER_KEY] === 'paddleocr-local') refreshPaddleModelsStatus();
 }
 
 async function initTranslationSettings() {
@@ -256,7 +422,42 @@ async function initAppearanceSettings() {
   });
 }
 
+// ── OCR confidence stats ──────────────────────────────────────────────────
+// Mirrors background/worker.js's OCR_STATS_KEY shape: { [provider]: { count,
+// confCount, confSum } }. Rendered per provider id, matching the four
+// ocr-provider radio values (see initOcrSettings) plus 'ocrspace', which
+// never reports a confidence (see worker.js's handleOcr — OCR.space's API
+// isn't asked for one).
+const OCR_STATS_PROVIDERS = ['tesseract', 'ocrspace', 'paddleocr-local', 'paddleocr'];
+
+function renderOcrStats(stats) {
+  for (const provider of OCR_STATS_PROVIDERS) {
+    const s = stats[provider] || { count: 0, confCount: 0, confSum: 0 };
+    $(`stat-${provider}-count`).textContent = `${s.count} call${s.count === 1 ? '' : 's'}`;
+    $(`stat-${provider}-avg`).textContent = s.confCount > 0
+      ? `${(s.confSum / s.confCount).toFixed(1)}%`
+      : '–';
+  }
+}
+
+async function initOcrStatsSettings() {
+  async function refresh() {
+    const res = await chrome.runtime.sendMessage({ type: 'GET_OCR_STATS' });
+    renderOcrStats(res?.stats || {});
+  }
+
+  await refresh();
+
+  $('ocr-stats-reset-btn').addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: 'RESET_OCR_STATS' });
+    await refresh();
+  });
+}
+
+initTheme();
+initTabs();
 initTranslationSettings();
 initOcrSettings();
+initOcrStatsSettings();
 initDisplaySettings();
 initAppearanceSettings();

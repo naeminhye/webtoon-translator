@@ -65,6 +65,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       });
       return false;
+    case 'PADDLE_MODELS_STATUS':
+      paddleModelsStatus().then(sendResponse);
+      return true;
+    case 'PADDLE_MODELS_DOWNLOAD':
+      paddleModelsDownload().then(sendResponse);
+      return true;
+    case 'PADDLE_MODELS_CLEAR':
+      paddleModelsClear().then(sendResponse);
+      return true;
+    case 'GET_OCR_STATS':
+      chrome.storage.local.get({ [OCR_STATS_KEY]: {} })
+        .then(stored => sendResponse({ ok: true, stats: stored[OCR_STATS_KEY] }));
+      return true;
+    case 'RESET_OCR_STATS':
+      chrome.storage.local.set({ [OCR_STATS_KEY]: {} })
+        .then(() => sendResponse({ ok: true }));
+      return true;
   }
 });
 
@@ -169,12 +186,18 @@ async function handleClear({ site, titleId, chapterId }) {
 }
 
 // ── OCR ───────────────────────────────────────────────────────────────────────
-// Two providers: 'tesseract' (offline, offscreen doc) and 'ocrspace' (online API).
+// Four providers: 'tesseract' (offline, offscreen doc), 'ocrspace' (online API),
+// 'paddleocr' (self-hosted HTTP server, see server/paddleocr/) and
+// 'paddleocr-local' (PP-OCR ONNX in the offscreen doc, see offscreen/paddle-runner.js).
 // If the content script couldn't crop (tainted canvas), imageUrl + bbox are sent
 // instead of dataUrl; the service worker fetches + crops here using OffscreenCanvas.
 
 const OCR_PROVIDER_KEY  = 'wt:ocr-provider';
 const OCR_SPACE_KEY_STR = 'wt:ocrspace-key';
+const PADDLE_URL_KEY    = 'wt:paddleocr-url';
+
+// Mirrors popup/settings.js — keep in sync. Used when the stored URL is ''.
+const DEFAULT_PADDLE_URL = 'http://127.0.0.1:8868';
 
 // Developer-supplied OCR.space key — bundled so end users never need to paste one.
 // Leave blank ('') to require users to enter their own key in the popup.
@@ -183,6 +206,39 @@ const DEV_OCR_SPACE_KEY = '';
 // Tesseract results below this confidence threshold trigger an OCR.space fallback
 // when a key is available (complex backgrounds, small/stylised text).
 const TESSERACT_CONFIDENCE_THRESHOLD = 50;
+
+// ── OCR confidence stats (per-provider, local-only) ────────────────────────────
+// Tracks call count + running average confidence per provider so Settings can
+// show "which engine reports higher confidence on this device" — self-reported
+// certainty from each engine, NOT a verified accuracy measurement (there's no
+// ground truth here to compare against). Stored under one flat key rather than
+// per-chapter like annotations, since this is a device-wide rollup, not
+// per-title data.
+const OCR_STATS_KEY = 'wt:ocr-stats';
+
+// Serializes read-modify-write cycles against storage.local so concurrent OCR
+// completions (e.g. several auto-detect jobs finishing close together) can't
+// lose an update to each other — same rationale as offscreen/paddle-runner.js's
+// self._ortJobQueue.
+let _statsQueue = Promise.resolve();
+
+function recordOcrStat(provider, confidence) {
+  if (!provider) return;
+  const job = _statsQueue.then(async () => {
+    const stored = await chrome.storage.local.get({ [OCR_STATS_KEY]: {} });
+    const stats = stored[OCR_STATS_KEY];
+    const s = stats[provider] || { count: 0, confCount: 0, confSum: 0 };
+    s.count++;
+    if (typeof confidence === 'number') {
+      s.confCount++;
+      s.confSum += confidence;
+    }
+    stats[provider] = s;
+    await chrome.storage.local.set({ [OCR_STATS_KEY]: stats });
+  });
+  _statsQueue = job.catch(() => {}); // keep queue alive after a failed write
+  return job;
+}
 
 // ── OCR crop refinement: text-cluster detection within the inset crop ──────
 // The percentage-inset fix (bundle.js's OCR_CROP_INSET_PCT) assumes bubble
@@ -488,6 +544,7 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
     [OCR_SPACE_KEY_STR]: '',
+    [PADDLE_URL_KEY]:    '',
   });
   const provider = stored[OCR_PROVIDER_KEY];
   const ocrKey   = stored[OCR_SPACE_KEY_STR] || DEV_OCR_SPACE_KEY;
@@ -519,20 +576,41 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
     console.log('[OcrCropRefine]', { source: 'manual-skip' });
   }
 
+  let result;
   if (provider === 'ocrspace') {
     if (!ocrKey) {
       return { ok: false, error: 'OCR.space API key not set — open the extension popup to add it.' };
     }
-    return ocrSpaceRun(finalDataUrl, ocrKey);
+    result = await ocrSpaceRun(finalDataUrl, ocrKey);
+    // ocrSpaceRun() doesn't tag its own result (unlike every other provider
+    // branch below) — added here rather than there so the tag only applies
+    // to real OCR attempts, not the early "no key" return above.
+    if (result.ok !== false) result = { ...result, provider: 'ocrspace' };
+  } else if (provider === 'paddleocr') {
+    const endpoint = (stored[PADDLE_URL_KEY] || DEFAULT_PADDLE_URL).replace(/\/+$/, '');
+    result = await paddleOcrRun(finalDataUrl, endpoint);
+  } else if (provider === 'paddleocr-local') {
+    result = await paddleLocalRun(finalDataUrl);
+  } else {
+    // Tesseract — primary OCR engine. Auto-fallback to OCR.space only when the
+    // user has explicitly chosen 'ocrspace' as their provider in settings.
+    // (Previously this fell back silently if a key existed; that caused surprise
+    //  network calls without any user opt-in.)
+    const tessResult = await tesseractRun(finalDataUrl, isSingleLine);
+    const tessText   = cleanKoreanOcrText(tessResult.text || '') || tessResult.text || '';
+    result = { ...tessResult, text: tessText, provider: 'tesseract' };
   }
 
-  // Tesseract — primary OCR engine. Auto-fallback to OCR.space only when the
-  // user has explicitly chosen 'ocrspace' as their provider in settings.
-  // (Previously this fell back silently if a key existed; that caused surprise
-  //  network calls without any user opt-in.)
-  const tessResult = await tesseractRun(finalDataUrl, isSingleLine);
-  const tessText   = cleanKoreanOcrText(tessResult.text || '') || tessResult.text || '';
-  return { ...tessResult, text: tessText, provider: 'tesseract' };
+  // Single choke point for every OCR result regardless of provider/branch —
+  // see recordOcrStat() for why this lives here instead of in bundle.js.
+  // Awaited (not fire-and-forget) so the write finishes before this async
+  // function itself resolves — an MV3 service worker can be torn down once
+  // nothing is tracking it as busy, and an un-awaited storage write here
+  // would race that teardown and could silently lose the update.
+  if (result?.ok !== false) {
+    await recordOcrStat(result.provider || provider, typeof result?.confidence === 'number' ? result.confidence : null);
+  }
+  return result;
 }
 
 // Strip non-Korean noise from OCR output while preserving valid Korean text
@@ -628,6 +706,35 @@ async function ocrSpaceRun(dataUrl, apiKey) {
   return { ok: true, text };
 }
 
+// ── PaddleOCR (self-hosted HTTP server, see server/paddleocr/) ────────────────
+
+// Like ocrSpaceRun, no cleanKoreanOcrText() here — that filter exists to scrub
+// Tesseract garbage and would strip digits/Latin from otherwise-good output.
+async function paddleOcrRun(dataUrl, endpoint) {
+  let res;
+  try {
+    res = await fetch(`${endpoint}/ocr`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: dataUrl }),
+    });
+  } catch (_) {
+    return { ok: false, error: `PaddleOCR server unreachable at ${endpoint} — is it running? (see server/paddleocr/README.md)` };
+  }
+  if (!res.ok) return { ok: false, error: `PaddleOCR server HTTP ${res.status}` };
+  let json;
+  try {
+    json = await res.json();
+  } catch (_) {
+    return { ok: false, error: 'PaddleOCR server returned invalid JSON' };
+  }
+  if (!json.ok) return { ok: false, error: `PaddleOCR: ${json.error || 'unknown error'}` };
+  const text = (json.text || '').replace(/\s+/g, ' ').trim();
+  // Server reports confidence on the 0-100 scale (see bundle.js's confNorm).
+  const confidence = typeof json.confidence === 'number' ? json.confidence : null;
+  return { ok: true, text, confidence, provider: 'paddleocr' };
+}
+
 // ── Tesseract (offscreen document) ────────────────────────────────────────────
 
 let offscreenReady = null;
@@ -663,6 +770,100 @@ async function tesseractRun(dataUrl, isSingleLine = false) {
     await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
   }
   throw lastErr || new Error('OCR worker did not respond');
+}
+
+// ── PaddleOCR in-browser (offscreen document, see offscreen/paddle-runner.js) ─
+
+async function paddleLocalRun(dataUrl) {
+  if (!chrome.offscreen?.createDocument) {
+    return { ok: false, error: 'Offscreen API unavailable — reload extension (Chrome 109+)' };
+  }
+  await ensureOffscreen();
+  let lastErr = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'PADDLE_OCR_RUN', payload: { dataUrl } });
+      if (res) return res;
+      lastErr = new Error('PaddleOCR worker did not respond');
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
+  }
+  throw lastErr || new Error('PaddleOCR worker did not respond');
+}
+
+// ── PaddleOCR in-browser model download (Cache Storage API) ───────────────────
+// The packaged extension does NOT ship the ~15 MB det+rec ONNX files (they're
+// gitignored — see extension/models/README.md) because most users won't pick
+// this engine, and a Chrome-Web-Store-installed extension can't have files
+// written into its own package after install anyway. Instead, models are
+// fetched at runtime (from a GitHub Release of this repo) into the Cache
+// Storage API here in the service worker — a plain data fetch, which Web
+// Store policy explicitly allows (unlike fetching executable code).
+//
+// Cache Storage is same-origin (chrome-extension://<id>) regardless of which
+// extension context calls caches.open(), so offscreen/paddle-runner.js reads
+// the exact same cache when it builds the ONNX sessions — no message-passing
+// needed between this download step and actual OCR use.
+const PADDLE_MODELS_RELEASE = 'https://github.com/naeminhye/webtoon-translator/releases/download/paddle-models-v1/';
+const PADDLE_CACHE_NAME     = 'paddle-ocr-models-v1';
+const PADDLE_MODEL_FILES = {
+  det: { url: PADDLE_MODELS_RELEASE + 'paddle-det.onnx',        label: 'detector',   approxMB: 4.7 },
+  rec: { url: PADDLE_MODELS_RELEASE + 'paddle-rec-korean.onnx', label: 'recognizer', approxMB: 10.6 },
+};
+
+function broadcastPaddleModelsEvent(payload) {
+  chrome.runtime.sendMessage({ type: 'PADDLE_MODELS_EVENT', payload }, () => void chrome.runtime.lastError);
+}
+
+async function paddleModelsStatus() {
+  const cache = await caches.open(PADDLE_CACHE_NAME);
+  const status = { ok: true, downloading: _paddleDownloadInFlight };
+  for (const [key, { url }] of Object.entries(PADDLE_MODEL_FILES)) {
+    status[key] = (await cache.match(url)) ? 'cached' : 'missing';
+  }
+  return status;
+}
+
+let _paddleDownloadInFlight = false;
+
+async function paddleModelsDownload() {
+  if (_paddleDownloadInFlight) return { ok: false, error: 'A download is already in progress.' };
+  _paddleDownloadInFlight = true;
+  try {
+    const cache = await caches.open(PADDLE_CACHE_NAME);
+    for (const [key, { url, label }] of Object.entries(PADDLE_MODEL_FILES)) {
+      if (await cache.match(url)) {
+        broadcastPaddleModelsEvent({ stage: key, state: 'done', cached: true });
+        continue;
+      }
+      broadcastPaddleModelsEvent({ stage: key, state: 'downloading' });
+      let res;
+      try {
+        res = await fetch(url);
+      } catch (err) {
+        throw new Error(`Could not reach the ${label} model download (${err.message || err}) — check your connection.`);
+      }
+      if (!res.ok) throw new Error(`${label} model download failed: HTTP ${res.status}`);
+      await cache.put(url, res);
+      broadcastPaddleModelsEvent({ stage: key, state: 'done' });
+    }
+    broadcastPaddleModelsEvent({ stage: 'all', state: 'done' });
+    return { ok: true };
+  } catch (err) {
+    const error = err.message || String(err);
+    broadcastPaddleModelsEvent({ stage: 'error', state: 'error', error });
+    return { ok: false, error };
+  } finally {
+    _paddleDownloadInFlight = false;
+  }
+}
+
+async function paddleModelsClear() {
+  const cache = await caches.open(PADDLE_CACHE_NAME);
+  for (const { url } of Object.values(PADDLE_MODEL_FILES)) await cache.delete(url);
+  return { ok: true };
 }
 
 // ── Image fetch + crop (service-worker side, full cross-origin access) ────────

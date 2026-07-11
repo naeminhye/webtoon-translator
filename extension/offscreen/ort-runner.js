@@ -200,14 +200,20 @@ function nms(boxes, iouThresh) {
 // Main detection function
 // ---------------------------------------------------------------------------
 
-// Serialize detections: the WASM backend runs on one thread, so concurrent
-// session.run calls just interleave and slow each other down (and make the
-// per-stage timings meaningless).
-let _detectQueue = Promise.resolve();
+// Serialize ALL ONNX Runtime inference in this offscreen document — not just
+// detection jobs against each other. onnxruntime-web's WebGPU EP throws
+// "Session mismatch" if .run() is called concurrently across *different*
+// sessions sharing the same GPU device/queue (this bubble detector's session
+// vs paddle-runner.js's det/rec sessions — e.g. auto-detect scanning bubbles
+// while a PaddleOCR request is also in flight). self._ortJobQueue is the
+// single shared queue every ORT-calling file in this document chains onto;
+// declared via `self.` (not `let`) so it's unambiguously visible to
+// paddle-runner.js regardless of <script> load order or scoping subtleties.
+self._ortJobQueue ??= Promise.resolve();
 
 function runDetection(payload) {
-  const job = _detectQueue.then(() => _runDetection(payload));
-  _detectQueue = job.catch(() => {}); // keep queue alive after a failed job
+  const job = self._ortJobQueue.then(() => _runDetection(payload));
+  self._ortJobQueue = job.catch(() => {}); // keep queue alive after a failed job
   return job;
 }
 
