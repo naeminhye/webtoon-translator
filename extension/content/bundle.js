@@ -495,6 +495,7 @@ class FixedOverlayLayer {
     this._images = images;
     this._active = true;
     this._el.style.display = 'block';
+    this._resize();
     this._updateBubbleVisibility();
   }
 
@@ -530,9 +531,52 @@ class FixedOverlayLayer {
   }
 
   repositionAll() {
+    if (this._active) this._resize();
     this._bubbles.forEach(({ el, img, annotation }) => {
       this._positionBubble(el, annotation.bbox, img);
     });
+  }
+
+  /**
+   * Shrink the overlay to the bounding box of the panel images currently
+   * visible in the viewport, rather than covering the whole screen.
+   *
+   * Ridi (and other fixed-overlay viewers) render the comic as a centered
+   * column with page-navigation arrows and toolbars sitting in the margins
+   * around it. A full-viewport overlay swallows clicks on those controls once
+   * Quick OCR is active, so the reader can no longer page left/right. Clamping
+   * the overlay to just the content column leaves the margins clickable while
+   * still covering every panel the user can actually select text on.
+   *
+   * Falls back to the full viewport when no panel is currently on-screen (e.g.
+   * images still lazy-loading) so click-to-detect keeps working meanwhile.
+   */
+  _resize() {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+    for (const img of this._liveImages()) {
+      const r = img.getBoundingClientRect();
+      if (r.width < 100 || r.height < 100) continue;
+      if (r.bottom <= 0 || r.top >= vh || r.right <= 0 || r.left >= vw) continue; // off-screen
+      left   = Math.min(left, r.left);
+      top    = Math.min(top, r.top);
+      right  = Math.max(right, r.right);
+      bottom = Math.max(bottom, r.bottom);
+    }
+    const s = this._el.style;
+    if (!isFinite(left)) {
+      s.left = '0'; s.top = '0'; s.width = '100%'; s.height = '100%';
+      return;
+    }
+    // Clamp to the viewport so the overlay never spills past the visible content.
+    left   = Math.max(0, left);
+    top    = Math.max(0, top);
+    right  = Math.min(vw, right);
+    bottom = Math.min(vh, bottom);
+    s.left   = `${left}px`;
+    s.top    = `${top}px`;
+    s.width  = `${Math.max(0, right - left)}px`;
+    s.height = `${Math.max(0, bottom - top)}px`;
   }
 
   setVisible(visible) {
