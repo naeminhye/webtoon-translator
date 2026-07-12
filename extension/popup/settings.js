@@ -215,7 +215,7 @@ async function initOcrSettings() {
 
 async function initTranslationSettings() {
   const stored = await chrome.storage.local.get({
-    [TRANSLATE_PROVIDER_KEY]: 'google',
+    [TRANSLATE_PROVIDER_KEY]: 'chrome-builtin',
     [TRANSLATE_LANG_KEY]:     'vi',
     [BYOK_KEY_STR]:           '',
     [BYOK_PROVIDER_KEY]:      '',
@@ -228,14 +228,107 @@ async function initTranslationSettings() {
   function applyProvider(provider) {
     radios.forEach(r => { r.checked = r.value === provider; });
     $('byok-key-row').classList.toggle('hidden', provider !== 'byok');
+    $('chrome-builtin-row').classList.toggle('hidden', provider !== 'chrome-builtin');
+    if (provider === 'chrome-builtin') refreshChromeBuiltinStatus();
   }
+
+  // ── Chrome built-in Translator status (source is always Korean — this
+  // extension only ever OCRs Korean webtoon dialogue) ─────────────────────
+  // Availability is per source→target language PAIR, not a one-time global
+  // download like the OCR models, so this is checked live against the API
+  // itself rather than driven by a Cache-Storage-backed download flow. This
+  // settings page is a real top-level-window extension page (opened via
+  // chrome.tabs.create), which is exactly the context the Translator API
+  // requires — no offscreen-document indirection needed, unlike OCR/detection.
+  function setChromeBuiltinDot(state) {
+    const dot = $('chrome-builtin-dot');
+    dot.classList.remove('is-ready', 'is-downloading', 'is-error');
+    if (state === 'ready' || state === 'downloading' || state === 'error') dot.classList.add(`is-${state}`);
+  }
+
+  async function refreshChromeBuiltinStatus() {
+    const langName = $('target-lang').selectedOptions[0]?.textContent || $('target-lang').value;
+    $('chrome-builtin-lang-name').textContent = langName;
+    $('chrome-builtin-error').classList.add('hidden');
+    const btn = $('chrome-builtin-download-btn');
+
+    if (!('Translator' in self)) {
+      setChromeBuiltinDot('error');
+      $('chrome-builtin-text').textContent = 'unsupported browser';
+      btn.disabled = true;
+      btn.textContent = 'Download model';
+      return;
+    }
+
+    setChromeBuiltinDot('downloading'); // "checking…" reuses the pulsing dot
+    $('chrome-builtin-text').textContent = 'checking…';
+    try {
+      const availability = await Translator.availability({ sourceLanguage: 'ko', targetLanguage: $('target-lang').value });
+      if (availability === 'available') {
+        setChromeBuiltinDot('ready');
+        $('chrome-builtin-text').textContent = 'ready';
+        btn.disabled = true;
+        btn.textContent = 'Model ready';
+      } else if (availability === 'downloadable') {
+        setChromeBuiltinDot(null);
+        $('chrome-builtin-text').textContent = 'not downloaded';
+        btn.disabled = false;
+        btn.textContent = 'Download model';
+      } else if (availability === 'downloading') {
+        setChromeBuiltinDot('downloading');
+        $('chrome-builtin-text').textContent = 'downloading…';
+        btn.disabled = true;
+        btn.textContent = 'Downloading…';
+      } else {
+        setChromeBuiltinDot('error');
+        $('chrome-builtin-text').textContent = 'unsupported language';
+        btn.disabled = true;
+        btn.textContent = 'Download model';
+      }
+    } catch (err) {
+      setChromeBuiltinDot('error');
+      $('chrome-builtin-text').textContent = 'error';
+      $('chrome-builtin-error').textContent = err?.message || 'Could not check model availability.';
+      $('chrome-builtin-error').classList.remove('hidden');
+      btn.disabled = true;
+    }
+  }
+
+  $('chrome-builtin-download-btn').addEventListener('click', async () => {
+    const btn = $('chrome-builtin-download-btn');
+    btn.disabled = true;
+    btn.textContent = 'Downloading…';
+    setChromeBuiltinDot('downloading');
+    $('chrome-builtin-text').textContent = 'downloading…';
+    $('chrome-builtin-error').classList.add('hidden');
+    try {
+      const translator = await Translator.create({
+        sourceLanguage: 'ko',
+        targetLanguage: $('target-lang').value,
+        monitor(m) {
+          m.addEventListener('downloadprogress', (e) => {
+            $('chrome-builtin-text').textContent = `downloading… ${Math.round(e.loaded * 100)}%`;
+          });
+        },
+      });
+      translator.destroy?.();
+      await refreshChromeBuiltinStatus();
+    } catch (err) {
+      setChromeBuiltinDot('error');
+      $('chrome-builtin-text').textContent = 'download failed';
+      $('chrome-builtin-error').textContent = err?.message || 'Model download failed.';
+      $('chrome-builtin-error').classList.remove('hidden');
+      btn.disabled = false;
+      btn.textContent = 'Download model';
+    }
+  });
 
   // "none" (Disabled) and "deepl" were removed as options — fall a stored
   // legacy value back to the default provider so the UI doesn't render with
   // nothing selected, and persist the fallback so it sticks.
   let initialProvider = stored[TRANSLATE_PROVIDER_KEY];
   if (initialProvider === 'none' || initialProvider === 'deepl') {
-    initialProvider = 'google';
+    initialProvider = 'chrome-builtin';
     chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: initialProvider });
   }
   applyProvider(initialProvider);
@@ -299,6 +392,9 @@ async function initTranslationSettings() {
 
   $('target-lang').addEventListener('change', async (e) => {
     await chrome.storage.local.set({ [TRANSLATE_LANG_KEY]: e.target.value });
+    // Availability is per language pair — re-check against the new target
+    // whenever Chrome Built-in AI is the active provider.
+    if ([...radios].find(r => r.checked)?.value === 'chrome-builtin') refreshChromeBuiltinStatus();
   });
 
   // Debounced autosave for text inputs so we don't hammer storage per keystroke.

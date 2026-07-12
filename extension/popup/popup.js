@@ -4,8 +4,17 @@ const __DEV_TOOLS__ = true;
 
 const $ = id => document.getElementById(id);
 const ENABLED_KEY = 'wt:enabled';
+const THEME_KEY   = 'wt:settings-theme'; // shares the same key settings.js's initTheme writes
 
 let activeTabId = null;
+
+// No toggle here — just follow whatever the user already picked in Settings
+// (theme.css falls back to prefers-color-scheme when nothing's stored), so
+// the popup doesn't visually diverge from the settings page.
+async function applyStoredTheme() {
+  const stored = await chrome.storage.local.get({ [THEME_KEY]: '' });
+  if (stored[THEME_KEY]) document.documentElement.setAttribute('data-theme', stored[THEME_KEY]);
+}
 
 function applyEnabledUI(enabled) {
   $('enabled-toggle').checked = enabled;
@@ -40,6 +49,7 @@ function refreshMeta() {
 }
 
 async function init() {
+  applyStoredTheme();
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab?.id ?? null;
 

@@ -3747,10 +3747,38 @@ function stitchClips(clips) {
   }
 }
 
+// Chrome's built-in on-device Translator API — desktop Chrome only, and NOT
+// available in Web Workers. This content script runs as a real document
+// (attached to the page), which is exactly the context the API requires, so
+// it's called directly here with no offscreen-document detour (unlike OCR/
+// detection, which need the offscreen doc specifically because the
+// background service worker — a true worker context — can't run them).
+// Source is always Korean — this extension only ever OCRs Korean webtoon
+// text. One Translator instance is cached per target language since creating
+// one can be comparatively expensive (may resolve/attach the on-device
+// model); translate() calls on an existing instance are cheap.
+const _chromeTranslatorCache = new Map(); // targetLang -> Promise<Translator>
+
+async function chromeBuiltinTranslate(text, targetLang) {
+  if (!('Translator' in self)) throw new Error('Chrome built-in Translator API not available in this browser/context');
+  const availability = await Translator.availability({ sourceLanguage: 'ko', targetLanguage: targetLang });
+  if (availability === 'unavailable') throw new Error(`No on-device model available for ko→${targetLang}`);
+  if (!_chromeTranslatorCache.has(targetLang)) {
+    _chromeTranslatorCache.set(targetLang, Translator.create({ sourceLanguage: 'ko', targetLanguage: targetLang }));
+  }
+  try {
+    const translator = await _chromeTranslatorCache.get(targetLang);
+    return await translator.translate(text);
+  } catch (err) {
+    _chromeTranslatorCache.delete(targetLang); // don't keep a broken/rejected instance cached for next time
+    throw err;
+  }
+}
+
 // forceLlm: caller (runTranslate) has already decided to use LLM — skip provider check
 async function autoTranslate(text, { job, storyCtx, forceLlm = false, forceGoogle = false } = {}) {
   const s = await chrome.storage.local.get({
-    'wt:translate-provider': 'google',
+    'wt:translate-provider': 'chrome-builtin',
     'wt:translate-lang':     'vi',
     'wt:byok-key':           '',
     'wt:byok-provider':      '',
@@ -3772,6 +3800,18 @@ async function autoTranslate(text, { job, storyCtx, forceLlm = false, forceGoogl
     if (job) { job._translateProvider = 'byok'; }
     const prompt = formatLlmPrompt(storyCtx ?? null, text, targetLang);
     return llmAdapter.callApi(apiKey, model, prompt);
+  }
+
+  if (provider === 'chrome-builtin') {
+    try {
+      const translated = await chromeBuiltinTranslate(text, targetLang);
+      if (translated) return translated;
+    } catch (err) {
+      // Unsupported browser, unsupported language pair, or a genuine API
+      // failure — fall back to Google rather than erroring out every bubble,
+      // same philosophy as the BYOK LLM-failure fallback below.
+      console.warn('[WebtoonTranslate] Chrome built-in Translator failed, falling back to Google:', err?.message || err);
+    }
   }
 
   // Google Translate (unofficial free endpoint)
@@ -3845,7 +3885,7 @@ function preprocessImageForVision(dataUrl, levels = 8) {
 // Returns the translated string, or null if BYOK is not configured or fails.
 async function visionOcrTranslate(dataUrl, storyCtx = null) {
   const s = await chrome.storage.local.get({
-    'wt:translate-provider': 'google',
+    'wt:translate-provider': 'chrome-builtin',
     'wt:byok-key':           '',
     'wt:byok-provider':      '',
     'wt:byok-model':         '',
@@ -4282,6 +4322,7 @@ function bootForPage() {
     lines.push('');
     lines.push('# Instructions');
     lines.push('Review the translations above for accuracy and naturalness.');
+    lines.push(`Use pronouns and forms of address that are culturally appropriate for ${targetLang} (e.g. age/status-based honorifics, dropped vs. explicit pronouns) rather than a literal carryover from the source language.`);
     lines.push('Output ONLY the lines that need correction, one per line:');
     lines.push('  [N] corrected translation');
     lines.push('Skip any bubble that is already correct. No explanations.');
@@ -4791,7 +4832,7 @@ function bootForPage() {
       return text;
     },
     runTranslate: async (job) => {
-      const s = await chrome.storage.local.get({ 'wt:translate-provider': 'google', 'wt:byok-mode': 'always' });
+      const s = await chrome.storage.local.get({ 'wt:translate-provider': 'chrome-builtin', 'wt:byok-mode': 'always' });
       const prov     = s['wt:translate-provider'];
       const byokMode = s['wt:byok-mode'];
       // In smart mode, only route hard/vision tier to LLM; easy/medium use Google.
@@ -5283,7 +5324,7 @@ function bootForPage() {
     // applies when BYOK is the selected Translation API with a key saved.
     // Never wired into automatic translation; see LlmTestPopover/callByokLlm.
     (async () => {
-      const s = await chrome.storage.local.get({ 'wt:translate-provider': 'google', 'wt:byok-key': '' });
+      const s = await chrome.storage.local.get({ 'wt:translate-provider': 'chrome-builtin', 'wt:byok-key': '' });
       if (s['wt:translate-provider'] !== 'byok' || !s['wt:byok-key']) return;
       if (_activeToolbar?.el !== toolbar) return; // toolbar dismissed/replaced while we awaited
       const btn = document.createElement('button');

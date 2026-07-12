@@ -118,8 +118,30 @@ function getSession() {
   return _sessionPromise;
 }
 
-// Kick off warm-up immediately when offscreen document loads.
-getSession().catch(err => console.warn('[ort-runner] warm-up failed:', err));
+// Serialize ALL ONNX Runtime inference in this offscreen document — not just
+// detection jobs against each other. onnxruntime-web's WebGPU EP throws
+// "Session mismatch" if .run() is called concurrently across *different*
+// sessions sharing the same GPU device/queue (this bubble detector's session
+// vs paddle-runner.js's det/rec sessions). self._ortJobQueue is the single
+// shared queue every ORT-calling file in this document chains onto; declared
+// via `self.` (not `let`) so it's unambiguously visible to paddle-runner.js
+// regardless of <script> load order or scoping subtleties. Declared here
+// (rather than only further down, near runDetection) specifically so the
+// eager warm-up kick-off below can chain onto it too — calling getSession()
+// directly here would bypass the queue entirely, which was a real observed
+// cause of "Session mismatch": this warm-up firing at document-load time
+// while a PaddleOCR request (already properly queued on its own end) is
+// mid-.run() on the same WebGPU device.
+self._ortJobQueue ??= Promise.resolve();
+
+// Kick off warm-up immediately when offscreen document loads — chained onto
+// self._ortJobQueue (not called directly) so it can't race a concurrent
+// PaddleOCR session already using the WebGPU device. .catch handles the
+// rejection here (rather than letting it propagate) so a failed warm-up
+// doesn't poison the queue for whatever chains onto it next.
+self._ortJobQueue = self._ortJobQueue
+  .then(() => getSession())
+  .catch(err => console.warn('[ort-runner] warm-up failed:', err));
 
 // ---------------------------------------------------------------------------
 // Preprocess: dataUrl → Float32Array CHW tensor + letterbox metadata
@@ -244,17 +266,9 @@ function nms(boxes, iouThresh) {
 // Main detection function
 // ---------------------------------------------------------------------------
 
-// Serialize ALL ONNX Runtime inference in this offscreen document — not just
-// detection jobs against each other. onnxruntime-web's WebGPU EP throws
-// "Session mismatch" if .run() is called concurrently across *different*
-// sessions sharing the same GPU device/queue (this bubble detector's session
-// vs paddle-runner.js's det/rec sessions — e.g. auto-detect scanning bubbles
-// while a PaddleOCR request is also in flight). self._ortJobQueue is the
-// single shared queue every ORT-calling file in this document chains onto;
-// declared via `self.` (not `let`) so it's unambiguously visible to
-// paddle-runner.js regardless of <script> load order or scoping subtleties.
-self._ortJobQueue ??= Promise.resolve();
-
+// self._ortJobQueue is declared near the top of this file (see the eager
+// warm-up section) so it can also cover that kick-off — every actual
+// detection job chains onto the same queue here too.
 function runDetection(payload) {
   const job = self._ortJobQueue.then(() => _runDetection(payload));
   self._ortJobQueue = job.catch(() => {}); // keep queue alive after a failed job

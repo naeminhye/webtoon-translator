@@ -305,6 +305,18 @@ const OCR_TEXT_MERGE_SIZE_RATIO       = 0.45; // a block whose own bbox area is 
 // before the size-ratio / distance merge pass, so they can't be pulled in as
 // "large blocks" even when their bbox area meets OCR_TEXT_MERGE_SIZE_RATIO.
 const OCR_TEXT_MIN_BLOB_DENSITY       = 0.15; // needs tuning against real screenshots of various bubble border styles
+// A short run of characters that shares most of its vertical extent with an
+// already-included block is almost certainly on the SAME line of dialogue
+// (e.g. a Latin acronym/loanword like "UDT" immediately preceding a Hangul
+// clause) — regardless of how many px of horizontal word-gap separate them,
+// which OCR_TEXT_MERGE_DISTANCE_PX alone can't account for (a normal
+// interword space can easily exceed 14px next to a large or upscaled crop).
+// Bubble-border arcs and adjacent-panel bleed are already excluded upstream
+// by the density pre-filter and, in the ordinary case, sit at a different
+// vertical position (a different line/row) than the main text — so this
+// check is layered on top of, not instead of, the existing size/distance
+// rules, not a loosening of them.
+const OCR_TEXT_SAME_LINE_OVERLAP_RATIO = 0.5; // needs tuning against real screenshots
 const OCR_TEXT_MIN_CLUSTER_W_PX       = 10;   // px — reject a merged cluster narrower than this as noise, not text
 const OCR_TEXT_MIN_CLUSTER_H_PX       = 8;    // px — reject a merged cluster shorter than this as noise, not text
 const OCR_TEXT_MIN_CLUSTER_AREA_RATIO = 0.02; // merged cluster bbox area / full crop area — reject specks too small relative to the crop to plausibly be the dialogue
@@ -408,6 +420,14 @@ function _componentGap(a, b) {
   return Math.max(dx, dy);
 }
 
+/** Fraction of the SHORTER block's height that the two blocks' Y-ranges overlap — 0 if they don't overlap at all. */
+function _verticalOverlapRatio(a, b) {
+  const overlap = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY) + 1;
+  if (overlap <= 0) return 0;
+  const shorterHeight = Math.min(a.maxY - a.minY + 1, b.maxY - b.minY + 1);
+  return overlap / shorterHeight;
+}
+
 /**
  * Decides which raw text-block components belong in the final merged
  * dialogue bbox, and returns that single merged bbox (or null if `components`
@@ -425,6 +445,12 @@ function _componentGap(a, b) {
  * to it; one far away is more likely noise. Distance-qualified inclusion is
  * iterated to a fixed point, since including one small block can bring
  * another, farther small block within range of the (now bigger) cluster.
+ *
+ * A block below the size ratio ALSO qualifies if it shares most of its
+ * vertical extent with an already-included block (same text line), even
+ * beyond the gap-distance threshold — e.g. a short Latin acronym/loanword
+ * immediately preceding a much longer Hangul clause, where the interword gap
+ * alone can exceed `mergeDistancePx`. See OCR_TEXT_SAME_LINE_OVERLAP_RATIO.
  *
  * `decisions` (returned for [OcrCropRefine] logging/tuning) records every
  * candidate block's area ratio, gap-to-cluster, and why it was in/excluded.
@@ -457,9 +483,12 @@ function _mergeNearbyComponents(components, mergeDistancePx, sizeRatioThreshold)
     }
   }
 
-  // Pass 2: remaining (small) blocks — include only if within gap distance of
-  // an already-included block, iterating since one merge can pull another
-  // small block into range.
+  // Pass 2: remaining (small) blocks — include if within gap distance of an
+  // already-included block, OR if it shares most of its vertical extent with
+  // one (same text line — see OCR_TEXT_SAME_LINE_OVERLAP_RATIO above; a short
+  // Latin acronym/loanword preceding a much longer Hangul clause on the same
+  // line can easily exceed the absolute px gap threshold otherwise). Iterated
+  // since one merge can pull another small block into range/line.
   const remaining = blocks.filter(b => !included.includes(b));
   let changed = true;
   while (changed) {
@@ -467,9 +496,10 @@ function _mergeNearbyComponents(components, mergeDistancePx, sizeRatioThreshold)
     for (const b of remaining) {
       if (included.includes(b)) continue;
       const gap = Math.min(...included.map(o => _componentGap(b, o)));
-      if (gap <= mergeDistancePx) {
+      const sameLine = included.some(o => _verticalOverlapRatio(b, o) >= OCR_TEXT_SAME_LINE_OVERLAP_RATIO);
+      if (gap <= mergeDistancePx || sameLine) {
         included.push(b);
-        decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +(b.area / maxBlockArea).toFixed(3), density: +(b.pixelCount / b.area).toFixed(3), gap, includedBy: 'distance', included: true });
+        decisions.push({ minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY, areaRatio: +(b.area / maxBlockArea).toFixed(3), density: +(b.pixelCount / b.area).toFixed(3), gap, includedBy: sameLine && gap > mergeDistancePx ? 'same-line' : 'distance', included: true });
         changed = true;
       }
     }

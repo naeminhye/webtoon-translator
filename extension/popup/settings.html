@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Webtoon Translator — Settings</title>
+  <link rel="stylesheet" href="theme.css" />
   <link rel="stylesheet" href="settings.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -259,6 +260,14 @@
 
       <div class="field-label" style="margin-bottom:8px">Translation API</div>
       <div class="engine-grid">
+        <label class="engine-card" id="card-chrome-builtin">
+          <input type="radio" name="translate-provider" value="chrome-builtin" class="engine-radio" checked />
+          <div class="engine-card-inner">
+            <div class="engine-card-top-row"><div class="engine-name">Chrome Built-in AI</div></div>
+            <div class="engine-badge engine-badge-offline">Free · Offline · No key needed</div>
+            <p class="engine-detail">Uses Chrome's on-device Translator API. Fully private and works offline once the language model is downloaded. Desktop Chrome only — unsupported browsers/language pairs fall back to Google Translate automatically.</p>
+          </div>
+        </label>
         <label class="engine-card">
           <input type="radio" name="translate-provider" value="google" class="engine-radio" />
           <div class="engine-card-inner">
@@ -275,6 +284,23 @@
             <p class="engine-detail">Use your own LLM API key (OpenAI, Anthropic, etc). Translates automatically with story context for better accuracy.</p>
           </div>
         </label>
+      </div>
+
+      <!-- Chrome built-in model status (shown when Chrome Built-in AI selected) -->
+      <div id="chrome-builtin-row" class="field-block hidden">
+        <div class="field-label">On-device Model (Korean → Target Language)</div>
+        <div class="model-status">
+          <div class="model-status-row">
+            <span class="model-status-dot" id="chrome-builtin-dot"></span>
+            <span class="model-status-name">Korean → <span id="chrome-builtin-lang-name">—</span></span>
+            <span class="model-status-text" id="chrome-builtin-text">checking…</span>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button type="button" id="chrome-builtin-download-btn" class="btn-primary" disabled>Download model</button>
+        </div>
+        <p id="chrome-builtin-error" class="field-error hidden"></p>
+        <p class="field-hint">Re-checked automatically whenever you change the target language below.</p>
       </div>
 
       <!-- BYOK API key + model (shown when Bring Your Own Key selected) -->
