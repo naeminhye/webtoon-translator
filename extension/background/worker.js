@@ -636,9 +636,17 @@ async function handleOcr({ dataUrl, imageUrl, bbox, refineCrop = true }) {
 // Strip non-Korean noise from OCR output while preserving valid Korean text
 // and common punctuation. Applied post-OCR to remove garbage characters from
 // bubble tails or adjacent panel content bleeding into the crop region.
+//
+// Latin letters (A-Za-z) and digits (0-9) are kept, NOT stripped: Korean
+// webtoon dialogue routinely mixes them in — acronyms/loanwords like "UDT",
+// "SNS", counts like "30000" — and this is the same content the eng model was
+// added alongside kor to read (see offscreen/ocr.js). An earlier Hangul-only
+// whitelist here silently deleted them again after OCR, so e.g. "UDT에서 …"
+// came back as "에서 …". The remaining filter still scrubs the CJK/symbol
+// junk (adjacent-panel bleed, bubble-tail artefacts) that motivated it.
 function cleanKoreanOcrText(text) {
   const cleaned = text
-    .replace(/[^가-힣ㄱ-ㅎㅏ-ㅣ\s.,!?…~‼！。、·『』「」\-]/g, ' ')
+    .replace(/[^가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9\s.,!?…~‼！。、·『』「」\-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return cleaned;
