@@ -22,6 +22,7 @@ const MSG    = {
   GET_STORAGE_USAGE: 'GET_STORAGE_USAGE',
   CROP_IMAGE:        'CROP_IMAGE',
   DETECT_BUBBLES:    'DETECT_BUBBLES',
+  DISCARD_OCR_STAT:  'DISCARD_OCR_STAT',
 };
 
 // Background opacity for the translation caption box — a fully-opaque overlay
@@ -591,7 +592,7 @@ class FixedOverlayLayer {
       const w = Math.abs(e.clientX - this._drag.startX);
       const h = Math.abs(e.clientY - this._drag.startY);
       this._selRect.style.cssText = `position:fixed;left:${x}px;top:${y}px;width:${w}px;height:${h}px;` +
-        `border:2px solid rgba(99,102,241,0.9);background:rgba(99,102,241,0.12);pointer-events:none;z-index:99999;box-sizing:border-box;`;
+        `border:2px solid oklch(from var(--wt-accent) l c h / 0.9);background:oklch(from var(--wt-accent) l c h / 0.12);pointer-events:none;z-index:99999;box-sizing:border-box;`;
     });
 
     document.addEventListener('mouseup', (e) => {
@@ -2100,7 +2101,7 @@ class JobManager {
     this._ocrChainTail   = Promise.resolve(); // serializes OCR across jobs
   }
 
-  async create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey = null, skewAngle = null, source = 'manual' }) {
+  async create({ bbox, imageEl, imageIndex, clips, screenPos, existingAnnKey = null, skewAngle = null, source = 'manual', score = null, clipped = false }) {
     const { w: natW, h: natH } = bboxNaturalSize(bbox, imageEl);
     if (natW < MIN_OCR_NATURAL_PX || natH < MIN_OCR_NATURAL_PX) {
       this._onTooSmall?.({ bbox, imageEl, imageIndex, natW, natH });
@@ -2119,6 +2120,7 @@ class JobManager {
       bbox, imageEl, imageIndex, clips, existingAnnKey,
       skewAngle, // difficulty-classifier signal from auto-detect; null for manual drag-select (no flood-fill contour to measure) — see runOcr's shadow-mode classification call
       source, // 'auto' (flood-fill detected) | 'manual' (drag-select or hand-resize, default) — gates the OCR-crop inset/text-cluster refinement in runOcr, which only make sense for a flood-fill shape's bbox
+      score, clipped, // ONNX auto-detect only ('onnx-detect' source) — lets a later, less-clipped tile detection of the same bubble replace this job in place while still 'queued', instead of being dropped as "already covered" (see onDetectedBoxes' replaceClippedQueuedJob)
       status: 'queued', // queued -> ocr -> translating -> done | error
       originalText: '', translatedText: '', errorMessage: '',
       cancelled: false, createdAt: Date.now(),
@@ -2664,12 +2666,19 @@ class OverlayRenderer {
     if (this.imageState.has(img)) return this.imageState.get(img).wrapper;
     let wrapper = img.parentElement;
     if (!wrapper?.classList.contains('wt-img-wrapper')) {
+      // Capture the rendered width BEFORE reparenting, while img is still laid
+      // out under its original parent, and apply it to the wrapper immediately.
+      // A block-level div with no width set renders at its new parent's full
+      // width until _syncWrapperWidth's ResizeObserver callback corrects it a
+      // frame later — that unset-then-corrected flash is the CLS this avoids
+      // (reported against div.wt-img-wrapper). The observer below still fires
+      // for genuine later resizes (e.g. Bomtoon dynamically scaling the
+      // canvas); this only fixes the very first, avoidable jump.
+      const knownWidth = img.getBoundingClientRect().width;
       wrapper = document.createElement('div');
       wrapper.className = 'wt-img-wrapper';
-      // Base styles — width is NOT set here; _syncWrapperWidth handles it once
-      // the element is laid out (offsetWidth > 0). Setting width to an intrinsic
-      // canvas.width that differs from the rendered size misaligns all bubbles.
       wrapper.style.cssText = 'position:relative;display:block;line-height:0;margin:0 auto;padding:0;';
+      if (knownWidth > 0) wrapper.style.width = `${knownWidth}px`;
       img.parentElement.insertBefore(wrapper, img);
       wrapper.appendChild(img);
       img.style.display = 'block';
@@ -2857,7 +2866,7 @@ class SidePanel {
       <div class="wt-sp-header">
         <div class="wt-sp-title">
           <span class="wt-sp-logo">📖</span>
-          <span>Webtoon Translate</span>
+          <span>Webtoon Translator</span>
         </div>
         <button class="wt-sp-close" title="Close panel">&#x2715;</button>
       </div>
@@ -4209,7 +4218,7 @@ function bootForPage() {
 
     const copyBtn = document.createElement('button');
     copyBtn.textContent = 'Copy';
-    copyBtn.style.cssText = 'background:#6366f1;color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer;';
+    copyBtn.style.cssText = 'background:var(--wt-accent);color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer;';
     hdr.appendChild(copyBtn);
     note.appendChild(hdr);
 
@@ -4317,7 +4326,7 @@ function bootForPage() {
     if (isKakao) return;
     chrome.storage.local.get({ [SCAN_HINT_KEY]: false }).then((stored) => {
       if (stored[SCAN_HINT_KEY]) return;
-      showToast('💡 Click to auto-detect a bubble, or drag to select a region manually', '#6366f1', 4500);
+      showToast('💡 Click to auto-detect a bubble, or drag to select a region manually', 'var(--wt-accent)', 4500);
       chrome.storage.local.set({ [SCAN_HINT_KEY]: true });
     });
   }
@@ -4385,10 +4394,10 @@ function bootForPage() {
     if (!bar) {
       bar = document.createElement('div');
       bar.id = 'wt-progress-bar';
-      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99998;height:3px;background:rgba(99,102,241,0.15);pointer-events:none;';
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99998;height:3px;background:oklch(from var(--wt-accent) l c h / 0.15);pointer-events:none;';
       const fill = document.createElement('div');
       fill.id = 'wt-progress-fill';
-      fill.style.cssText = 'height:100%;background:#6366f1;transition:width 0.3s;width:0%;';
+      fill.style.cssText = 'height:100%;background:var(--wt-accent);transition:width 0.3s;width:0%;';
       bar.appendChild(fill);
       document.body.appendChild(bar);
     }
@@ -4458,7 +4467,7 @@ function bootForPage() {
         // bubbles translated in a previous session. Gated by the
         // wt:auto-detect setting (toggle in the settings page, live-applied
         // via the storage listener below).
-        chrome.storage.local.get({ [AUTO_DETECT_KEY]: true }, (res) => {
+        chrome.storage.local.get({ [AUTO_DETECT_KEY]: false }, (res) => {
           bubbleDetector.reset();
           if (res[AUTO_DETECT_KEY]) {
             bubbleDetector.onBoxes = onDetectedBoxes;
@@ -4660,6 +4669,14 @@ function bootForPage() {
         const confOk    = typeof confidence !== 'number' || confidence >= 55;
         if (!trimmed || !hasHangul || !confOk) {
           console.log(`[WebtoonTranslate] auto-detect region dropped (conf=${confidence ?? '?'}, text="${trimmed.slice(0, 30)}")`);
+          // The OCR_REGION round-trip above already recorded this call into
+          // the Settings confidence stats (worker.js's single choke point,
+          // before this gate ever runs) — reverse that entry now that it's
+          // known to be a discarded false positive, so garbage auto-detect
+          // crops don't permanently drag down the displayed average.
+          if (provider) {
+            chrome.runtime.sendMessage({ type: MSG.DISCARD_OCR_STAT, payload: { provider, confidence } }, () => void chrome.runtime.lastError);
+          }
           jobManager.cancel(job.id);
           return '';
         }
@@ -4749,13 +4766,13 @@ function bootForPage() {
     // (startBubbleResize) job creation all funnel through. A bbox with no
     // `source` (manual drag-select or a hand-resized box — neither ever went
     // through flood-fill) defaults to 'manual'.
-    const { skewAngle, source = 'manual', ...cleanBbox } = bbox;
+    const { skewAngle, source = 'manual', score = null, clipped = false, ...cleanBbox } = bbox;
     const rect = imageEl.getBoundingClientRect();
     const screenPos = {
       x: rect.left + window.scrollX + (cleanBbox.x / 100) * rect.width,
       y: rect.top  + window.scrollY + (cleanBbox.y / 100) * rect.height,
     };
-    return jobManager.create({ bbox: cleanBbox, imageEl, imageIndex, clips, screenPos, existingAnnKey, skewAngle, source });
+    return jobManager.create({ bbox: cleanBbox, imageEl, imageIndex, clips, screenPos, existingAnnKey, skewAngle, source, score, clipped });
   }
 
   // ── ONNX bubble detection → auto OCR jobs ──────────────────────────────────
@@ -4782,12 +4799,14 @@ function bootForPage() {
         x1: b.x1 - ONNX_MERGE_PAD, y1: b.y1 - ONNX_MERGE_PAD,
         x2: b.x2 + ONNX_MERGE_PAD, y2: b.y2 + ONNX_MERGE_PAD,
         score: b.score,
+        clipped: !!b.clipped,
       };
       const hit = merged.find(m => p.x1 < m.x2 && p.x2 > m.x1 && p.y1 < m.y2 && p.y2 > m.y1);
       if (hit) {
         hit.x1 = Math.min(hit.x1, p.x1); hit.y1 = Math.min(hit.y1, p.y1);
         hit.x2 = Math.max(hit.x2, p.x2); hit.y2 = Math.max(hit.y2, p.y2);
         hit.score = Math.max(hit.score, p.score);
+        hit.clipped = hit.clipped || p.clipped;
       } else {
         merged.push(p);
       }
@@ -4798,6 +4817,7 @@ function bootForPage() {
       x1: m.x1 + UNPAD, y1: m.y1 + UNPAD,
       x2: m.x2 - UNPAD, y2: m.y2 - UNPAD,
       score: m.score,
+      clipped: m.clipped,
     }));
   }
 
@@ -4844,7 +4864,6 @@ function bootForPage() {
       if (bw < ONNX_MIN_BOX_PX || bh < ONNX_MIN_BOX_PX) continue;
       if (bw > ONNX_MAX_BOX_PX || bh > ONNX_MAX_BOX_PX) continue;
       if (b.score < ONNX_AUTO_MIN_SCORE) continue;
-      if (overlapsExistingOnPage(b)) continue;
 
       // Locate the panel image containing the box centre.
       const cx = (b.x1 + b.x2) / 2;
@@ -4867,15 +4886,46 @@ function bootForPage() {
         w: Math.min(100, ((b.x2 - b.x1) / r.width)  * 100),
         h: Math.min(100, ((b.y2 - b.y1) / r.height) * 100),
         source: 'onnx-detect',
+        score: b.score,
+        clipped: !!b.clipped,
       };
+
+      // A bubble straddling a tile boundary can be truncated in one tile and
+      // fully captured in the adjacent overlapping tile; tiles resolve
+      // concurrently in no guaranteed order, so the truncated detection can
+      // otherwise win the race and lock in a bad crop before the better one
+      // arrives. Checked BEFORE the general overlap bail-outs below (which
+      // would otherwise discard this box first, since it overlaps that same
+      // queued job): if this new box isn't clipped and it overlaps a job
+      // that's still queued (not yet OCR'd) from an earlier, clipped
+      // detection, swap that job onto the better box instead of discarding
+      // this one as "already covered." Safe only pre-OCR — runOcr reads
+      // job.bbox fresh only once processing actually starts
+      // (JobManager._process).
+      if (!b.clipped && replaceClippedQueuedJob(bbox, imageIndex)) continue;
 
       // Overlapping tiles detect the same bubble twice, and saved annotations
       // from a previous session already cover their bubbles — both are caught
       // by the same overlap check the manual flows use.
+      if (overlapsExistingOnPage(b)) continue;
       if (findOverlapForBbox(bbox, imageIndex) > ONNX_MAX_OVERLAP) continue;
 
       createJobFromSelection({ bbox, imageEl: img, imageIndex });
     }
+  }
+
+  function replaceClippedQueuedJob(bbox, imageIndex) {
+    const { source, score, clipped, ...cleanBbox } = bbox; // match JobManager's stripped job.bbox shape
+    for (const job of jobManager.jobs.values()) {
+      if (job.imageIndex !== imageIndex || job.source !== 'onnx-detect') continue;
+      if (job.status !== 'queued' || !job.clipped) continue;
+      if (bboxOverlapRatio(cleanBbox, job.bbox) <= ONNX_MAX_OVERLAP) continue;
+      job.bbox    = cleanBbox;
+      job.clipped = false;
+      job.score   = score;
+      return true;
+    }
+    return false;
   }
 
   // Live-apply the auto-detect toggle without a page reload.
@@ -5336,6 +5386,21 @@ const bubbleDetector = (() => {
   const OVERLAP = 128;
   const STRIDE  = TILE_H - OVERLAP;
   const PREFETCH_PX = 2048; // detect this far below the viewport
+  // The offscreen doc's ort-runner.js already serializes every inference call
+  // onto one shared queue (self._ortJobQueue) — a WASM session (numThreads=1,
+  // forced by MV3's blob: worker CSP restriction) processes one tile at a
+  // time regardless of how many DETECT_BUBBLES messages are in flight. Firing
+  // them all at once (scheduleTiles used to loop with no cap) doesn't add
+  // throughput; it only front-loads every tile's own synchronous main-thread
+  // work (composeTileLocally's canvas draw + toDataURL) into a single task,
+  // which is what showed up as bad INP/CLS while auto-detect was scanning.
+  // Capping dispatch to 1 spaces that synchronous work out naturally, since
+  // the next tile's compose call only happens after the previous tile's full
+  // round trip (compose + inference) has resolved.
+  const MAX_CONCURRENT_TILES = 1;
+  const _tileQueue      = []; // {img, tileIdx} pairs waiting for a dispatch slot
+  const _queuedTileKeys = new Set();
+  let _activeTileCount  = 0;
 
   const doneTiles = new Set(); // `${src}#${tileIdx}` — completed (boxes emitted)
   const inFlight  = new Set();
@@ -5402,17 +5467,46 @@ const bubbleDetector = (() => {
       // original image's natural px.
       const scale = usedFallback ? r2.width / img.naturalWidth : 1;
       const yOff  = top + (y0 / rect.height) * r2.height;
-      const absBoxes = boxes.map(b => ({
-        x1: left + b.x1 * scale, y1: yOff + b.y1 * scale,
-        x2: left + b.x2 * scale, y2: yOff + b.y2 * scale,
-        score: b.score,
-      }));
+      // Flag boxes that touch this tile's own artificial top/bottom cut (not
+      // the image's true top/bottom edge) — a bubble straddling the boundary
+      // between two overlapping tiles gets a truncated box here and a full
+      // box in the adjacent tile; onDetectedBoxes uses this flag to let the
+      // later, unclipped detection win instead of whichever tile's request
+      // happens to resolve first. Coordinate space matches b.y1/b.y2 (tileH
+      // for the local-composite path, the natural-px crop height for the
+      // background-fallback path — same space `scale` above converts from).
+      const tileHLocalSpace = usedFallback ? (tileH / rect.height) * img.naturalHeight : tileH;
+      const clipMargin      = 0.03 * tileHLocalSpace;
+      const isFirstTile     = tileIdx === 0;
+      const isLastTile      = tileH < TILE_H; // shortened by the image's true bottom edge
+      const absBoxes = boxes.map(b => {
+        const clippedTop    = !isFirstTile && b.y1 <= clipMargin;
+        const clippedBottom = !isLastTile  && b.y2 >= tileHLocalSpace - clipMargin;
+        return {
+          x1: left + b.x1 * scale, y1: yOff + b.y1 * scale,
+          x2: left + b.x2 * scale, y2: yOff + b.y2 * scale,
+          score: b.score,
+          clipped: clippedTop || clippedBottom,
+        };
+      });
       api.onBoxes?.(absBoxes);
     } catch (err) {
       console.warn('[bubbleDetector] tile', key, 'failed:', err);
       doneTiles.add(key); // don't retry-loop a permanently failing tile
     } finally {
       inFlight.delete(key);
+    }
+  }
+
+  function _pumpTileQueue() {
+    while (_activeTileCount < MAX_CONCURRENT_TILES && _tileQueue.length) {
+      const { img, tileIdx, key } = _tileQueue.shift();
+      _queuedTileKeys.delete(key);
+      _activeTileCount++;
+      detectImageTile(img, tileIdx).finally(() => {
+        _activeTileCount--;
+        _pumpTileQueue();
+      });
     }
   }
 
@@ -5428,8 +5522,14 @@ const bubbleDetector = (() => {
       const visBottom = Math.min(r.height, vpBottom - r.top);
       const first = Math.max(0, Math.floor(visTop / STRIDE));
       const last  = Math.max(first, Math.floor(Math.max(0, visBottom - 1) / STRIDE));
-      for (let i = first; i <= last; i++) detectImageTile(img, i);
+      for (let i = first; i <= last; i++) {
+        const key = `${img.currentSrc}#${i}`;
+        if (doneTiles.has(key) || inFlight.has(key) || _queuedTileKeys.has(key)) continue;
+        _queuedTileKeys.add(key);
+        _tileQueue.push({ img, tileIdx: i, key });
+      }
     }
+    _pumpTileQueue();
   }
 
   // Throttled scroll listener. capture:true so scrolls of INNER containers
@@ -5446,7 +5546,7 @@ const bubbleDetector = (() => {
     // while null the whole detector (including the scroll listener) is dormant.
     onBoxes: null,
     detect:  scheduleTiles,
-    reset()  { doneTiles.clear(); inFlight.clear(); },
+    reset()  { doneTiles.clear(); inFlight.clear(); _tileQueue.length = 0; _queuedTileKeys.clear(); },
   };
   return api;
 })();

@@ -1,4 +1,4 @@
-# Webtoon Translate
+# Webtoon Translator
 
 Chrome extension (Manifest V3) that overlays translations on webtoon panels — fully offline by default, no server required. Translators annotate panels directly; readers see text overlaid on the original images without modifying any copyrighted content.
 
@@ -77,7 +77,7 @@ extension/
 ├── shared/
 │   └── llm-adapters.js          BYOK LLM adapters (OpenAI, Anthropic, Gemini) — shared by content + popup
 ├── models/
-│   ├── comic-text-detector.onnx Bubble/text detection model (not committed, see models/README.md)
+│   ├── comic-text-detector.onnx Bubble/text detection model (not committed — fetched via Settings or dev script)
 │   ├── paddle-det.onnx          PaddleOCR detector (not committed — fetched via Settings or dev script)
 │   ├── paddle-rec-korean.onnx   PaddleOCR Korean recognizer (not committed)
 │   └── korean_dict.txt          PaddleOCR recognizer charset (committed)

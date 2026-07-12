@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Webtoon Translate — Settings</title>
+  <title>Webtoon Translator — Settings</title>
   <link rel="stylesheet" href="settings.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -17,7 +17,7 @@
     <div class="navbar-inner">
       <div class="navbar-brand">
         <span class="brand-icon">WT</span>
-        <span class="brand-name">Webtoon Translate</span>
+        <span class="brand-name">Webtoon Translator</span>
         <span class="brand-divider">/</span>
         <span class="brand-page">Settings</span>
       </div>
@@ -65,6 +65,26 @@
             <span class="switch-track"><span class="switch-thumb"></span></span>
           </label>
         </div>
+        <p id="auto-detect-model-warning" class="field-warning hidden">⚠ Bubble detector model not downloaded yet — auto-detect won't find bubbles until you download it below.</p>
+
+        <div id="comic-detector-row" class="field-block hidden">
+          <div class="field-label">Bubble Detector Model</div>
+          <div class="model-status">
+            <div class="model-status-row">
+              <span class="model-status-dot" id="comic-detector-dot"></span>
+              <span class="model-status-name">Detector <span class="model-status-size">≈50 MB</span></span>
+              <span class="model-status-text" id="comic-detector-text">checking…</span>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button type="button" id="comic-detector-download-btn" class="btn-primary" disabled>Download model</button>
+            <button type="button" id="comic-detector-clear-btn" class="btn-ghost hidden">Remove downloaded model</button>
+          </div>
+          <p id="comic-detector-error" class="field-error hidden"></p>
+          <p class="field-hint">
+            Downloaded once and cached in the browser — not part of the extension package, so this works whether you loaded the extension unpacked or installed it from the Chrome Web Store. Fully offline after that.
+          </p>
+        </div>
       </div>
 
       <div class="card-margin-top">
@@ -106,7 +126,9 @@
               <div class="engine-name">PaddleOCR (in-browser)</div>
             </div>
             <div class="engine-badge engine-badge-offline">Offline</div>
+            <div class="engine-badge engine-badge-recommended">Recommended</div>
             <p class="engine-detail">PP-OCR models run locally via WebGPU/WASM. One-time ~15 MB download, cached in the browser — see the model status below.</p>
+            <p id="paddleocr-local-hw-warning" class="field-warning hidden">⚠ This device may not have WebGPU and has few CPU cores — in-browser PaddleOCR could run slowly. Tesseract.js is faster on weak hardware; self-hosted PaddleOCR keeps the same accuracy without local inference cost.</p>
           </div>
         </label>
         <label class="engine-card">
@@ -145,6 +167,9 @@
               </li>
               <li>Set the server URL above (default <code>http://127.0.0.1:8868</code> already matches — leave the field empty).</li>
             </ol>
+            <p class="field-hint" style="margin-top:0">
+              CPU-only works fine, no GPU required — but PaddlePaddle inference is memory-hungry at startup; 4 GB+ RAM recommended for smooth performance (a rough estimate, not a benchmarked figure).
+            </p>
             <p class="field-hint" style="margin-top:0">
               Prefer Docker? Download the Dockerfile too, then:
               <code class="code-line">docker build -t webtoon-paddleocr .<br />docker run --rm -p 8868:8868 webtoon-paddleocr</code>
@@ -396,7 +421,7 @@
       </div>
     </section>
 
-    <footer class="page-footer">Webtoon Translate v0.3.0 · Settings save automatically</footer>
+    <footer class="page-footer">Webtoon Translator v0.3.0 · Settings save automatically</footer>
   </main>
 
   <script src="settings.js"></script>

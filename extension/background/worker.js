@@ -74,6 +74,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'PADDLE_MODELS_CLEAR':
       paddleModelsClear().then(sendResponse);
       return true;
+    case 'COMIC_DETECTOR_STATUS':
+      comicDetectorStatus().then(sendResponse);
+      return true;
+    case 'COMIC_DETECTOR_DOWNLOAD':
+      comicDetectorDownload().then(sendResponse);
+      return true;
+    case 'COMIC_DETECTOR_CLEAR':
+      comicDetectorClear().then(sendResponse);
+      return true;
+    case 'DISCARD_OCR_STAT':
+      // Awaited + sendResponse (not fire-and-forget) for the same reason
+      // recordOcrStat's own call site is awaited: an un-awaited storage
+      // write here could race the service worker being torn down as idle.
+      discardOcrStat(message.payload?.provider, message.payload?.confidence)
+        .then(() => sendResponse({ ok: true }));
+      return true;
     case 'GET_OCR_STATS':
       chrome.storage.local.get({ [OCR_STATS_KEY]: {} })
         .then(stored => sendResponse({ ok: true, stats: stored[OCR_STATS_KEY] }));
@@ -228,6 +244,33 @@ function recordOcrStat(provider, confidence) {
     await chrome.storage.local.set({ [OCR_STATS_KEY]: stats });
   });
   _statsQueue = job.catch(() => {}); // keep queue alive after a failed write
+  return job;
+}
+
+// Reverses a recordOcrStat() call for an ONNX auto-detect job that bundle.js's
+// quality gate (bundle.js's runOcr, job.source === 'onnx-detect') discarded
+// as a false positive/garbage OCR *after* handleOcr had already recorded it
+// (recordOcrStat runs at the single OCR_REGION choke point, before the
+// content script ever sees the result to gate it). Without this, every
+// detector false-positive/SFX/garbage crop that gets silently dropped from
+// the visible job list still permanently drags down the Settings confidence
+// average — queued on the same _statsQueue so it can't race recordOcrStat.
+function discardOcrStat(provider, confidence) {
+  if (!provider) return Promise.resolve();
+  const job = _statsQueue.then(async () => {
+    const stored = await chrome.storage.local.get({ [OCR_STATS_KEY]: {} });
+    const stats = stored[OCR_STATS_KEY];
+    const s = stats[provider];
+    if (!s) return; // nothing to reverse
+    s.count = Math.max(0, s.count - 1);
+    if (typeof confidence === 'number') {
+      s.confCount = Math.max(0, s.confCount - 1);
+      s.confSum -= confidence;
+    }
+    stats[provider] = s;
+    await chrome.storage.local.set({ [OCR_STATS_KEY]: stats });
+  });
+  _statsQueue = job.catch(() => {});
   return job;
 }
 
@@ -810,6 +853,69 @@ async function paddleModelsDownload() {
 async function paddleModelsClear() {
   const cache = await caches.open(PADDLE_CACHE_NAME);
   for (const { url } of Object.values(PADDLE_MODEL_FILES)) await cache.delete(url);
+  return { ok: true };
+}
+
+// ── Bubble auto-detect model download (Cache Storage API) ─────────────────────
+// Same rationale/mechanism as the PaddleOCR block above: comic-text-detector.onnx
+// is gitignored (see extension/models/README.md) and a Web-Store install can't
+// have it dropped into the package directory, so offscreen/ort-runner.js reads
+// it from this same-origin Cache Storage entry instead of chrome.runtime.getURL.
+const COMIC_DETECTOR_RELEASE = 'https://github.com/naeminhye/webtoon-translator/releases/download/comic-text-detector-v1/';
+const COMIC_DETECTOR_CACHE_NAME = 'comic-text-detector-models-v1';
+const COMIC_DETECTOR_FILE = {
+  url: COMIC_DETECTOR_RELEASE + 'comic-text-detector.onnx',
+  label: 'bubble detector',
+  approxMB: 50,
+};
+
+function broadcastComicDetectorEvent(payload) {
+  chrome.runtime.sendMessage({ type: 'COMIC_DETECTOR_EVENT', payload }, () => void chrome.runtime.lastError);
+}
+
+async function comicDetectorStatus() {
+  const cache = await caches.open(COMIC_DETECTOR_CACHE_NAME);
+  const cached = await cache.match(COMIC_DETECTOR_FILE.url);
+  return { ok: true, downloading: _comicDetectorDownloadInFlight, det: cached ? 'cached' : 'missing' };
+}
+
+let _comicDetectorDownloadInFlight = false;
+
+async function comicDetectorDownload() {
+  if (_comicDetectorDownloadInFlight) return { ok: false, error: 'A download is already in progress.' };
+  _comicDetectorDownloadInFlight = true;
+  try {
+    const { url, label } = COMIC_DETECTOR_FILE;
+    const cache = await caches.open(COMIC_DETECTOR_CACHE_NAME);
+    if (await cache.match(url)) {
+      broadcastComicDetectorEvent({ stage: 'det', state: 'done', cached: true });
+      broadcastComicDetectorEvent({ stage: 'all', state: 'done' });
+      return { ok: true };
+    }
+    broadcastComicDetectorEvent({ stage: 'det', state: 'downloading' });
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (err) {
+      throw new Error(`Could not reach the ${label} model download (${err.message || err}) — check your connection.`);
+    }
+    if (!res.ok) throw new Error(`${label} model download failed: HTTP ${res.status}`);
+    await cache.put(url, res);
+    broadcastComicDetectorEvent({ stage: 'det', state: 'done' });
+    broadcastComicDetectorEvent({ stage: 'all', state: 'done' });
+    return { ok: true };
+  } catch (err) {
+    const error = err.message || String(err);
+    broadcastComicDetectorEvent({ stage: 'error', state: 'error', error });
+    return { ok: false, error };
+  } finally {
+    _comicDetectorDownloadInFlight = false;
+  }
+}
+
+async function comicDetectorClear() {
+  const cache = await caches.open(COMIC_DETECTOR_CACHE_NAME);
+  await cache.delete(COMIC_DETECTOR_FILE.url);
   return { ok: true };
 }
 
