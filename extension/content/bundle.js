@@ -886,6 +886,27 @@ const AUTO_DETECT_MIN_ASPECT     = 0.2;
 // detectable bubble, not a leaked fragment. Needs tuning against more real
 // screenshots of both non-oval bubble shapes and genuinely sparse leaks.
 const AUTO_DETECT_MIN_FILL_DENSITY = 0.45;
+// A "loud"/shout bubble (a scream, an angry outburst) is drawn as a spiky
+// starburst — sharp, jagged, needle-like points radiating outward. The flood
+// fill captures its white interior correctly, but the shape's axis-aligned
+// bbox also encloses the large empty triangular voids BETWEEN adjacent spikes,
+// near the bbox corners. That tanks its bbox fill-density (filledPixels / bbox
+// area) below AUTO_DETECT_MIN_FILL_DENSITY even though it's a single, solid,
+// compact bubble — so it was wrongly rejected as 'low-fill-density'. Real-world
+// case: a 594x369 shout bubble measured filledPixels 91296 -> density ~0.42.
+//
+// Solidity — filledPixels / CONVEX-HULL area — is measured against the hull
+// that hugs the outermost spike tips, so the between-spike corner voids don't
+// count against it. A starburst therefore still scores high (~0.45-0.7) while a
+// genuinely sparse/wispy leaked fragment (part of a connector fused with
+// unrelated art, the case low-fill-density exists to reject) stays well under,
+// since even its convex hull is mostly empty. When bbox density falls short but
+// solidity clears this bar, accept the region as a spiky loud bubble rather
+// than rejecting. Set below the reported case's own bbox density (solidity is
+// always >= bbox density, and strictly greater for any non-convex shape) so
+// that case is reliably rescued, while still leaving a clear gap above a sparse
+// leak's solidity. Needs tuning against more real shout-bubble screenshots.
+const AUTO_DETECT_MIN_HULL_SOLIDITY = 0.4;
 
 class BubbleAutoDetector {
   /**
@@ -961,6 +982,16 @@ class BubbleAutoDetector {
         // the current radius) — grow the crop around the same click point and retry.
         radius = Math.min(AUTO_DETECT_MAX_RADIUS, Math.round(radius * 1.8));
         continue;
+      }
+
+      // A low bbox fill-density may be a spiky "loud" bubble rather than a
+      // sparse leak — compute convex-hull solidity so _isValidRegion can tell
+      // them apart. Only when density is actually low (skips the cost on the
+      // common solid-oval case); cached on the region for _isValidRegion and
+      // surfaced in the debug log for tuning.
+      if (region.filledPixels / (rw * rh) < AUTO_DETECT_MIN_FILL_DENSITY) {
+        region.solidity = this._hullSolidity(region, cw);
+        debug.region.solidity = +region.solidity.toFixed(3);
       }
 
       // Two touching/overlapping bubbles flood-fill as one blob. Check for a
@@ -1062,8 +1093,40 @@ class BubbleAutoDetector {
     const aspect = rw / rh;
     if (aspect > AUTO_DETECT_MAX_ASPECT || aspect < AUTO_DETECT_MIN_ASPECT) return { valid: false, reason: 'bad-aspect-ratio' };
     const density = region.filledPixels / (rw * rh);
-    if (density < AUTO_DETECT_MIN_FILL_DENSITY) return { valid: false, reason: 'low-fill-density' };
+    if (density < AUTO_DETECT_MIN_FILL_DENSITY) {
+      // Rescue spiky "loud"/shout bubbles: their bbox encloses big empty voids
+      // between spikes, tanking bbox density, but their convex-hull solidity
+      // stays high. `region.solidity` is precomputed in detect() for the merged
+      // flood-fill region (and the edge-barrier region has a mask to compute it
+      // on demand); waist-split halves have neither, so they keep the strict
+      // behavior — a half that reads as low-density is a genuine fragment, not
+      // a whole bubble whose points got clipped by the split.
+      const solidity = region.solidity != null
+        ? region.solidity
+        : (region.mask ? this._hullSolidity(region, cw) : 0);
+      if (solidity < AUTO_DETECT_MIN_HULL_SOLIDITY) return { valid: false, reason: 'low-fill-density' };
+    }
     return { valid: true };
+  }
+
+  /**
+   * Solidity: filledPixels / convex-hull area. Unlike bbox fill-density, the
+   * convex hull hugs the shape's outermost points, so the empty corner voids
+   * between a spiky "loud" bubble's points don't count against it. `w` is the
+   * canvas width the region's fill mask was computed against. Returns 0 for a
+   * degenerate (sub-triangle or zero-area) hull.
+   */
+  _hullSolidity(region, w) {
+    const hull = _convexHull(extractRegionContour(region.mask, w, region));
+    if (hull.length < 3) return 0;
+    // Shoelace polygon area over the (CCW) hull vertices.
+    let area2 = 0;
+    for (let i = 0; i < hull.length; i++) {
+      const a = hull[i], b = hull[(i + 1) % hull.length];
+      area2 += a.x * b.y - b.x * a.y;
+    }
+    const area = Math.abs(area2) / 2;
+    return area > 0 ? region.filledPixels / area : 0;
   }
 
   /** Crop-local region -> bbox relative to the CURRENT image's natural size, padded. x stays clamped to this image's width; y is intentionally left unclamped — see detect()'s doc. */
