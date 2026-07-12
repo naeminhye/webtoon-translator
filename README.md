@@ -1,4 +1,4 @@
-# Webtoon Translate
+# Webtoon Translator
 
 Chrome extension (Manifest V3) that overlays translations on webtoon panels — fully offline by default, no server required. Translators annotate panels directly; readers see text overlaid on the original images without modifying any copyrighted content.
 
@@ -17,10 +17,9 @@ Chrome extension (Manifest V3) that overlays translations on webtoon panels — 
 
 ### OCR
 
-Four interchangeable engines, picked in Settings → OCR Engine:
+Three interchangeable engines, picked in Settings → OCR Engine:
 
 - **Tesseract.js** (offline) — Korean LSTM model bundled in `vendor/tesseract/`, no internet required
-- **OCR.space** (optional) — cloud API, faster for some stylized fonts; requires a free API key
 - **PaddleOCR — in-browser** (offline) — PP-OCRv4 detector + Korean recognizer run locally via ONNX Runtime Web (WebGPU with WASM fallback). Models (~15 MB) aren't bundled in the extension package — they're fetched once from a GitHub Release into the browser's Cache Storage API from the Settings page, which works whether the extension was loaded unpacked or installed from the Chrome Web Store
 - **PaddleOCR — self-hosted** (optional) — best Korean accuracy; talks to a small Python/Flask server you run yourself (`server/paddleocr/`). Settings includes an in-page setup guide with one-click downloads for the server files, so it works even without a git checkout
 - **Vision LLM OCR+translate** — when OCR confidence is low (tier = `vision` per the difficulty classifier), the crop is sent to the configured BYOK vision LLM for combined OCR + translation in one step
@@ -30,7 +29,6 @@ An **OCR Confidence Stats** panel (Settings → OCR Engine) tracks each engine's
 ### Translation
 
 - **Google Translate** (free, no key) — default fallback
-- **DeepL** (optional) — higher quality; requires API key
 - **BYOK LLM** (optional) — bring your own key for OpenAI, Anthropic, or Gemini; enables LLM-quality translation and vision fallback
 
 ### Bubble detection
@@ -79,7 +77,7 @@ extension/
 ├── shared/
 │   └── llm-adapters.js          BYOK LLM adapters (OpenAI, Anthropic, Gemini) — shared by content + popup
 ├── models/
-│   ├── comic-text-detector.onnx Bubble/text detection model (not committed, see models/README.md)
+│   ├── comic-text-detector.onnx Bubble/text detection model (not committed — fetched via Settings or dev script)
 │   ├── paddle-det.onnx          PaddleOCR detector (not committed — fetched via Settings or dev script)
 │   ├── paddle-rec-korean.onnx   PaddleOCR Korean recognizer (not committed)
 │   └── korean_dict.txt          PaddleOCR recognizer charset (committed)
@@ -127,9 +125,9 @@ scripts/
 Open the extension icon → **Settings** (opens as a full tab, three sub-tabs):
 
 - **General**: auto-detect bubbles toggle, keyboard shortcuts
-- **OCR Engine**: Tesseract / OCR.space / PaddleOCR (in-browser) / PaddleOCR (self-hosted), provider-specific
+- **OCR Engine**: Tesseract / PaddleOCR (in-browser) / PaddleOCR (self-hosted), provider-specific
   fields (API key, server URL + setup guide, model download status), and the OCR Confidence Stats panel
-- **Translation & Appearance**: Google / DeepL / BYOK LLM provider, target language, display mode
+- **Translation & Appearance**: Google / BYOK LLM provider, target language, display mode
   (overlay vs. side-by-side), bubble background opacity, translation font
 
 A light/dark theme toggle lives in the top bar and follows your OS preference until you pick one explicitly.
@@ -157,5 +155,5 @@ The in-browser engine's models are fetched on demand from Settings (click "Downl
 ## Notes
 
 - The extension never modifies page content — overlays are injected as separate DOM elements
-- No data is sent to any server unless you configure a BYOK API key, OCR.space key, or a PaddleOCR server URL
+- No data is sent to any server unless you configure a BYOK API key, or a PaddleOCR server URL
 - Naver/Kakao CDN images are canvas-captured directly from the DOM to avoid hotlink-protection errors in the service worker

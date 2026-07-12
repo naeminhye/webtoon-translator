@@ -4,10 +4,40 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-const MODEL_URL   = chrome.runtime.getURL('models/comic-text-detector.onnx');
 const INPUT_SIZE  = 1024;         // mayocream/comic-text-detector-onnx expects 1024×1024
 const CONF_THRESH = 0.3; // recall-biased; the content script re-filters for auto-jobs
 const IOU_THRESH  = 0.45;
+
+// ---------------------------------------------------------------------------
+// Model bytes: Cache Storage (populated by background/worker.js's
+// comicDetectorDownload — the primary path for every install type, including
+// a packed Chrome-Web-Store extension) first, then a bundled
+// extension/models/comic-text-detector.onnx as a "Load unpacked" dev
+// convenience (gitignored — see extension/models/README.md). Mirrors
+// offscreen/paddle-runner.js's loadModelBytes/PADDLE_CACHE_NAME pattern —
+// keep the cache name/URL in sync with worker.js's COMIC_DETECTOR_* consts.
+// ---------------------------------------------------------------------------
+
+const COMIC_DETECTOR_RELEASE_URL = 'https://github.com/naeminhye/webtoon-translator/releases/download/comic-text-detector-v1/comic-text-detector.onnx';
+const COMIC_DETECTOR_CACHE_NAME  = 'comic-text-detector-models-v1';
+const BUNDLED_MODEL_PATH = 'models/comic-text-detector.onnx';
+
+const NOT_INSTALLED_MSG =
+  'Bubble detector model not installed — open the extension popup, go to ' +
+  'General → Auto-detect bubbles, and click "Download model".';
+
+async function loadModelBytes() {
+  const cache  = await caches.open(COMIC_DETECTOR_CACHE_NAME);
+  const cached = await cache.match(COMIC_DETECTOR_RELEASE_URL);
+  if (cached) return new Uint8Array(await cached.arrayBuffer());
+
+  try {
+    const res = await fetch(chrome.runtime.getURL(BUNDLED_MODEL_PATH));
+    if (res.ok) return new Uint8Array(await res.arrayBuffer());
+  } catch (_) { /* not bundled either — fall through to the error below */ }
+
+  throw new Error(NOT_INSTALLED_MSG);
+}
 
 // ---------------------------------------------------------------------------
 // Session singleton with warm-up
@@ -32,39 +62,53 @@ if (typeof GPUAdapter !== 'undefined' && !GPUAdapter.prototype.requestAdapterInf
 
 let _sessionPromise = null;
 
+async function warmUp(session) {
+  // Compile graph so first real inference is not penalised.
+  const dummy = new ort.Tensor(
+    'float32',
+    new Float32Array(1 * 3 * INPUT_SIZE * INPUT_SIZE),
+    [1, 3, INPUT_SIZE, INPUT_SIZE],
+  );
+  await session.run({ images: dummy });
+}
+
 function getSession() {
   if (_sessionPromise) return _sessionPromise;
   _sessionPromise = (async () => {
+    const bytes = await loadModelBytes();
+
     // Try WebGPU first, fall back to WASM explicitly so the console shows
-    // which execution provider is actually in use.
+    // which execution provider is actually in use. The warm-up run() is
+    // covered by this same try/catch — a WebGPU session can construct
+    // successfully but still fail once run() executes (e.g. Metal-backend
+    // op/buffer limits on macOS); without covering warm-up here too, that
+    // failure would propagate straight out of getSession() with no WASM
+    // fallback, since by that point the if/else below has already committed
+    // to the (broken) WebGPU session.
     let session;
     if (navigator.gpu) {
       try {
-        session = await ort.InferenceSession.create(MODEL_URL, {
+        session = await ort.InferenceSession.create(bytes, {
           executionProviders: ['webgpu'],
           graphOptimizationLevel: 'all',
         });
+        await warmUp(session);
         console.info('[ort-runner] execution provider: webgpu');
       } catch (err) {
-        console.warn('[ort-runner] WebGPU init failed, falling back to WASM:', err);
+        console.warn('[ort-runner] WebGPU init/warm-up failed, falling back to WASM:', err);
+        session = null;
       }
     } else {
       console.warn('[ort-runner] navigator.gpu absent — WebGPU unavailable in this context');
     }
     if (!session) {
-      session = await ort.InferenceSession.create(MODEL_URL, {
+      session = await ort.InferenceSession.create(bytes, {
         executionProviders: ['wasm'],
         graphOptimizationLevel: 'all',
       });
+      await warmUp(session);
       console.info('[ort-runner] execution provider: wasm (single-thread)');
     }
-    // warm-up: compile graph so first real inference is not penalised
-    const dummy = new ort.Tensor(
-      'float32',
-      new Float32Array(1 * 3 * INPUT_SIZE * INPUT_SIZE),
-      [1, 3, INPUT_SIZE, INPUT_SIZE],
-    );
-    await session.run({ images: dummy });
     console.debug('[ort-runner] session ready (warm-up done)');
     return session;
   })().catch(err => {

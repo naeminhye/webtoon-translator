@@ -2,7 +2,7 @@
 
 Self-hosted OCR backend for the **PaddleOCR** engine option in the Webtoon
 Translate extension. PP-OCR's Korean models are noticeably more accurate on
-webtoon dialogue than Tesseract or OCR.space — the trade-off is that you run
+webtoon dialogue than Tesseract — the trade-off is that you run
 a small local server yourself.
 
 The extension talks to it at `http://127.0.0.1:8868` by default; a different

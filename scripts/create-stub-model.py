@@ -10,8 +10,9 @@ Usage:
     pip install onnx        # ~10 MB, no PyTorch needed
     python3 scripts/create-stub-model.py
 
-The output file (extension/models/bubble-detector.onnx) can then be replaced
-with a real YOLOv8 model whenever you have one — see extension/models/README.md.
+The output file (extension/models/comic-text-detector.onnx) can then be
+replaced with the real mayocream/comic-text-detector-onnx model whenever you
+have one — see extension/models/README.md.
 """
 import os, sys
 
@@ -23,23 +24,24 @@ except ImportError:
     print("Missing dependencies. Run:  pip install onnx numpy")
     sys.exit(1)
 
-OUT_PATH = os.path.join(os.path.dirname(__file__), '..', 'extension', 'models', 'bubble-detector.onnx')
+OUT_PATH = os.path.join(os.path.dirname(__file__), '..', 'extension', 'models', 'comic-text-detector.onnx')
 OUT_PATH = os.path.normpath(OUT_PATH)
 
-# Mimic YOLOv8n detection output: [1, 5, 8400]
-# 5 = cx, cy, w, h, confidence  |  8400 = num anchors at 640x640
-SHAPE = [1, 5, 8400]
+# Match mayocream/comic-text-detector-onnx: input images [1,3,1024,1024],
+# output blk [1,64512,7] (YOLOv5-style: cx,cy,w,h,obj_conf,cls1_conf,cls2_conf
+# per anchor row) — see offscreen/ort-runner.js's INPUT_SIZE/postprocess.
+SHAPE = [1, 64512, 7]
 
-input_t  = h.make_tensor_value_info('images',  onnx.TensorProto.FLOAT, [1, 3, 640, 640])
-output_t = h.make_tensor_value_info('output0', onnx.TensorProto.FLOAT, SHAPE)
+input_t  = h.make_tensor_value_info('images', onnx.TensorProto.FLOAT, [1, 3, 1024, 1024])
+output_t = h.make_tensor_value_info('blk',    onnx.TensorProto.FLOAT, SHAPE)
 
 zeros    = np.zeros(SHAPE, dtype=np.float32)
 const_nd = h.make_node(
-    'Constant', inputs=[], outputs=['output0'],
+    'Constant', inputs=[], outputs=['blk'],
     value=h.make_tensor('v', onnx.TensorProto.FLOAT, SHAPE, zeros.flatten().tolist())
 )
 
-graph = h.make_graph([const_nd], 'bubble-detector-stub', [input_t], [output_t])
+graph = h.make_graph([const_nd], 'comic-text-detector-stub', [input_t], [output_t])
 model = h.make_model(graph, opset_imports=[h.make_opsetid('', 17)])
 model.ir_version = 8
 

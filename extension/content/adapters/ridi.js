@@ -42,11 +42,29 @@ export class RidiAdapter extends SiteAdapter {
   }
 
   getImages() {
-    // All panel images carry data-index. Skip unloaded SVG placeholders —
-    // only blob: URLs represent real, rendered images we can hash.
-    return [...document.querySelectorAll('img[data-index]')].filter(
-      img => img.src && img.src.startsWith('blob:')
-    );
+    // A loaded panel's src is either a blob: URL (DRM-decrypted in-page) or a
+    // real http(s) CDN URL; an unloaded panel still holds the tiny inline SVG
+    // data: placeholder. Accepting blob: only meant books served as direct CDN
+    // images (not DRM'd) never had any panels detected. Accept both loaded forms.
+    const isLoaded = (img) => {
+      const src = img.src || '';
+      return src.startsWith('blob:') || src.startsWith('http');
+    };
+    // data-index is the reliable panel marker, but don't depend on it alone —
+    // fall back to any large image in the scroll container so an attribute
+    // change can't silently break the whole viewer.
+    const indexed = [...document.querySelectorAll('img[data-index]')].filter(isLoaded);
+    if (indexed.length) return indexed;
+
+    const root = document.querySelector('.simplebar-content') ||
+                 document.querySelector('.simplebar-content-wrapper') ||
+                 document.body;
+    return [...root.querySelectorAll('img')].filter(img => {
+      if (!isLoaded(img)) return false;
+      const w = img.naturalWidth || img.offsetWidth || 0;
+      const h = img.naturalHeight || img.offsetHeight || 0;
+      return w >= 200 && h >= 200; // skip UI icons / avatars
+    });
   }
 
   watchNewImages(callback) {

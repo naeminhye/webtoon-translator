@@ -53,20 +53,15 @@ async function initTabs() {
 }
 
 const OCR_PROVIDER_KEY       = 'wt:ocr-provider';
-const OCR_SPACE_KEY_STR      = 'wt:ocrspace-key';
 const PADDLE_URL_KEY         = 'wt:paddleocr-url';
 const TRANSLATE_PROVIDER_KEY = 'wt:translate-provider';
 const TRANSLATE_LANG_KEY     = 'wt:translate-lang';
-const DEEPL_KEY_STR          = 'wt:deepl-key';
 const BYOK_KEY_STR           = 'wt:byok-key';
 const BYOK_PROVIDER_KEY      = 'wt:byok-provider';
 const BYOK_MODEL_STR         = 'wt:byok-model';
 const BYOK_MODE_KEY          = 'wt:byok-mode';
 const OVERLAY_MODE_KEY       = 'wt:overlay-mode';
 const AUTO_DETECT_KEY        = 'wt:auto-detect';
-
-// Mirrors background/worker.js — keep in sync.
-const DEV_OCR_SPACE_KEY = '';
 
 // Mirrors background/worker.js — keep in sync. Shown as the input placeholder;
 // an empty stored URL means "use this default" (never persisted, so a future
@@ -76,43 +71,45 @@ const DEFAULT_PADDLE_URL = 'http://127.0.0.1:8868';
 async function initOcrSettings() {
   const stored = await chrome.storage.local.get({
     [OCR_PROVIDER_KEY]:  'tesseract',
-    [OCR_SPACE_KEY_STR]: '',
     [PADDLE_URL_KEY]:    '',
   });
 
   const radios = document.querySelectorAll('input[name="ocr-provider"]');
-  const devKeyBundled = Boolean(DEV_OCR_SPACE_KEY);
 
   function applyProvider(provider) {
     radios.forEach(r => { r.checked = r.value === provider; });
-    const needsKey = provider === 'ocrspace' && !devKeyBundled;
-    $('ocrspace-key-row').classList.toggle('hidden', !needsKey);
-    $('ocrspace-key-saved').classList.add('hidden');
     $('paddleocr-url-row').classList.toggle('hidden', provider !== 'paddleocr');
     $('paddleocr-url-saved').classList.add('hidden');
     $('paddleocr-local-row').classList.toggle('hidden', provider !== 'paddleocr-local');
     if (provider === 'paddleocr-local') refreshPaddleModelsStatus();
   }
 
-  applyProvider(stored[OCR_PROVIDER_KEY]);
-  if (stored[OCR_SPACE_KEY_STR]) $('ocrspace-key').value = stored[OCR_SPACE_KEY_STR];
+  // 'ocrspace' was removed as an option — fall a stored legacy value back to
+  // the default engine so the UI doesn't render with nothing selected, and
+  // persist the fallback so it sticks.
+  let initialProvider = stored[OCR_PROVIDER_KEY];
+  if (initialProvider === 'ocrspace') {
+    initialProvider = 'tesseract';
+    chrome.storage.local.set({ [OCR_PROVIDER_KEY]: initialProvider });
+  }
+  applyProvider(initialProvider);
   if (stored[PADDLE_URL_KEY]) $('paddleocr-url').value = stored[PADDLE_URL_KEY];
+
+  // Surface a capability warning on the PaddleOCR (in-browser) card itself —
+  // shown regardless of which engine is currently selected, so it can inform
+  // the choice rather than only appearing after the user has already picked
+  // this engine. No hard cutoff exists for "too weak"; this is a soft nudge
+  // based on the same navigator.gpu check ort-runner.js/paddle-runner.js use
+  // to pick an execution provider, plus a low core-count heuristic.
+  const hasGpu = !!navigator.gpu;
+  const cores  = navigator.hardwareConcurrency || 0;
+  const weakHardware = !hasGpu && cores > 0 && cores < 4;
+  $('paddleocr-local-hw-warning').classList.toggle('hidden', !weakHardware);
 
   radios.forEach(r => r.addEventListener('change', async () => {
     await chrome.storage.local.set({ [OCR_PROVIDER_KEY]: r.value });
     applyProvider(r.value);
   }));
-
-  // Autosave the OCR.space key as it's typed (debounced) — no Save button.
-  let ocrKeyTimer = null;
-  $('ocrspace-key').addEventListener('input', () => {
-    clearTimeout(ocrKeyTimer);
-    ocrKeyTimer = setTimeout(async () => {
-      await chrome.storage.local.set({ [OCR_SPACE_KEY_STR]: $('ocrspace-key').value.trim() });
-      $('ocrspace-key-saved').classList.remove('hidden');
-      setTimeout(() => $('ocrspace-key-saved').classList.add('hidden'), 1500);
-    }, 400);
-  });
 
   // Autosave the PaddleOCR server URL the same way. An empty value is stored
   // as '' so the background falls back to DEFAULT_PADDLE_URL.
@@ -220,7 +217,6 @@ async function initTranslationSettings() {
   const stored = await chrome.storage.local.get({
     [TRANSLATE_PROVIDER_KEY]: 'google',
     [TRANSLATE_LANG_KEY]:     'vi',
-    [DEEPL_KEY_STR]:          '',
     [BYOK_KEY_STR]:           '',
     [BYOK_PROVIDER_KEY]:      '',
     [BYOK_MODEL_STR]:         '',
@@ -231,21 +227,19 @@ async function initTranslationSettings() {
 
   function applyProvider(provider) {
     radios.forEach(r => { r.checked = r.value === provider; });
-    $('deepl-key-row').classList.toggle('hidden', provider !== 'deepl');
     $('byok-key-row').classList.toggle('hidden', provider !== 'byok');
   }
 
-  // "none" (Disabled) was removed as an option — fall back a stored legacy
-  // value to the default provider so the UI doesn't render with nothing
-  // selected, and persist the fallback so it sticks.
+  // "none" (Disabled) and "deepl" were removed as options — fall a stored
+  // legacy value back to the default provider so the UI doesn't render with
+  // nothing selected, and persist the fallback so it sticks.
   let initialProvider = stored[TRANSLATE_PROVIDER_KEY];
-  if (initialProvider === 'none') {
+  if (initialProvider === 'none' || initialProvider === 'deepl') {
     initialProvider = 'google';
     chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: initialProvider });
   }
   applyProvider(initialProvider);
   $('target-lang').value = stored[TRANSLATE_LANG_KEY];
-  if (stored[DEEPL_KEY_STR]) $('deepl-key').value = stored[DEEPL_KEY_STR];
   if (stored[BYOK_KEY_STR]) $('byok-key').value = stored[BYOK_KEY_STR];
 
   // Provider dropdown is populated from the shared adapter registry
@@ -294,7 +288,6 @@ async function initTranslationSettings() {
   // a key — the key field autosaves as you type, so the warning clears itself.
   function updateKeyWarnings() {
     const provider = [...radios].find(r => r.checked)?.value || 'google';
-    $('deepl-key-error').classList.toggle('hidden', !(provider === 'deepl' && !$('deepl-key').value.trim()));
     $('byok-key-error').classList.toggle('hidden', !(provider === 'byok' && !$('byok-key').value.trim()));
   }
 
@@ -319,23 +312,98 @@ async function initTranslationSettings() {
       }, 400);
     });
   }
-  autosaveInput($('deepl-key'),   DEEPL_KEY_STR);
   autosaveInput($('byok-key'),    BYOK_KEY_STR);
   autosaveInput($('byok-model'),  BYOK_MODEL_STR);
 }
 
 async function initDisplaySettings() {
-  const stored = await chrome.storage.local.get({ [OVERLAY_MODE_KEY]: 'overlay', [AUTO_DETECT_KEY]: true });
+  const stored = await chrome.storage.local.get({ [OVERLAY_MODE_KEY]: 'overlay', [AUTO_DETECT_KEY]: false });
   const radios = document.querySelectorAll('input[name="overlay-mode"]');
   radios.forEach(r => { r.checked = r.value === stored[OVERLAY_MODE_KEY]; });
   radios.forEach(r => r.addEventListener('change', async () => {
     await chrome.storage.local.set({ [OVERLAY_MODE_KEY]: r.value });
   }));
 
+  function applyAutoDetect(enabled) {
+    $('comic-detector-row').classList.toggle('hidden', !enabled);
+    if (enabled) refreshComicDetectorStatus();
+    else $('auto-detect-model-warning').classList.add('hidden');
+  }
+
   const autoDetect = $('auto-detect-toggle');
   autoDetect.checked = !!stored[AUTO_DETECT_KEY];
+  applyAutoDetect(autoDetect.checked);
   autoDetect.addEventListener('change', async () => {
     await chrome.storage.local.set({ [AUTO_DETECT_KEY]: autoDetect.checked });
+    applyAutoDetect(autoDetect.checked);
+  });
+
+  // ── Bubble detector model status + download/remove ─────────────────────
+  // Same rationale as the PaddleOCR in-browser model block in initOcrSettings:
+  // model bytes live in the background service worker's Cache Storage (see
+  // worker.js comicDetectorDownload/Status/Clear) — this popup only asks it
+  // for status or tells it to download/clear, never touches the cache
+  // directly.
+
+  function setComicDetectorDot(state) {
+    const dot = $('comic-detector-dot');
+    dot.classList.remove('is-ready', 'is-downloading', 'is-error');
+    if (state === 'ready' || state === 'downloading' || state === 'error') {
+      dot.classList.add(`is-${state}`);
+    }
+    $('comic-detector-text').textContent =
+      { ready: 'ready', downloading: 'downloading…', error: 'error', missing: 'not downloaded' }[state] || state;
+  }
+
+  function renderComicDetectorStatus(status) {
+    const ready = status.det === 'cached';
+    setComicDetectorDot(ready ? 'ready' : (status.downloading ? 'downloading' : 'missing'));
+    const btn = $('comic-detector-download-btn');
+    btn.disabled = status.downloading || ready;
+    btn.textContent = status.downloading ? 'Downloading…' : (ready ? 'Model ready' : 'Download model');
+    $('comic-detector-clear-btn').classList.toggle('hidden', !ready || status.downloading);
+    if (!status.downloading) $('comic-detector-error').classList.add('hidden');
+    // Auto-detect is a no-op without this model — surface it near the toggle
+    // itself, not just as a small status dot the user might not scroll to.
+    $('auto-detect-model-warning').classList.toggle('hidden', ready || !autoDetect.checked);
+  }
+
+  async function refreshComicDetectorStatus() {
+    const status = await chrome.runtime.sendMessage({ type: 'COMIC_DETECTOR_STATUS' });
+    if (status) renderComicDetectorStatus(status);
+  }
+
+  // Live progress while a download is in flight — also covers the case where
+  // a previously-opened popup started the download and was then closed.
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== 'COMIC_DETECTOR_EVENT') return;
+    const { stage, state, error } = message.payload;
+    if (stage === 'det') {
+      setComicDetectorDot(state === 'done' ? 'ready' : 'downloading');
+    } else if (stage === 'all' && state === 'done') {
+      refreshComicDetectorStatus();
+    } else if (stage === 'error') {
+      $('comic-detector-error').textContent = error || 'Download failed.';
+      $('comic-detector-error').classList.remove('hidden');
+      refreshComicDetectorStatus();
+    }
+  });
+
+  $('comic-detector-download-btn').addEventListener('click', async () => {
+    $('comic-detector-download-btn').disabled = true;
+    $('comic-detector-download-btn').textContent = 'Downloading…';
+    $('comic-detector-error').classList.add('hidden');
+    const res = await chrome.runtime.sendMessage({ type: 'COMIC_DETECTOR_DOWNLOAD' });
+    if (res && !res.ok) {
+      $('comic-detector-error').textContent = res.error || 'Download failed.';
+      $('comic-detector-error').classList.remove('hidden');
+    }
+    refreshComicDetectorStatus();
+  });
+
+  $('comic-detector-clear-btn').addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: 'COMIC_DETECTOR_CLEAR' });
+    refreshComicDetectorStatus();
   });
 }
 
@@ -425,10 +493,8 @@ async function initAppearanceSettings() {
 // ── OCR confidence stats ──────────────────────────────────────────────────
 // Mirrors background/worker.js's OCR_STATS_KEY shape: { [provider]: { count,
 // confCount, confSum } }. Rendered per provider id, matching the four
-// ocr-provider radio values (see initOcrSettings) plus 'ocrspace', which
-// never reports a confidence (see worker.js's handleOcr — OCR.space's API
-// isn't asked for one).
-const OCR_STATS_PROVIDERS = ['tesseract', 'ocrspace', 'paddleocr-local', 'paddleocr'];
+// ocr-provider radio values (see initOcrSettings).
+const OCR_STATS_PROVIDERS = ['tesseract', 'paddleocr-local', 'paddleocr'];
 
 function renderOcrStats(stats) {
   for (const provider of OCR_STATS_PROVIDERS) {

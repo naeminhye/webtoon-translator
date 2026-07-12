@@ -3,6 +3,16 @@
    All selectors are prefixed with .wt- to avoid collisions with host styles.
 */
 
+/* ── Design tokens ─────────────────────────────────────────────────────────
+   Mirrors popup/settings.css's --accent (light-theme value — the overlay has
+   no theme toggle of its own). Declared on :root of the host page's own
+   document (this stylesheet is injected directly, no shadow DOM), prefixed
+   --wt- for the same collision-avoidance reason the .wt- class prefix exists. */
+:root {
+  --wt-accent: oklch(0.48 0.16 265);
+  --wt-accent-hover: oklch(0.42 0.16 265);
+}
+
 /* ── Image wrapper ─────────────────────────────────────────────────────── */
 
 .wt-img-wrapper {
@@ -26,8 +36,8 @@
      crosshair only while an actual drag is in progress (.wt-dragging). */
   cursor: pointer !important;
   z-index: 100;
-  background: rgba(99, 102, 241, 0.04);
-  border: 1.5px dashed rgba(99, 102, 241, 0.4);
+  background: oklch(from var(--wt-accent) l c h / 0.04);
+  border: 1.5px dashed oklch(from var(--wt-accent) l c h / 0.4);
   border-bottom: none; /* no border in extension zone */
   box-sizing: border-box;
   pointer-events: auto !important;
@@ -37,8 +47,8 @@
 
 .wt-selection-rect {
   position: absolute;
-  border: 2px solid rgba(99, 102, 241, 0.9);
-  background: rgba(99, 102, 241, 0.15);
+  border: 2px solid oklch(from var(--wt-accent) l c h / 0.9);
+  background: oklch(from var(--wt-accent) l c h / 0.15);
   pointer-events: none;
   border-radius: 2px;
 }
@@ -52,8 +62,8 @@
      .wt-resize-handle — this box's own handles were already indigo, so this
      used to be a two-tone box; now the drag-select and edit/resize boxes
      read as one consistent color instead of purple vs. green. */
-  border: 2px solid rgba(99, 102, 241, 0.9);
-  background: rgba(99, 102, 241, 0.12);
+  border: 2px solid oklch(from var(--wt-accent) l c h / 0.9);
+  background: oklch(from var(--wt-accent) l c h / 0.12);
   border-radius: 2px;
   cursor: move;
   box-sizing: border-box;
@@ -93,8 +103,8 @@
    unrelated green/red hue, matching the app's indigo accent used everywhere
    else (resize handles, focus states, the drag-select/resize box itself).
    Confirm is the primary (filled) action; cancel is secondary (outlined). */
-.wt-detect-confirm { background: #6366f1; color: #fff; }
-.wt-detect-confirm:hover { background: #4f46e5; }
+.wt-detect-confirm { background: var(--wt-accent); color: #fff; }
+.wt-detect-confirm:hover { background: var(--wt-accent-hover); }
 .wt-detect-cancel { background: #fff; color: #64748b; border-color: #cbd5e1; }
 .wt-detect-cancel:hover { background: #f1f5f9; color: #475569; }
 
@@ -123,7 +133,7 @@
 .wt-job-fixed { position: absolute; z-index: 99987; }
 
 .wt-job-queued, .wt-job-ocr, .wt-job-translating {
-  background: rgba(99, 102, 241, 0.95);
+  background: oklch(from var(--wt-accent) l c h / 0.95);
   color: #fff;
 }
 
@@ -192,7 +202,7 @@
 #wt-job-badge.wt-job-badge-visible { display: flex; }
 #wt-job-badge .wt-job-badge-dot {
   width: 7px; height: 7px; border-radius: 50%;
-  background: #6366f1; flex-shrink: 0;
+  background: var(--wt-accent); flex-shrink: 0;
 }
 
 /* ── Overlap confirm popup ─────────────────────────────────────────────── */
@@ -216,8 +226,8 @@
 }
 .wt-confirm-no { background: #f1f5f9; color: #475569; border-color: #e2e8f0 !important; }
 .wt-confirm-no:hover { background: #e2e8f0; }
-.wt-confirm-yes { background: #6366f1; color: #fff; }
-.wt-confirm-yes:hover { background: #4f46e5; }
+.wt-confirm-yes { background: var(--wt-accent); color: #fff; }
+.wt-confirm-yes:hover { background: var(--wt-accent-hover); }
 
 /* ── Bubble action toolbar (click a finished bubble to edit/resize/delete) ── */
 
@@ -241,7 +251,7 @@
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
   transition: background 0.12s ease, color 0.12s ease, transform 0.08s ease;
 }
-.wt-bubble-toolbar button:hover  { background: #eef2ff; color: #4338ca; }
+.wt-bubble-toolbar button:hover  { background: #eef2ff; color: #1e357e; }
 .wt-bubble-toolbar button:active { transform: scale(0.92); }
 .wt-bubble-toolbar .wt-bt-delete:hover { background: #fef2f2; color: #b91c1c; }
 .wt-bubble-toolbar .wt-bt-llm-test:hover { background: #eef2ff; color: #6d28d9; }
@@ -305,10 +315,10 @@ body > .wt-bubble-toolbar { z-index: 99990; }
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  background: #6366f1;
+  background: var(--wt-accent);
   color: #fff;
 }
-.wt-llm-popover-send:hover { background: #4f46e5; }
+.wt-llm-popover-send:hover { background: var(--wt-accent-hover); }
 .wt-llm-popover-result {
   font-size: 11.5px;
   line-height: 1.5;
@@ -340,7 +350,7 @@ body > .wt-bubble-toolbar { z-index: 99990; }
 .wt-bubble-edit-textarea {
   position: absolute;
   box-sizing: border-box;
-  border: 1.5px solid #6366f1;
+  border: 1.5px solid var(--wt-accent);
   border-radius: 4px;
   padding: 4px 8px;
   font-size: 20px; /* fallback — normally overridden inline to match the bubble's own font-size */
@@ -565,9 +575,9 @@ body > .wt-bubble-toolbar { z-index: 99990; }
 
 .wt-input-original:focus,
 .wt-input-translated:focus {
-  border-color: #6366f1;
+  border-color: var(--wt-accent);
   background: #fff;
-  box-shadow: 0 0 0 3px rgba(99,102,241,0.1);
+  box-shadow: 0 0 0 3px oklch(from var(--wt-accent) l c h / 0.1);
 }
 
 .wt-dialog-actions {
@@ -598,12 +608,12 @@ body > .wt-bubble-toolbar { z-index: 99990; }
 }
 
 .wt-btn-save {
-  background: #6366f1;
+  background: var(--wt-accent);
   color: #fff;
 }
 
 .wt-btn-save:hover {
-  background: #4f46e5;
+  background: var(--wt-accent-hover);
 }
 
 /* ── Style bar ────────────────────────────────────────────────────────── */
@@ -653,9 +663,9 @@ body > .wt-bubble-toolbar { z-index: 99990; }
 }
 
 .wt-style-btn.active {
-  background: #6366f1;
+  background: var(--wt-accent);
   color: #fff;
-  border-color: #6366f1;
+  border-color: var(--wt-accent);
 }
 
 .wt-style-italic { font-style: italic; }
@@ -688,7 +698,7 @@ body > .wt-bubble-toolbar { z-index: 99990; }
 }
 
 .wt-swatch-wrap:hover .wt-swatch {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--wt-accent);
 }
 
 /* clicking the label triggers the hidden color input */
@@ -871,7 +881,7 @@ body > .wt-bubble-toolbar { z-index: 99990; }
 /* ── Bubble drag/resize handles ───────────────────────────────────────── */
 
 .wt-bubble-editing {
-  outline: 2px solid rgba(99, 102, 241, 0.8) !important;
+  outline: 2px solid oklch(from var(--wt-accent) l c h / 0.8) !important;
   outline-offset: 1px;
 }
 
@@ -884,7 +894,7 @@ body > .wt-bubble-toolbar { z-index: 99990; }
   width: 10px;
   height: 10px;
   background: #fff;
-  border: 2px solid #6366f1;
+  border: 2px solid var(--wt-accent);
   border-radius: 2px;
   z-index: 300;
   box-sizing: border-box;
@@ -949,14 +959,14 @@ body > .wt-bubble-toolbar { z-index: 99990; }
 #wt-scan-btn:active { transform: scale(0.96); }
 
 #wt-scan-btn.wt-scan-active {
-  background: rgba(99, 102, 241, 0.92);
-  box-shadow: 0 2px 16px rgba(99, 102, 241, 0.5);
+  background: oklch(from var(--wt-accent) l c h / 0.92);
+  box-shadow: 0 2px 16px oklch(from var(--wt-accent) l c h / 0.5);
   animation: wt-scan-pulse 2s infinite;
 }
 
 @keyframes wt-scan-pulse {
-  0%, 100% { box-shadow: 0 2px 16px rgba(99, 102, 241, 0.5); }
-  50%       { box-shadow: 0 2px 24px rgba(99, 102, 241, 0.8); }
+  0%, 100% { box-shadow: 0 2px 16px oklch(from var(--wt-accent) l c h / 0.5); }
+  50%       { box-shadow: 0 2px 24px oklch(from var(--wt-accent) l c h / 0.8); }
 }
 
 body.wt-panel-open #wt-scan-btn { left: 24px; }
@@ -1020,7 +1030,7 @@ body.wt-panel-open #wt-dev-btn { left: 24px; }
 }
 
 #wt-toggle-btn.wt-toggle-off {
-  background: rgba(99, 102, 241, 0.9);
+  background: oklch(from var(--wt-accent) l c h / 0.9);
 }
 
 /* Shift out of the way while the side panel (280px) is open */
@@ -1171,7 +1181,7 @@ body.wt-panel-open #wt-toggle-btn {
      crosshair only while an actual drag is in progress (.wt-dragging).
      Mirrors .wt-selector-overlay's cursor fix for the non-fixed-overlay sites. */
   cursor: pointer;
-  background: rgba(99, 102, 241, 0.03);
+  background: oklch(from var(--wt-accent) l c h / 0.03);
   border: none;
 }
 
@@ -1194,5 +1204,5 @@ body.wt-panel-open #wt-toggle-btn {
   padding: 6px 0 8px;
   border-top: 1px solid #f1f5f9;
 }
-.wt-style-rotate { flex: 1; cursor: pointer; accent-color: #6366f1; }
+.wt-style-rotate { flex: 1; cursor: pointer; accent-color: var(--wt-accent); }
 .wt-rotate-val { font-size: 11px; color: #64748b; width: 30px; text-align: right; flex-shrink: 0; }

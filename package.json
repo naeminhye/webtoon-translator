@@ -2,7 +2,7 @@
   "name": "webtoon-translator",
   "private": true,
   "version": "0.1.0",
-  "description": "Build tooling for the Webtoon Translate Chrome extension",
+  "description": "Build tooling for the Webtoon Translator Chrome extension",
   "scripts": {
     "dev": "node scripts/dev.js",
     "build": "node scripts/build.js"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PaddleOCR HTTP server for the Webtoon Translate extension.
+PaddleOCR HTTP server for the Webtoon Translator extension.
 
 Exposes a tiny JSON API the extension's 'paddleocr' provider calls
 (see extension/background/worker.js, paddleOcrRun):
@@ -126,7 +126,7 @@ def run_ocr():
 
 
 def main():
-    parser = argparse.ArgumentParser(description='PaddleOCR server for Webtoon Translate')
+    parser = argparse.ArgumentParser(description='PaddleOCR server for Webtoon Translator')
     parser.add_argument('--host', default='127.0.0.1',
                         help='bind address (default 127.0.0.1; 0.0.0.0 exposes an '
                              'unauthenticated service to your network — LAN use only)')
