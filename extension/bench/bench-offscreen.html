@@ -6,15 +6,18 @@
 </head>
 <body>
   <!--
-    Suite A's offscreen document. Loads the REAL, unmodified production
-    detection runner (ort-runner.js) exactly as extension/offscreen/ocr.html
-    does, plus one bench-only script (offscreen-hooks.js) for Long Task
-    collection and the blob-worker CSP probe. Created on demand by
-    bench/suite-a.js via chrome.offscreen.createDocument, called directly
-    from the bench page (no background-script relay needed).
+    Bench offscreen document for Suites A and B. Same script set as
+    extension/offscreen/ocr.html (the real production offscreen document),
+    loaded unmodified and in the same order, plus one bench-only script
+    (offscreen-hooks.js) for Long Task collection and the blob-worker CSP
+    probe. Created on demand via chrome.offscreen.createDocument, called
+    directly from the bench page (no background-script relay needed).
   -->
+  <script src="../vendor/tesseract/tesseract.min.js"></script>
+  <script src="../offscreen/ocr.js"></script>
   <script src="../vendor/ort/ort.webgpu.min.js"></script>
   <script src="../offscreen/ort-runner.js"></script>
+  <script src="../offscreen/paddle-runner.js"></script>
   <script src="offscreen-hooks.js"></script>
 </body>
 </html>

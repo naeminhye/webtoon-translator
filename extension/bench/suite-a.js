@@ -18,38 +18,12 @@ import { runCalibration } from './lib/calibration.js';
 import { summarize } from './lib/stats.js';
 import { makeSyntheticTile } from './lib/synthetic.js';
 import { JsonlWriter } from './lib/jsonl.js';
+import { ensureBenchOffscreenDocument, sendDetect, drainLongTasks, getHeapBytes, getOffscreenEnv, probeBlobWorkerCsp } from './lib/offscreen-client.js';
 
 const TILE_SIZES = [640, 960, 1280];
 const EXECUTION_PROVIDERS = ['wasm', 'webgpu'];
 const WARMUP_RUNS = 3;
 const STEADY_RUNS = 30;
-
-async function ensureBenchOffscreenDocument() {
-  if (!chrome.offscreen?.createDocument) {
-    throw new Error('Offscreen API unavailable — Chrome 109+ required');
-  }
-  if (!(await chrome.offscreen.hasDocument())) {
-    await chrome.offscreen.createDocument({
-      url: chrome.runtime.getURL('bench/bench-offscreen.html'),
-      reasons: ['WORKERS'],
-      justification: 'Benchmark harness driving the real comic-text-detector ONNX session',
-    });
-  }
-}
-
-function sendDetect(payload) {
-  return chrome.runtime.sendMessage({ type: 'DETECT_RUN', payload });
-}
-
-async function drainLongTasks() {
-  const res = await chrome.runtime.sendMessage({ type: 'BENCH_GET_LONGTASKS' });
-  return res?.longTasks || [];
-}
-
-async function getHeapBytes() {
-  const res = await chrome.runtime.sendMessage({ type: 'BENCH_GET_HEAP_BYTES' });
-  return res?.usedJSHeapSize ?? null;
-}
 
 async function runOneConfig({ executionProvider, tileSize }) {
   // Distinct seed per config so configs aren't literally pixel-identical
@@ -122,7 +96,7 @@ export async function runSuiteA({ onProgress = () => {} } = {}) {
   }
 
   await ensureBenchOffscreenDocument();
-  const offscreenEnvRes = await chrome.runtime.sendMessage({ type: 'BENCH_GET_OFFSCREEN_ENV' });
+  const offscreenEnvRes = await getOffscreenEnv();
 
   const env = {
     ...pageEnv,
@@ -132,7 +106,7 @@ export async function runSuiteA({ onProgress = () => {} } = {}) {
   };
 
   onProgress('Probing blob: worker CSP (multi-threaded WASM capability)…');
-  const blobProbe = await chrome.runtime.sendMessage({ type: 'BENCH_PROBE_BLOB_WORKER_CSP' });
+  const blobProbe = await probeBlobWorkerCsp();
   writer.add({
     suite: 'A-capability-probe',
     config: { probe: 'blob-worker-csp' },

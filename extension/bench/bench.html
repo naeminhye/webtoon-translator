@@ -24,6 +24,25 @@
       <span id="calibBadge"></span>
       <div id="log"></div>
     </section>
+
+    <section>
+      <h2>Suite B — OCR provider comparison (GT crops, real corpus)</h2>
+      <p>
+        Needs a labeled corpus (<code>fixtures/corpus.json</code> + GT files —
+        see <code>bench/label.html</code>). CER is computed per tier against
+        your transcriptions.
+      </p>
+      <p>
+        <label><input type="checkbox" class="providerCheck" value="tesseract" checked> tesseract</label><br>
+        <label><input type="checkbox" class="providerCheck" value="paddleocr-local" checked> paddleocr-local</label><br>
+        <label><input type="checkbox" class="providerCheck" value="paddleocr" checked> paddleocr (self-hosted server)
+          — <input type="text" id="paddleUrl" value="http://127.0.0.1:8868" size="24"></label>
+      </p>
+      <button id="runBBtn">Run Suite B</button>
+      <button id="downloadBBtn" disabled>Download JSONL</button>
+      <span id="calibBadgeB"></span>
+      <div id="logB"></div>
+    </section>
   </main>
   <script type="module" src="bench.js"></script>
 </body>
