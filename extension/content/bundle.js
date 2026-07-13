@@ -4163,9 +4163,35 @@ class QtoonAdapter {
   }
 }
 
+// Bench-only adapter — Suite C (E2E) needs the real bootForPage()/jobManager/
+// autoTranslate pipeline to run, but findAdapter() below only matches known
+// webtoon site hostnames, which chrome-extension:// (bench.html) never is.
+// Registered only when __BENCH_MODE__ is true (see top of file) — inert in
+// production, since __BENCH_MODE__ is always false there. bench/suite-c.js
+// injects <img class="wt-bench-page"> elements (real corpus page images)
+// into the bench page's own DOM before calling bootForPage(); this adapter
+// just picks those up the same way a real adapter picks up a site's panels.
+class BenchAdapter {
+  detect() { return __BENCH_MODE__; }
+  getChapterMeta() { return { site: 'bench', titleId: 'bench', chapterId: 'bench' }; }
+  getImages() { return Array.from(document.querySelectorAll('img.wt-bench-page')); }
+  watchNewImages(callback) {
+    const obs = new MutationObserver(() => {
+      const imgs = this.getImages();
+      if (imgs.length) callback(imgs);
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+    return () => obs.disconnect();
+  }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-const ADAPTERS = [new NaverAdapter(), new RidiAdapter(), new KakaoAdapter(), new BomtoonAdapter(), new LezhinAdapter(), new QtoonAdapter()];
+const ADAPTERS = [
+  new NaverAdapter(), new RidiAdapter(), new KakaoAdapter(),
+  new BomtoonAdapter(), new LezhinAdapter(), new QtoonAdapter(),
+  ...(__BENCH_MODE__ ? [new BenchAdapter()] : []),
+];
 
 function findAdapter() { return ADAPTERS.find(a => a.detect()); }
 
@@ -4781,8 +4807,24 @@ function bootForPage() {
 
   let _storyContextRequestedThisPageLoad = false; // only fetch/log once per page load, not on every OCR request
 
+  // Suite C (E2E) stage mark helper — runTranslate below has 3 return
+  // points (LLM success, LLM-failure Google fallback, Google/DeepL direct
+  // path); wrapping each with this instead of duplicating the mark call
+  // keeps M5 (translate-done) attached to whichever path actually resolved.
+  function _markTranslateDone(job, result) {
+    performance.mark(`wt:translate-done:${job.id}`);
+    return result;
+  }
+
   const jobManager = new JobManager({
     runOcr:        async (job) => {
+      // Suite C (E2E) stage marks — M2 (detect-done, i.e. this job's box was
+      // found and it's now dispatched to OCR) through M6 (render-done) below.
+      // Plain performance.mark()/measure(), always on (not __BENCH_MODE__-
+      // gated) — negligible cost, and useful in production dev tooling too,
+      // not just bench. Namespaced by job.id since MAX_CONCURRENT_JOBS runs
+      // several jobs at once.
+      performance.mark(`wt:detect-done:${job.id}`);
       // Lazy trigger point: first OCR/translation request for this title,
       // once per page load (repeat scans on the same page don't re-trigger
       // it — cached reads are silent past the first one now, by request).
@@ -4835,12 +4877,15 @@ function bootForPage() {
             chrome.runtime.sendMessage({ type: MSG.DISCARD_OCR_STAT, payload: { provider, confidence } }, () => void chrome.runtime.lastError);
           }
           jobManager.cancel(job.id);
+          performance.mark(`wt:ocr-done:${job.id}`); // cancelled here, but the OCR call itself did complete
           return '';
         }
       }
+      performance.mark(`wt:ocr-done:${job.id}`);
       return text;
     },
     runTranslate: async (job) => {
+      performance.mark(`wt:translate-start:${job.id}`); // M4≈M5-start: no adapter in llm-adapters.js streams, so there is no distinct "first token" — see Phase 4 discussion
       const s = await chrome.storage.local.get({ 'wt:translate-provider': 'chrome-builtin', 'wt:byok-mode': 'always' });
       const prov     = s['wt:translate-provider'];
       const byokMode = s['wt:byok-mode'];
@@ -4865,7 +4910,7 @@ function bootForPage() {
             }
           }
           if (!result) result = await autoTranslate(job.originalText, { job, storyCtx, forceLlm: true });
-          if (result) return result;
+          if (result) return _markTranslateDone(job, result);
         } catch (llmErr) {
           console.warn('[WebtoonTranslate] LLM translate failed, falling back to Google:', llmErr?.message || llmErr);
           showToast(`LLM error — falling back to Google Translate`, '#f59e0b');
@@ -4873,11 +4918,11 @@ function bootForPage() {
         // Fallback to Google when LLM fails or returns empty — forceGoogle bypasses
         // the stored provider (which is still 'byok') to avoid retrying LLM.
         job._translateProvider = undefined;
-        return autoTranslate(job.originalText, { job, forceGoogle: true });
+        return _markTranslateDone(job, await autoTranslate(job.originalText, { job, forceGoogle: true }));
       }
       // Google/DeepL path. When provider='byok' in smart mode (easy/medium tier),
       // forceGoogle bypasses BYOK so we don't accidentally route to LLM via storage.
-      return autoTranslate(job.originalText, { job, forceGoogle: prov === 'byok' });
+      return _markTranslateDone(job, await autoTranslate(job.originalText, { job, forceGoogle: prov === 'byok' }));
     },
     findOverlap:   findOverlapForBbox,
     confirmOverlap: (screenPos) => confirmPopup.show(screenPos, 'This region looks like it overlaps an existing translation. Create a new one here anyway?'),
@@ -4909,6 +4954,7 @@ function bootForPage() {
       _upsertAnnotation(annotation);
       if (isKakao) fixedLayer.upsertBubble(job.imageEl, annotation);
       else renderer.upsertBubble(job.imageEl, annotation);
+      performance.mark(`wt:render-done:${job.id}`); // M6 — the bubble is painted at this point, right above
       jobOverlayRenderer.remove(job.id);
       panel?.update(allAnnotations);
       updateProgressBar();
@@ -5724,7 +5770,12 @@ const bubbleDetector = (() => {
 // is never created there either. See bench/bench-flag.js for how bench.html
 // arms __BENCH_MODE__ before loading this file.
 if (__BENCH_MODE__) {
-  window.__WT_BENCH__ = { bubbleDetector, OverlayRenderer };
+  // bootForPage/teardown added for Suite C (E2E) — suite-c.js injects
+  // <img class="wt-bench-page"> elements + storage settings first, then
+  // calls bootForPage() itself once ready, same mechanism/approval as
+  // bubbleDetector/OverlayRenderer above, just naming the two functions
+  // that actually drive the pipeline instead of its constituent pieces.
+  window.__WT_BENCH__ = { bubbleDetector, OverlayRenderer, bootForPage, teardown };
   console.info('[WT_BENCH] hooks exposed');
 }
 // __DEV_TOOLS_BLOCK_END__

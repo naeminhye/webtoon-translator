@@ -55,7 +55,7 @@ button:disabled {
   opacity: 0.5;
 }
 
-#log {
+#log, .log {
   font-family: monospace;
   font-size: 12px;
   white-space: pre-wrap;

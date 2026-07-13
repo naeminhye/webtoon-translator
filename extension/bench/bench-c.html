@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Webtoon Translator — Suite C (E2E)</title>
+  <link rel="stylesheet" href="bench.css">
+  <link rel="stylesheet" href="../content/overlay.css">
+</head>
+<body>
+  <header>
+    <h1>Benchmark harness — Suite C</h1>
+    <p>Full pipeline E2E (detect → OCR → translate → render), replay mode. Real corpus, real bootForPage()/jobManager.</p>
+  </header>
+  <main>
+    <section>
+      <h2>Suite C — E2E (replay mode)</h2>
+      <p>
+        Scenarios: cold viewport, warm scroll (10 pages), soak (up to 50 pages).
+        Concurrency sweep not implemented yet (see suite-c.js header).
+        Translation is replayed from a fixture with synthetic delay — no real
+        API calls, no API key needed.
+      </p>
+      <button id="runCBtn">Run Suite C</button>
+      <button id="downloadCBtn" disabled>Download JSONL</button>
+      <div id="logC" class="log"></div>
+    </section>
+  </main>
+
+  <!--
+    Corpus pages are injected here at runtime by suite-c.js as real <img>
+    elements — this is what bundle.js's BenchAdapter.getImages() picks up,
+    the same way a real adapter picks up a site's own panel images.
+  -->
+  <div id="benchStage"></div>
+
+  <script src="bench-flag.js"></script>
+  <script src="../shared/llm-adapters.js"></script>
+  <script src="replay-llm-adapter.js"></script>
+  <script src="../content/bundle.js"></script>
+  <script type="module" src="bench-c.js"></script>
+</body>
+</html>
