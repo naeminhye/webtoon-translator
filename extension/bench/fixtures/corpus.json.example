@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "language": "kor",
+  "pages": [
+    {
+      "id": "easy-01",
+      "tier": "easy",
+      "file": "pages/easy-01.jpg",
+      "width": 1080,
+      "height": 6400,
+      "sourceLanguage": "kor",
+      "regionCount": 6,
+      "notes": "large clean bubbles, high contrast"
+    },
+    {
+      "id": "medium-01",
+      "tier": "medium",
+      "file": "pages/medium-01.jpg",
+      "width": 1080,
+      "height": 7200,
+      "sourceLanguage": "kor",
+      "regionCount": 14,
+      "notes": "mixed bubble sizes, some text over art"
+    },
+    {
+      "id": "hard-01",
+      "tier": "hard",
+      "file": "pages/hard-01.jpg",
+      "width": 1080,
+      "height": 8100,
+      "sourceLanguage": "kor",
+      "regionCount": 22,
+      "notes": "dense SFX text, stylized fonts, low contrast, overlapping bubbles"
+    },
+    {
+      "id": "edge-01",
+      "tier": "edge",
+      "file": "pages/edge-01.jpg",
+      "width": 1080,
+      "height": 6800,
+      "sourceLanguage": "kor",
+      "regionCount": 9,
+      "notes": "bubbles spanning tile boundaries, vertical text, tiny captions"
+    }
+  ]
+}
