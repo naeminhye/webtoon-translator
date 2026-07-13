@@ -1,0 +1,81 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  color: #1a1a1a;
+  background: #f4f4f4;
+}
+
+header {
+  padding: 12px 16px;
+  background: #222;
+  color: #fff;
+}
+
+header h1 {
+  font-size: 15px;
+  margin: 0 0 2px;
+}
+
+header p {
+  margin: 0;
+  font-size: 11px;
+  color: #aaa;
+}
+
+main {
+  padding: 16px;
+  max-width: 720px;
+}
+
+section {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+section h2 {
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+
+button {
+  font-size: 13px;
+  padding: 6px 14px;
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+#log {
+  font-family: monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  background: #111;
+  color: #ddd;
+  padding: 10px;
+  border-radius: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-top: 10px;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #eee;
+  margin-left: 6px;
+}
+
+.badge.dirty { background: #ffe0b3; color: #7a4a00; }
+.badge.ok    { background: #d8f0d8; color: #1a5c1a; }

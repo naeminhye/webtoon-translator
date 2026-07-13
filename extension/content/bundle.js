@@ -11,6 +11,15 @@
 // true). Must stay in sync with the same-named flag in popup/popup.js.
 const __DEV_TOOLS__ = true;
 
+// Bench-context guard — this same file is loaded unmodified by
+// bench/bench.html (Suite C E2E, and __WT_BENCH__ internals-exposure below)
+// so it can drive the real pipeline instead of a reimplementation. Real
+// content-script contexts never set window.__WT_BENCH_LOAD__, so this stays
+// false there and every guarded block below behaves exactly as before. Kept
+// OUTSIDE any __DEV_TOOLS_BLOCK__ (unlike the exposure block near the end of
+// this file) since the guards themselves must survive the production build.
+const __BENCH_MODE__ = typeof window !== 'undefined' && window.__WT_BENCH_LOAD__ === true;
+
 const SITES = { NAVER: 'naver', RIDI: 'ridi', KAKAO: 'kakao' };
 const MSG    = {
   SAVE_TRANSLATIONS: 'SAVE_TRANSLATIONS',
@@ -5451,6 +5460,13 @@ function teardown() {
   bootCleanup = null;
 }
 
+// Auto-init below is exactly what bench.html doesn't want: it would try to
+// find a site adapter (there is none on an extension page), boot, and patch
+// history.pushState/replaceState globally. __BENCH_MODE__ (see top of file)
+// skips all of it so the page gets nothing but the __WT_BENCH__ exposure at
+// the end of this file.
+if (!__BENCH_MODE__) {
+
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type !== 'SET_ENABLED') return;
   _wtEnabled = !!message.enabled;
@@ -5511,6 +5527,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
   history.replaceState = (...a) => { _origReplace(...a); onUrlChange(); };
   window.addEventListener('popstate', onUrlChange);
 })();
+
+} // !__BENCH_MODE__
 
 // ── Bubble detection tiling scheduler ────────────────────────────────────────
 //
@@ -5698,5 +5716,17 @@ const bubbleDetector = (() => {
   };
   return api;
 })();
+
+// __DEV_TOOLS_BLOCK_START__
+// Bench-only internals exposure — reuses the same block markers build.js
+// already strips for dev-tools code, so this never reaches dist/. Real
+// content-script contexts never set __BENCH_MODE__, so window.__WT_BENCH__
+// is never created there either. See bench/bench-flag.js for how bench.html
+// arms __BENCH_MODE__ before loading this file.
+if (__BENCH_MODE__) {
+  window.__WT_BENCH__ = { bubbleDetector, OverlayRenderer };
+  console.info('[WT_BENCH] hooks exposed');
+}
+// __DEV_TOOLS_BLOCK_END__
 
 })();

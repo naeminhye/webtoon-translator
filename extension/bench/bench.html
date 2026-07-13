@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Webtoon Translator — Benchmark</title>
+  <link rel="stylesheet" href="bench.css">
+</head>
+<body>
+  <header>
+    <h1>Benchmark harness</h1>
+    <p>Suite A: detection inference (comic-text-detector, ONNX Runtime Web) — EP × tile size screening</p>
+  </header>
+  <main>
+    <section>
+      <h2>Suite A — screening (synthetic placeholder corpus)</h2>
+      <p>
+        Runs against synthetic placeholder tiles (no labeled corpus needed yet) —
+        latency-only, quality columns stay blank. Every JSONL record is tagged
+        <code>corpus: "synthetic"</code> so it can never be confused with a real
+        baseline. Drives the real <code>offscreen/ort-runner.js</code> unmodified.
+      </p>
+      <button id="runBtn">Run Suite A</button>
+      <button id="downloadBtn" disabled>Download JSONL</button>
+      <span id="calibBadge"></span>
+      <div id="log"></div>
+    </section>
+  </main>
+  <script type="module" src="bench.js"></script>
+</body>
+</html>
