@@ -5845,6 +5845,7 @@ function bootForPage() {
     if (_batchTranslating) { showToast(WT_I18N.t('batch.already_running'), '#f59e0b'); return; }
     if (!images.length) { showToast(WT_I18N.t('batch.no_panels'), '#f59e0b'); return; }
     _batchTranslating = true;
+    const runStartedAt = Date.now(); // for the run-stats log (see completion below), independent of the overlay's own display timer
 
     const wasArmed = !!bubbleDetector.onBoxes;
     bubbleDetector.onBoxes = onDetectedBoxes;
@@ -5964,6 +5965,22 @@ function bootForPage() {
         setBatchOverlayProgress(95);
         await flushBatchTranslate();
       }
+
+      // Log this run (duration + how much it covered) so Settings can show
+      // a rolling average across runs instead of just this one overlay's
+      // timer. Sent for both a normal finish and a Cancel — a cancelled run
+      // still did real, measurable work up to that point. Not sent if the
+      // page was torn down mid-run (disposed — see the early returns above),
+      // since that's an abnormal exit, not a representative data point.
+      sendToBackground({
+        type: 'SAVE_BATCH_RUN_STAT',
+        payload: {
+          durationMs:  Date.now() - runStartedAt,
+          imageCount:  images.length,
+          bubbleCount: _batchJobsTotal,
+          cancelled:   _batchCancelled,
+        },
+      }).catch(() => {});
 
       setBatchOverlayProgress(100);
       if (_batchCancelled) {

@@ -768,6 +768,49 @@ async function initOcrStatsSettings() {
   });
 }
 
+// ── "Pre-translate whole chapter" run stats ─────────────────────────────
+// Mirrors background/worker.js's BATCH_RUN_STATS_KEY shape: { count,
+// cancelledCount, durationSumMs, imageSum, bubbleSum } — a rolling
+// aggregate across every run, not a per-run log (see the worker.js comment
+// on BATCH_RUN_STATS_KEY for why).
+function formatBatchDuration(ms) {
+  const totalSec = ms / 1000;
+  if (totalSec < 60) return `${totalSec.toFixed(1)}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = Math.round(totalSec % 60);
+  return `${min}m ${sec}s`;
+}
+
+async function initBatchStatsSettings() {
+  async function refresh() {
+    const res = await chrome.runtime.sendMessage({ type: 'GET_BATCH_RUN_STATS' });
+    const s = res?.stats || {};
+    const totalRuns = (s.count || 0) + (s.cancelledCount || 0);
+
+    $('batch-stat-runs').textContent = String(totalRuns);
+    if (!totalRuns) {
+      $('batch-stat-avg-duration').textContent   = '–';
+      $('batch-stat-avg-per-panel').textContent  = '–';
+      $('batch-stat-avg-per-bubble').textContent = '–';
+      return;
+    }
+    $('batch-stat-avg-duration').textContent = formatBatchDuration((s.durationSumMs || 0) / totalRuns);
+    $('batch-stat-avg-per-panel').textContent = s.imageSum > 0
+      ? formatBatchDuration((s.durationSumMs || 0) / s.imageSum)
+      : '–';
+    $('batch-stat-avg-per-bubble').textContent = s.bubbleSum > 0
+      ? formatBatchDuration((s.durationSumMs || 0) / s.bubbleSum)
+      : '–';
+  }
+
+  await refresh();
+
+  $('batch-stats-reset-btn').addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: 'RESET_BATCH_RUN_STATS' });
+    await refresh();
+  });
+}
+
 initVersion();
 initLocale();
 initTheme();
@@ -775,5 +818,6 @@ initTabs();
 initTranslationSettings();
 initOcrSettings();
 initOcrStatsSettings();
+initBatchStatsSettings();
 initDisplaySettings();
 initAppearanceSettings();

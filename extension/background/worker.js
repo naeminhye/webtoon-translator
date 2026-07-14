@@ -98,6 +98,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.storage.local.set({ [OCR_STATS_KEY]: {} })
         .then(() => sendResponse({ ok: true }));
       return true;
+    case 'SAVE_BATCH_RUN_STAT':
+      recordBatchRunStat(message.payload).then(() => sendResponse({ ok: true }));
+      return true;
+    case 'GET_BATCH_RUN_STATS':
+      chrome.storage.local.get({ [BATCH_RUN_STATS_KEY]: {} })
+        .then(stored => sendResponse({ ok: true, stats: stored[BATCH_RUN_STATS_KEY] }));
+      return true;
+    case 'RESET_BATCH_RUN_STATS':
+      chrome.storage.local.set({ [BATCH_RUN_STATS_KEY]: {} })
+        .then(() => sendResponse({ ok: true }));
+      return true;
   }
 });
 
@@ -244,6 +255,30 @@ function recordOcrStat(provider, confidence) {
     await chrome.storage.local.set({ [OCR_STATS_KEY]: stats });
   });
   _statsQueue = job.catch(() => {}); // keep queue alive after a failed write
+  return job;
+}
+
+// ── "Pre-translate whole chapter" run stats ─────────────────────────────
+// Rolling aggregate (not a per-run log — same rationale as OCR_STATS_KEY
+// above: bounded storage forever, device-wide rollup) of how long a batch
+// run took and how much it covered, so Settings can show an average
+// duration / duration-per-bubble / duration-per-panel across every run
+// instead of the user having to eyeball one overlay timer at a time.
+const BATCH_RUN_STATS_KEY = 'wt:batch-run-stats';
+let _batchStatsQueue = Promise.resolve();
+
+function recordBatchRunStat({ durationMs, imageCount, bubbleCount, cancelled } = {}) {
+  const job = _batchStatsQueue.then(async () => {
+    const stored = await chrome.storage.local.get({ [BATCH_RUN_STATS_KEY]: {} });
+    const s = stored[BATCH_RUN_STATS_KEY];
+    if (cancelled) s.cancelledCount = (s.cancelledCount || 0) + 1;
+    else            s.count          = (s.count || 0) + 1;
+    s.durationSumMs = (s.durationSumMs || 0) + (durationMs   || 0);
+    s.imageSum      = (s.imageSum      || 0) + (imageCount   || 0);
+    s.bubbleSum     = (s.bubbleSum     || 0) + (bubbleCount  || 0);
+    await chrome.storage.local.set({ [BATCH_RUN_STATS_KEY]: s });
+  });
+  _batchStatsQueue = job.catch(() => {}); // keep queue alive after a failed write
   return job;
 }
 

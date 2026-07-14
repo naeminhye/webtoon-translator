@@ -69,6 +69,14 @@
       'settings.general.shortcuts_heading':    'Keyboard shortcuts',
       'settings.general.shortcut_toggle_vis':  'Toggle translation visibility',
       'settings.general.shortcut_scan_mode':   'Toggle Quick OCR Translate scan mode',
+      'settings.general.batch_stats_heading':      'Pre-translate Performance',
+      'settings.general.batch_stats_subtitle':     'Average time for "pre-translate whole chapter" runs, tracked locally on this device',
+      'settings.general.batch_stats_runs':         'Runs',
+      'settings.general.batch_stats_avg_duration': 'Avg. duration',
+      'settings.general.batch_stats_avg_per_panel':'Avg. per panel',
+      'settings.general.batch_stats_avg_per_bubble':'Avg. per bubble',
+      'settings.general.batch_stats_hint':         'Includes cancelled runs — they still did real work up to that point. Stats never leave your device.',
+      'settings.general.batch_stats_no_data':      'No runs yet',
 
       // ── settings: OCR Engine tab ────────────────────────────────────────
       'settings.ocr.heading':          'OCR Engine',
@@ -211,6 +219,14 @@
       'settings.general.shortcuts_heading':    'Phím tắt',
       'settings.general.shortcut_toggle_vis':  'Bật/tắt hiển thị bản dịch',
       'settings.general.shortcut_scan_mode':   'Bật/tắt chế độ quét dịch nhanh',
+      'settings.general.batch_stats_heading':      'Hiệu năng Pre-translate',
+      'settings.general.batch_stats_subtitle':     'Thời gian trung bình cho các lần chạy "dịch trước toàn bộ chapter", theo dõi cục bộ trên thiết bị này',
+      'settings.general.batch_stats_runs':         'Số lần chạy',
+      'settings.general.batch_stats_avg_duration': 'Thời gian TB',
+      'settings.general.batch_stats_avg_per_panel':'TB mỗi panel',
+      'settings.general.batch_stats_avg_per_bubble':'TB mỗi bubble',
+      'settings.general.batch_stats_hint':         'Bao gồm cả những lần đã hủy — vì chúng vẫn thực hiện công việc thực tế cho đến lúc đó. Thống kê không rời khỏi thiết bị của bạn.',
+      'settings.general.batch_stats_no_data':      'Chưa có lần chạy nào',
 
       // ── settings: OCR Engine tab ────────────────────────────────────────
       'settings.ocr.heading':          'Bộ máy OCR',

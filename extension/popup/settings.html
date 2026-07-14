@@ -100,6 +100,44 @@
           <div class="shortcut-row"><kbd class="kbd">S</kbd><span data-i18n="settings.general.shortcut_scan_mode">Toggle Quick OCR Translate scan mode</span></div>
         </div>
       </div>
+
+      <div class="card-margin-top">
+        <details open>
+          <summary class="stats-head-row" style="list-style:none">
+            <div>
+              <div class="card-head-small" data-i18n="settings.general.batch_stats_heading">Pre-translate Performance</div>
+              <div class="row-desc-small" style="margin-bottom:0" data-i18n="settings.general.batch_stats_subtitle">Average time for "pre-translate whole chapter" runs, tracked locally on this device</div>
+            </div>
+            <span class="chevron">▾</span>
+          </summary>
+          <div style="margin-top:12px">
+            <div id="batch-stats-list">
+              <div class="stat-row">
+                <span class="stat-name" data-i18n="settings.general.batch_stats_runs">Runs</span>
+                <span class="stat-value" id="batch-stat-runs">–</span>
+              </div>
+              <div class="stat-row">
+                <span class="stat-name" data-i18n="settings.general.batch_stats_avg_duration">Avg. duration</span>
+                <span class="stat-value" id="batch-stat-avg-duration">–</span>
+              </div>
+              <div class="stat-row">
+                <span class="stat-name" data-i18n="settings.general.batch_stats_avg_per_panel">Avg. per panel</span>
+                <span class="stat-value" id="batch-stat-avg-per-panel">–</span>
+              </div>
+              <div class="stat-row">
+                <span class="stat-name" data-i18n="settings.general.batch_stats_avg_per_bubble">Avg. per bubble</span>
+                <span class="stat-value" id="batch-stat-avg-per-bubble">–</span>
+              </div>
+            </div>
+            <div class="btn-row">
+              <button type="button" id="batch-stats-reset-btn" class="btn-ghost" data-i18n="settings.ocr.stats_reset_btn">Reset stats</button>
+            </div>
+            <p class="field-hint" data-i18n="settings.general.batch_stats_hint">
+              Includes cancelled runs — they still did real work up to that point. Stats never leave your device.
+            </p>
+          </div>
+        </details>
+      </div>
     </section>
 
     <!-- ═══════════════════════ OCR Engine tab ═══════════════════════ -->
