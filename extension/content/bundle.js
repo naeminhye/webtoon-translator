@@ -4190,27 +4190,29 @@ function showBatchOverlay(text, onCancel) {
   if (!document.getElementById('wt-batch-overlay-style')) {
     const style = document.createElement('style');
     style.id = 'wt-batch-overlay-style';
-    // Two "eyeball" blobs whose iris grows/shrinks like they're blinking —
-    // pure CSS background-size trick via ::before/::after (no extra DOM,
-    // no emoji), reads as "processing" rather than a generic spinner.
+    // Gooey orbiting-blob loader — two white metaballs chasing each other
+    // around a square, merging via the blur+contrast trick — reads as
+    // "processing" rather than a generic spinner.
     style.textContent =
-      '.wt-batch-loader { display: inline-flex; gap: 10px; margin: 0 auto 16px; justify-content: center; }' +
-      '.wt-batch-loader::before, .wt-batch-loader::after {' +
-      '  content: "";' +
-      '  height: 20px;' +
-      '  aspect-ratio: 1;' +
-      '  border-radius: 50%;' +
+      '.wt-batch-loader {' +
+      '  width: 64px; aspect-ratio: 1; margin: 0 auto 16px;' +
+      '  border: 8px solid #0000;' +
+      '  padding: 4px;' +
+      '  box-sizing: border-box;' +
       '  background:' +
-      '    linear-gradient(var(--wt-ball-color) 0 0) top/100% 40% no-repeat,' +
-      '    radial-gradient(farthest-side, rgba(0,0,0,.45) 95%, #0000) 50%/8px 8px no-repeat #fff;' +
-      '  animation: wt-batch-l7 1.5s infinite alternate ease-in;' +
+      '    radial-gradient(farthest-side, #fff 98%, #0000) 0 0/16px 16px no-repeat,' +
+      '    conic-gradient(from 90deg at 8px 8px, #0000 90deg, #fff 0) content-box,' +
+      '    conic-gradient(from -90deg at 32px 32px, #0000 90deg, #fff 0) content-box,' +
+      '    #000;' +
+      '  filter: blur(3px) contrast(10);' +
+      '  animation: wt-batch-l11 2s infinite;' +
       '}' +
-      '.wt-batch-loader::before { --wt-ball-color: #22c55e; }' +
-      '.wt-batch-loader::after  { --wt-ball-color: #3b82f6; animation-delay: .2s; }' +
-      '@keyframes wt-batch-l7 {' +
-      '  0%, 70% { background-size: 100% 40%, 8px 8px; }' +
-      '  85%     { background-size: 100% 120%, 8px 8px; }' +
-      '  100%    { background-size: 100% 40%, 8px 8px; }' +
+      '@keyframes wt-batch-l11 {' +
+      '  0%   { background-position: 0 0; }' +
+      '  25%  { background-position: 100% 0; }' +
+      '  50%  { background-position: 100% 100%; }' +
+      '  75%  { background-position: 0% 100%; }' +
+      '  100% { background-position: 0% 0; }' +
       '}';
     document.head.appendChild(style);
   }
