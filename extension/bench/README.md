@@ -161,10 +161,18 @@ against GT at all (see suite-c.js's header).
 
 Each suite's **Download JSONL** button is a normal browser download — it
 lands wherever Chrome's downloads go (`chrome://settings/downloads`), not
-anywhere in this repo automatically. Keep them in
-`extension/bench/bench-results/` (gitignored, same as `fixtures/` — see
-`.gitignore`) so they stay out of the repo but live next to the harness
-that produced them.
+anywhere in this repo automatically. Two places to put it after that,
+depending on whether it's disposable or a reference point:
+
+- `extension/bench/bench-results/` — gitignored, same as `fixtures/`. Every
+  raw run lands here; nothing here survives a fresh clone or syncs to
+  another machine, and that's fine — most runs are just "did anything
+  regress since 10 minutes ago."
+- `extension/bench/baselines/` — **committed**. For a run you've decided is
+  a reference point worth keeping across machines/clones/teammates (e.g.
+  "Suite A on the MacBook Pro before moving inference off the main
+  thread"). See `baselines/README.md` for the workflow. This is the one
+  exception to "benchmark output isn't source" in this harness.
 
 ## Comparing two runs
 
