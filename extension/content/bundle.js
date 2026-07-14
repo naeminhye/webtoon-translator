@@ -3239,31 +3239,24 @@ function parseNumberedBatchResponse(raw, count) {
   return out;
 }
 
-// Sends `texts` to the user's BYOK LLM in chunks of CHUNK lines per request
-// (keeps prompts a reasonable size and caps how many lines a single bad
-// response can affect), returning translations in the same order.
+// Sends every one of `texts` to the user's BYOK LLM in a SINGLE request —
+// no chunking — so the whole chapter is translated in exactly one API call.
 async function llmTranslateBatch(llmAdapter, apiKey, model, texts, targetLang, storyCtx) {
-  const CHUNK = 40;
-  const out = new Array(texts.length).fill('');
-  for (let start = 0; start < texts.length; start += CHUNK) {
-    const chunk = texts.slice(start, start + CHUNK);
-    const prompt = formatLlmBatchPrompt(storyCtx ?? null, chunk, targetLang);
-    const raw = await llmAdapter.callApi(apiKey, model, prompt);
-    const parsed = parseNumberedBatchResponse(raw, chunk.length);
-    for (let i = 0; i < chunk.length; i++) out[start + i] = parsed[i];
-  }
-  return out;
+  const prompt = formatLlmBatchPrompt(storyCtx ?? null, texts, targetLang);
+  const raw    = await llmAdapter.callApi(apiKey, model, prompt);
+  return parseNumberedBatchResponse(raw, texts.length);
 }
 
 /**
- * Batch entry point for "pre-translate whole chapter": translates every
- * OCR'd line in one pass instead of one bubble at a time.
- *   - BYOK LLM: one prompt per chunk of lines (see llmTranslateBatch) — a
- *     real single-request batch, and the only provider where cross-bubble
- *     context can actually help.
+ * Batch entry point for "pre-translate whole chapter": OCR runs for every
+ * bubble first, then this is called exactly ONCE with every OCR'd line —
+ * translates the whole chapter in one pass, not one bubble at a time.
+ *   - BYOK LLM: all lines go into a single prompt/request (llmTranslateBatch)
+ *     — one real API call for the entire chapter, and the only provider
+ *     where cross-bubble context can actually help.
  *   - Chrome built-in / Google: no batch endpoint we can rely on, so these
- *     translate sequentially — still a separate phase from OCR (all OCR
- *     happens first, translation happens after), just not one network call.
+ *     still translate one line at a time — but only after all OCR is done,
+ *     same two-phase order, just not a single network call.
  */
 async function autoTranslateBatch(texts, { storyCtx } = {}) {
   if (!texts.length) return [];
@@ -4123,6 +4116,51 @@ function showToast(text, color = '#22c55e', duration = 3000) {
   setTimeout(() => t.remove(), duration);
 }
 
+// ── Batch-run blocking overlay ──────────────────────────────────────────
+// Used by "pre-translate whole chapter": it drives real window.scrollTo()
+// calls and reads live DOM state (image count, scroll height) while it
+// runs, so the user clicking around or navigating away mid-run would both
+// confuse the run and lose whatever OCR/translation was still in flight.
+// This overlay eats all page clicks and beforeunload warns on tab-close.
+function showBatchOverlay(text) {
+  if (!document.getElementById('wt-batch-overlay-style')) {
+    const style = document.createElement('style');
+    style.id = 'wt-batch-overlay-style';
+    style.textContent = '@keyframes wt-batch-spin { to { transform: rotate(360deg); } }';
+    document.head.appendChild(style);
+  }
+  let el = document.getElementById('wt-batch-overlay');
+  if (el) { setBatchOverlayText(text); return el; }
+  el = document.createElement('div');
+  el.id = 'wt-batch-overlay';
+  el.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(12,14,20,0.6);' +
+    'display:flex;align-items:center;justify-content:center;cursor:wait;font-family:system-ui,-apple-system,sans-serif;';
+  el.innerHTML =
+    '<div style="background:#1f2430;border:1px solid rgba(255,255,255,0.14);border-radius:12px;' +
+    'padding:24px 32px;max-width:380px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,0.45);">' +
+    '<div style="width:34px;height:34px;margin:0 auto 14px;border:3px solid rgba(255,255,255,0.2);' +
+    'border-top-color:#3b82f6;border-radius:50%;animation:wt-batch-spin 0.8s linear infinite;"></div>' +
+    '<div id="wt-batch-overlay-text" style="font-size:14px;font-weight:600;color:#fff;margin-bottom:6px;"></div>' +
+    '<div style="font-size:12px;color:rgba(255,255,255,0.65);">Đừng đóng tab hoặc chuyển trang cho đến khi hoàn tất — bản dịch đang chạy trên toàn bộ chapter.</div>' +
+    '</div>';
+  // Swallow all interaction with the underlying page while this is up.
+  ['click', 'mousedown', 'mouseup', 'keydown', 'wheel'].forEach(evt =>
+    el.addEventListener(evt, e => e.stopPropagation(), { capture: true })
+  );
+  document.body.appendChild(el);
+  setBatchOverlayText(text);
+  return el;
+}
+
+function setBatchOverlayText(text) {
+  const t = document.getElementById('wt-batch-overlay-text');
+  if (t) t.textContent = text;
+}
+
+function hideBatchOverlay() {
+  document.getElementById('wt-batch-overlay')?.remove();
+}
+
 // ── BomtoonAdapter ────────────────────────────────────────────────────────────
 // https://www.bomtoon.com/viewer/{titleId}/{chapterId}
 
@@ -4919,32 +4957,23 @@ function bootForPage() {
   // ── batch translate coalescer ────────────────────────────────────────
   // While _batchTranslateMode is on (set by triggerTranslateAllPanels
   // below), runTranslate doesn't translate each job the instant its OCR
-  // finishes — it parks the job's OCR'd text here and returns a promise
-  // that resolves once a flush collects everyone waiting and sends them
-  // through autoTranslateBatch() together: OCR-all-first, translate-all-
-  // together-second, then split back onto each job/bubble, instead of one
-  // interleaved OCR+translate round trip per bubble.
+  // finishes — it parks the job's OCR'd text here and just waits. Nothing
+  // auto-flushes: triggerTranslateAllPanels waits for every bubble's OCR to
+  // finish, then calls flushBatchTranslate() exactly once, sending every
+  // collected line through autoTranslateBatch() together in a single pass
+  // — OCR-all-first, translate-all-together-second, then split back onto
+  // each job/bubble — instead of one interleaved OCR+translate round trip
+  // per bubble.
   let _batchTranslateMode = false;
   let _batchPending       = []; // { job, resolve, reject }
-  let _batchFlushTimer    = null;
-  const BATCH_FLUSH_DEBOUNCE_MS = 1200; // flush once no new OCR result has arrived for this long
-  const BATCH_FLUSH_MAX_PENDING = 40;   // or flush early once this many are waiting
 
   function queueBatchTranslate(job) {
     return new Promise((resolve, reject) => {
       _batchPending.push({ job, resolve, reject });
-      if (_batchPending.length >= BATCH_FLUSH_MAX_PENDING) {
-        flushBatchTranslate();
-      } else {
-        clearTimeout(_batchFlushTimer);
-        _batchFlushTimer = setTimeout(flushBatchTranslate, BATCH_FLUSH_DEBOUNCE_MS);
-      }
     });
   }
 
   async function flushBatchTranslate() {
-    clearTimeout(_batchFlushTimer);
-    _batchFlushTimer = null;
     if (!_batchPending.length) return;
     const items = _batchPending;
     _batchPending = [];
@@ -5646,15 +5675,18 @@ function bootForPage() {
   //      Run twice with a pause so a panel still mid-load after the first
   //      call gets a second chance.
   //   3. OCR happens per-bubble as usual (still serialized — see
-  //      _runExclusiveOcr), but translation is deferred: _batchTranslateMode
-  //      makes runTranslate above park each job in the batch coalescer
-  //      instead of translating it immediately, so OCR keeps running well
-  //      ahead of translation. MAX_CONCURRENT_JOBS is raised for the
-  //      duration so jobs can pile up waiting for a flush instead of being
-  //      throttled to 3 "active" at a time — the batch coalescer (not job
-  //      concurrency) is what caps how many lines go into one translate
-  //      request. Once detection is done, wait for every OCR job (and any
-  //      leftover batch) to actually finish before restoring normal mode.
+  //      _runExclusiveOcr), but translation is deferred entirely:
+  //      _batchTranslateMode makes runTranslate above park each job in the
+  //      batch coalescer instead of translating it immediately. Nothing
+  //      auto-flushes. MAX_CONCURRENT_JOBS is raised for the duration so
+  //      jobs aren't throttled to 3 "active" at a time while parked. Once
+  //      detection AND every job's OCR have both gone idle, the whole
+  //      chapter's collected text is sent through exactly one
+  //      flushBatchTranslate() call — one API request for BYOK LLM — and
+  //      results are split back onto each job/bubble as usual.
+  //   4. A full-page overlay (showBatchOverlay) blocks clicks and warns on
+  //      tab-close for the whole run, since it drives real window.scrollTo()
+  //      calls and would lose in-flight OCR/translate state if interrupted.
   let _batchTranslating = false;
 
   async function triggerTranslateAllPanels() {
@@ -5669,12 +5701,12 @@ function bootForPage() {
     // High enough that essentially no chapter hits this ceiling — OCR stays
     // serialized (_runExclusiveOcr) regardless, so this doesn't parallelize
     // OCR itself, it just stops jobs from being throttled to 3-at-a-time
-    // while parked waiting for a translate flush, which is what let the
-    // batch coalescer actually accumulate full-size (BATCH_FLUSH_MAX_PENDING)
-    // groups instead of flushing 1-3 lines at a time.
+    // while parked waiting for the single translate flush at the end.
     MAX_CONCURRENT_JOBS = 200;
     _batchTranslateMode = true;
-    showToast('Scanning whole chapter and running OCR…', '#3b82f6', 4000);
+    const beforeUnloadGuard = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', beforeUnloadGuard);
+    showBatchOverlay('Đang quét & chạy OCR toàn bộ chapter…');
 
     try {
       const step = Math.max(200, Math.round(window.innerHeight * 0.8));
@@ -5718,32 +5750,30 @@ function bootForPage() {
       if (disposed) return;
       bubbleDetector.detectAll(); // second pass catches any late lazy-loaders from the first
 
-      showToast('Running OCR on every detected bubble…', '#3b82f6', 4000);
-
-      // Wait for every detected tile/job to actually finish OCR (and any
-      // translate-batch flush it triggers) instead of declaring victory the
-      // moment scanning stops — detection and OCR both keep running async
-      // in the background well after the scroll loop above returns.
+      // Wait for every detected tile/job to actually finish OCR instead of
+      // declaring victory the moment scanning stops — detection and OCR
+      // both keep running async in the background well after the scroll
+      // loop above returns. Nothing auto-flushes the translate batch while
+      // this runs (see queueBatchTranslate) — everyone just waits.
       const IDLE_STABLE_NEEDED = 3;
       const MAX_IDLE_CHECKS    = 1200; // ~10 min safety cap
       let idleStable = 0;
       for (let i = 0; i < MAX_IDLE_CHECKS && idleStable < IDLE_STABLE_NEEDED; i++) {
         if (disposed) return;
+        setBatchOverlayText(`Đang chạy OCR… ${_batchPending.length} đoạn text đã xong, đang chờ nốt phần còn lại`);
         const detectIdle = bubbleDetector.isIdle();
         const jobsIdle    = jobManager.activeCount() === 0 && jobManager.queuedCount() === 0;
-        if (detectIdle && jobsIdle) {
-          if (_batchPending.length) {
-            await flushBatchTranslate();
-            idleStable = 0;
-          } else {
-            idleStable++;
-          }
-        } else {
-          idleStable = 0;
-        }
+        idleStable = (detectIdle && jobsIdle) ? idleStable + 1 : 0;
         await new Promise(r => setTimeout(r, 500));
       }
-      if (_batchPending.length) await flushBatchTranslate(); // safety: don't strand a leftover group
+
+      // OCR for the whole chapter is done now — translate everything
+      // collected in exactly one flush (one API call for BYOK LLM).
+      if (disposed) return;
+      if (_batchPending.length) {
+        setBatchOverlayText(`Đang dịch ${_batchPending.length} đoạn text (1 lần gọi API cho toàn bộ)…`);
+        await flushBatchTranslate();
+      }
 
       showToast('✓ Finished translating this chapter.');
     } finally {
@@ -5752,6 +5782,8 @@ function bootForPage() {
       _batchTranslateMode = false;
       MAX_CONCURRENT_JOBS = prevMaxConcurrent;
       _batchTranslating = false;
+      window.removeEventListener('beforeunload', beforeUnloadGuard);
+      hideBatchOverlay();
     }
   }
 
