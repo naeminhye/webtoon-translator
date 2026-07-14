@@ -4162,13 +4162,24 @@ function showBatchOverlay(text) {
   if (!document.getElementById('wt-batch-overlay-style')) {
     const style = document.createElement('style');
     style.id = 'wt-batch-overlay-style';
-    // A little speech bubble that pops/wobbles in and out, like it's
-    // "talking" — three staggered copies read as chatter, closer to a
-    // chat-app "typing…" indicator than a generic spinner.
+    // Three dots that grow/shrink in sequence, pure CSS background-size
+    // trick (no DOM per-dot, no emoji) — reads as "processing" rather than
+    // a generic spinner.
     style.textContent =
-      '@keyframes wt-batch-chatter {' +
-      '  0%, 60%, 100% { transform: scale(0.6) translateY(0); opacity: 0.35; }' +
-      '  30% { transform: scale(1) translateY(-8px); opacity: 1; }' +
+      '.wt-batch-loader {' +
+      '  width: 64px; aspect-ratio: 4; margin: 0 auto 16px;' +
+      '  background:' +
+      '    radial-gradient(circle closest-side, #22c55e 90%, #0000) 0%   50%,' +
+      '    radial-gradient(circle closest-side, #3b82f6 90%, #0000) 50%  50%,' +
+      '    radial-gradient(circle closest-side, #f59e0b 90%, #0000) 100% 50%;' +
+      '  background-repeat: no-repeat;' +
+      '  background-size: calc(100%/3) 100%;' +
+      '  animation: wt-batch-l7 1s infinite linear;' +
+      '}' +
+      '@keyframes wt-batch-l7 {' +
+      '  33% { background-size: calc(100%/3) 0%,   calc(100%/3) 100%, calc(100%/3) 100%; }' +
+      '  50% { background-size: calc(100%/3) 100%, calc(100%/3) 0%,   calc(100%/3) 100%; }' +
+      '  66% { background-size: calc(100%/3) 100%, calc(100%/3) 100%, calc(100%/3) 0%;   }' +
       '}';
     document.head.appendChild(style);
   }
@@ -4178,15 +4189,10 @@ function showBatchOverlay(text) {
   el.id = 'wt-batch-overlay';
   el.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(12,14,20,0.6);' +
     'display:flex;align-items:center;justify-content:center;cursor:wait;font-family:system-ui,-apple-system,sans-serif;';
-  const bubble = (color, delay) =>
-    `<span style="display:inline-block;font-size:22px;line-height:1;filter:drop-shadow(0 0 2px ${color}80);` +
-    `animation:wt-batch-chatter 1.2s ease-in-out infinite;animation-delay:${delay}ms;">💬</span>`;
   el.innerHTML =
     '<div style="background:#1f2430;border:1px solid rgba(255,255,255,0.14);border-radius:12px;' +
     'padding:24px 32px;max-width:380px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,0.45);">' +
-    `<div style="display:flex;gap:10px;justify-content:center;margin:0 0 14px;">` +
-    bubble('#22c55e', 0) + bubble('#3b82f6', 200) + bubble('#f59e0b', 400) +
-    '</div>' +
+    '<div class="wt-batch-loader"></div>' +
     '<div id="wt-batch-overlay-text" style="font-size:14px;font-weight:600;color:#fff;margin-bottom:10px;"></div>' +
     '<div style="width:100%;height:6px;background:rgba(255,255,255,0.15);border-radius:3px;overflow:hidden;">' +
     '<div id="wt-batch-overlay-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#22c55e,#3b82f6,#f59e0b);transition:width 0.35s ease;"></div>' +
