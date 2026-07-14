@@ -18,3 +18,8 @@ __pycache__/
 # (corpus.json.example and the GT schema docs stay committed)
 extension/bench/fixtures/*
 !extension/bench/fixtures/corpus.json.example
+
+# Benchmark run outputs (JSONL from bench.html/bench-c.html's Download
+# button) — machine-specific, timestamped, not source. See "Comparing two
+# runs" in extension/bench/README.md for keeping/diffing them locally.
+extension/bench/bench-results/

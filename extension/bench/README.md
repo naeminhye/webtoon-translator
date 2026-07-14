@@ -157,6 +157,15 @@ record `corpus: "synthetic"` with `corpus_hash: null` (no real corpus
 involved); Suite C's `corpus_hash` is also `null` since it doesn't score
 against GT at all (see suite-c.js's header).
 
+## Where JSONL output goes
+
+Each suite's **Download JSONL** button is a normal browser download — it
+lands wherever Chrome's downloads go (`chrome://settings/downloads`), not
+anywhere in this repo automatically. Keep them in
+`extension/bench/bench-results/` (gitignored, same as `fixtures/` — see
+`.gitignore`) so they stay out of the repo but live next to the harness
+that produced them.
+
 ## Comparing two runs
 
 ```
