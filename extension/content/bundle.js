@@ -3239,21 +3239,57 @@ function parseNumberedBatchResponse(raw, count) {
   return out;
 }
 
-// Sends every one of `texts` to the user's BYOK LLM in a SINGLE request —
-// no chunking — so the whole chapter is translated in exactly one API call.
+// A single giant prompt for an entire chapter (200+ lines) is fragile —
+// large requests are more likely to hit a provider's capacity limits
+// ("high demand"/503, rate limits, timeouts), and a failure used to fall
+// back to translating every single line individually, which is far slower
+// than the batching was supposed to avoid. Retries a transient-looking
+// failure a couple of times with backoff before giving up.
+async function callLlmWithRetry(llmAdapter, apiKey, model, prompt, retries = 2) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await llmAdapter.callApi(apiKey, model, prompt);
+    } catch (err) {
+      const transient = /\b(429|5\d\d)\b|high demand|overloaded|rate.?limit|timeout/i.test(String(err?.message || err));
+      if (!transient || attempt >= retries) throw err;
+      await new Promise(r => setTimeout(r, 1500 * (attempt + 1))); // 1.5s, 3s
+    }
+  }
+}
+
+// Splits `texts` into fixed-size chunks and sends every chunk as its own
+// prompt/request IN PARALLEL (Promise.all) — still far fewer requests than
+// one per bubble, but each request stays a reasonable size and a failure
+// only affects its own ~CHUNK lines instead of the whole chapter. A chunk
+// that fails even after retrying falls back to translating just its own
+// lines individually (also in parallel), not the entire batch.
 async function llmTranslateBatch(llmAdapter, apiKey, model, texts, targetLang, storyCtx) {
-  const prompt = formatLlmBatchPrompt(storyCtx ?? null, texts, targetLang);
-  const raw    = await llmAdapter.callApi(apiKey, model, prompt);
-  return parseNumberedBatchResponse(raw, texts.length);
+  const CHUNK = 40;
+  const chunks = [];
+  for (let start = 0; start < texts.length; start += CHUNK) chunks.push(texts.slice(start, start + CHUNK));
+
+  const results = await Promise.all(chunks.map(async (chunk) => {
+    const prompt = formatLlmBatchPrompt(storyCtx ?? null, chunk, targetLang);
+    try {
+      const raw = await callLlmWithRetry(llmAdapter, apiKey, model, prompt);
+      return parseNumberedBatchResponse(raw, chunk.length);
+    } catch (err) {
+      console.warn(`[WebtoonTranslate] Batch LLM chunk (${chunk.length} lines) failed after retries, falling back to per-line for just this chunk:`, err?.message || err);
+      return Promise.all(chunk.map(t => autoTranslate(t, { storyCtx, forceLlm: true }).catch(() => '')));
+    }
+  }));
+  return results.flat();
 }
 
 /**
  * Batch entry point for "pre-translate whole chapter": OCR runs for every
- * bubble first, then this is called exactly ONCE with every OCR'd line —
- * translates the whole chapter in one pass, not one bubble at a time.
- *   - BYOK LLM: all lines go into a single prompt/request (llmTranslateBatch)
- *     — one real API call for the entire chapter, and the only provider
- *     where cross-bubble context can actually help.
+ * bubble first (or a chunk's worth — see BATCH_FLUSH_SIZE below, which
+ * flushes as soon as enough lines are ready instead of waiting for the
+ * entire chapter), then this translates everything collected in one pass
+ * instead of one bubble at a time.
+ *   - BYOK LLM: chunked + parallel requests (see llmTranslateBatch) — the
+ *     only provider where cross-bubble context can actually help, and
+ *     where fewer, larger requests are a real win.
  *   - Chrome built-in / Google: no batch endpoint we can rely on, so these
  *     still translate one line at a time — but only after all OCR is done,
  *     same two-phase order, just not a single network call.
@@ -4981,14 +5017,18 @@ function bootForPage() {
   // While _batchTranslateMode is on (set by triggerTranslateAllPanels
   // below), runTranslate doesn't translate each job the instant its OCR
   // finishes — it parks the job's OCR'd text here and just waits. Nothing
-  // auto-flushes: triggerTranslateAllPanels waits for every bubble's OCR to
-  // finish, then calls flushBatchTranslate() exactly once, sending every
-  // collected line through autoTranslateBatch() together in a single pass
-  // — OCR-all-first, translate-all-together-second, then split back onto
-  // each job/bubble — instead of one interleaved OCR+translate round trip
-  // per bubble.
+  // auto-flushes once BATCH_FLUSH_SIZE lines are waiting — translation of
+  // that group starts immediately and runs concurrently with OCR still in
+  // progress for the rest of the chapter, instead of every bubble sitting
+  // idle until the very last one finishes OCR. This still translates in
+  // large groups (llmTranslateBatch further splits/parallelizes per-request
+  // — see there), it just doesn't force ALL OCR to finish first: OCR-ahead,
+  // translate-in-groups-behind it, then split each group's results back
+  // onto their jobs/bubbles — instead of one interleaved OCR+translate
+  // round trip per bubble.
   let _batchTranslateMode = false;
   let _batchPending       = []; // { job, resolve, reject }
+  const BATCH_FLUSH_SIZE  = 40; // matches llmTranslateBatch's own per-request chunk size
   // Progress accounting for the overlay's OCR-phase percentage: every job
   // onDetectedBoxes actually creates during a batch run increments this;
   // "done" is inferred as (total - jobManager.jobs.size) since the job map
@@ -5000,6 +5040,7 @@ function bootForPage() {
   function queueBatchTranslate(job) {
     return new Promise((resolve, reject) => {
       _batchPending.push({ job, resolve, reject });
+      if (_batchPending.length >= BATCH_FLUSH_SIZE) flushBatchTranslate(); // fire-and-forget
     });
   }
 
@@ -5720,15 +5761,22 @@ function bootForPage() {
   //      Run twice with a pause so a panel still mid-load after the first
   //      call gets a second chance.
   //   3. OCR happens per-bubble as usual (still serialized — see
-  //      _runExclusiveOcr), but translation is deferred entirely:
-  //      _batchTranslateMode makes runTranslate above park each job in the
-  //      batch coalescer instead of translating it immediately. Nothing
-  //      auto-flushes. MAX_CONCURRENT_JOBS is raised for the duration so
-  //      jobs aren't throttled to 3 "active" at a time while parked. Once
-  //      detection AND every job's OCR have both gone idle, the whole
-  //      chapter's collected text is sent through exactly one
-  //      flushBatchTranslate() call — one API request for BYOK LLM — and
-  //      results are split back onto each job/bubble as usual.
+  //      _runExclusiveOcr), but translation is deferred: _batchTranslateMode
+  //      makes runTranslate above park each job in the batch coalescer
+  //      instead of translating it immediately. MAX_CONCURRENT_JOBS is
+  //      raised for the duration so jobs aren't throttled to 3 "active" at
+  //      a time while parked. The coalescer auto-flushes every
+  //      BATCH_FLUSH_SIZE (40) lines instead of waiting for the whole
+  //      chapter — translation of an early group starts while OCR keeps
+  //      running for the rest, and llmTranslateBatch further splits/
+  //      parallelizes each flush's own texts across a few concurrent
+  //      requests with retry-on-transient-failure. A single giant
+  //      "everything in one request" prompt turned out to be both slower
+  //      (nothing translates until literally the last bubble finishes OCR)
+  //      and fragile (one provider hiccup on a 200+ line prompt used to
+  //      fall back to translating all 200+ lines individually). Whatever's
+  //      still pending once detection AND every job's OCR go idle gets one
+  //      final flush, and results are split back onto each job/bubble.
   //   4. A full-page overlay (showBatchOverlay) blocks clicks and warns on
   //      tab-close for the whole run, since it drives real window.scrollTo()
   //      calls and would lose in-flight OCR/translate state if interrupted.
@@ -5807,8 +5855,10 @@ function bootForPage() {
       // Wait for every detected tile/job to actually finish OCR instead of
       // declaring victory the moment scanning stops — detection and OCR
       // both keep running async in the background well after the scroll
-      // loop above returns. Nothing auto-flushes the translate batch while
-      // this runs (see queueBatchTranslate) — everyone just waits.
+      // loop above returns. The translate batch auto-flushes every
+      // BATCH_FLUSH_SIZE lines while this runs (see queueBatchTranslate),
+      // so translations for earlier groups are already showing up on the
+      // page by the time this loop finishes for the last few bubbles.
       const IDLE_STABLE_NEEDED = 3;
       const MAX_IDLE_CHECKS    = 1200; // ~10 min safety cap
       let idleStable = 0;
@@ -5817,7 +5867,7 @@ function bootForPage() {
         const remaining = jobManager.jobs.size;
         const done  = Math.max(0, _batchJobsTotal - remaining);
         const total = Math.max(_batchJobsTotal, done, 1);
-        setBatchOverlayText(`Đang chạy OCR… ${done}/${_batchJobsTotal || done} đoạn text đã xong`);
+        setBatchOverlayText(`Đang OCR + dịch theo từng nhóm… ${done}/${_batchJobsTotal || done} đoạn text đã xong`);
         setBatchOverlayProgress(STAGE_SCAN_PCT + (done / total) * (STAGE_OCR_PCT - STAGE_SCAN_PCT));
         const detectIdle = bubbleDetector.isIdle();
         const jobsIdle    = jobManager.activeCount() === 0 && jobManager.queuedCount() === 0;
@@ -5825,13 +5875,13 @@ function bootForPage() {
         await new Promise(r => setTimeout(r, 500));
       }
 
-      // OCR for the whole chapter is done now — translate everything
-      // collected in exactly one flush (one API call for BYOK LLM).
+      // OCR (and translation of everything that already formed a full
+      // group) is done — flush whatever's left over (a partial group).
       if (disposed) return;
       setBatchOverlayProgress(STAGE_OCR_PCT);
       if (_batchPending.length) {
-        setBatchOverlayText(`Đang dịch ${_batchPending.length} đoạn text (1 lần gọi API cho toàn bộ)…`);
-        setBatchOverlayProgress(95); // no real sub-progress for one request — just show "almost there"
+        setBatchOverlayText(`Đang dịch nốt ${_batchPending.length} đoạn text còn lại…`);
+        setBatchOverlayProgress(95);
         await flushBatchTranslate();
       }
 
