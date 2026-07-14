@@ -3257,14 +3257,14 @@ function parseNumberedBatchResponse(raw, count) {
 // back to translating every single line individually, which is far slower
 // than the batching was supposed to avoid. Retries a transient-looking
 // failure a couple of times with backoff before giving up.
-async function callLlmWithRetry(llmAdapter, apiKey, model, prompt, retries = 2) {
+async function callLlmWithRetry(llmAdapter, apiKey, model, prompt, retries = 3) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await llmAdapter.callApi(apiKey, model, prompt);
     } catch (err) {
       const transient = /\b(429|5\d\d)\b|high demand|overloaded|rate.?limit|timeout/i.test(String(err?.message || err));
       if (!transient || attempt >= retries) throw err;
-      await new Promise(r => setTimeout(r, 1500 * (attempt + 1))); // 1.5s, 3s
+      await new Promise(r => setTimeout(r, 2000 * (attempt + 1))); // 2s, 4s, 6s
     }
   }
 }
@@ -4190,24 +4190,27 @@ function showBatchOverlay(text, onCancel) {
   if (!document.getElementById('wt-batch-overlay-style')) {
     const style = document.createElement('style');
     style.id = 'wt-batch-overlay-style';
-    // Three dots that grow/shrink in sequence, pure CSS background-size
-    // trick (no DOM per-dot, no emoji) — reads as "processing" rather than
-    // a generic spinner.
+    // Two "eyeball" blobs whose iris grows/shrinks like they're blinking —
+    // pure CSS background-size trick via ::before/::after (no extra DOM,
+    // no emoji), reads as "processing" rather than a generic spinner.
     style.textContent =
-      '.wt-batch-loader {' +
-      '  width: 64px; aspect-ratio: 4; margin: 0 auto 16px;' +
+      '.wt-batch-loader { display: inline-flex; gap: 10px; margin: 0 auto 16px; justify-content: center; }' +
+      '.wt-batch-loader::before, .wt-batch-loader::after {' +
+      '  content: "";' +
+      '  height: 20px;' +
+      '  aspect-ratio: 1;' +
+      '  border-radius: 50%;' +
       '  background:' +
-      '    radial-gradient(circle closest-side, #22c55e 90%, #0000) 0%   50%,' +
-      '    radial-gradient(circle closest-side, #3b82f6 90%, #0000) 50%  50%,' +
-      '    radial-gradient(circle closest-side, #f59e0b 90%, #0000) 100% 50%;' +
-      '  background-repeat: no-repeat;' +
-      '  background-size: calc(100%/3) 100%;' +
-      '  animation: wt-batch-l7 1s infinite linear;' +
+      '    linear-gradient(var(--wt-ball-color) 0 0) top/100% 40% no-repeat,' +
+      '    radial-gradient(farthest-side, rgba(0,0,0,.45) 95%, #0000) 50%/8px 8px no-repeat #fff;' +
+      '  animation: wt-batch-l7 1.5s infinite alternate ease-in;' +
       '}' +
+      '.wt-batch-loader::before { --wt-ball-color: #22c55e; }' +
+      '.wt-batch-loader::after  { --wt-ball-color: #3b82f6; animation-delay: .2s; }' +
       '@keyframes wt-batch-l7 {' +
-      '  33% { background-size: calc(100%/3) 0%,   calc(100%/3) 100%, calc(100%/3) 100%; }' +
-      '  50% { background-size: calc(100%/3) 100%, calc(100%/3) 0%,   calc(100%/3) 100%; }' +
-      '  66% { background-size: calc(100%/3) 100%, calc(100%/3) 100%, calc(100%/3) 0%;   }' +
+      '  0%, 70% { background-size: 100% 40%, 8px 8px; }' +
+      '  85%     { background-size: 100% 120%, 8px 8px; }' +
+      '  100%    { background-size: 100% 40%, 8px 8px; }' +
       '}';
     document.head.appendChild(style);
   }
@@ -5134,7 +5137,19 @@ function bootForPage() {
       const translated = await autoTranslateBatch(texts, { storyCtx });
       items.forEach((it, i) => it.resolve(translated[i] || it.job.originalText));
     } catch (err) {
-      items.forEach(it => it.reject(err));
+      // autoTranslateBatch already retries and falls back to per-line
+      // translation internally (see llmTranslateBatch) — reaching here
+      // means the whole group failed completely. Rejecting used to cancel
+      // every job in the group silently (JobManager._process's catch
+      // treats a rejected translate on an onnx-detect job as "drop it, no
+      // error shown" — see there): a whole chunk's worth of bubbles would
+      // just vanish with zero indication why. Resolve with each job's own
+      // original (untranslated) text instead, same fallback already used
+      // on the success path above — the bubble still gets an overlay (in
+      // Korean) that the user can see and manually re-translate, instead
+      // of disappearing outright.
+      console.warn(`[WebtoonTranslate] Batch translate group of ${items.length} failed entirely, showing original text for these bubbles:`, err?.message || err);
+      items.forEach(it => it.resolve(it.job.originalText));
     }
   }
 
@@ -6055,29 +6070,33 @@ function bootForPage() {
       // (see autoTranslateBatch/llmTranslateBatch).
       try {
         // OCR is fully serialized (_runExclusiveOcr) — zero overlap between
-        // jobs — so summing each job's own OCR duration equals real OCR
-        // wall-clock time exactly. Translate is NOT serialized (concurrent
-        // requests, see autoTranslateBatch/llmTranslateBatch), so summing
-        // per-job translate durations is cumulative work time, not wall-
-        // clock — reported separately and labeled as such, not added into
-        // a "the rest was scanning" subtraction (which could go negative).
-        let ocrMs = 0, translateWorkMs = 0, measured = 0;
+        // jobs — so summing each job's own detect-done→ocr-done duration
+        // equals real OCR wall-clock time exactly. (NOT translate-start:
+        // that now marks when a job's GROUP actually starts its API call —
+        // see flushBatchTranslate — which can be well after this job's own
+        // OCR finished, while it sat waiting for the rest of its group.)
+        // Translate is NOT serialized (concurrent requests, see
+        // autoTranslateBatch/llmTranslateBatch), so summing per-job
+        // translate-start→translate-done durations is cumulative work
+        // time, not wall-clock — reported separately and labeled as such,
+        // not added into a "the rest was scanning" subtraction (which
+        // could go negative).
+        let ocrMs = 0, ocrMeasured = 0, translateWorkMs = 0, translateMeasured = 0;
         for (const jobId of _batchJobIds) {
           const detectDone     = performance.getEntriesByName(`wt:detect-done:${jobId}`)[0]?.startTime;
+          const ocrDone        = performance.getEntriesByName(`wt:ocr-done:${jobId}`)[0]?.startTime;
           const translateStart = performance.getEntriesByName(`wt:translate-start:${jobId}`)[0]?.startTime;
           const translateDone  = performance.getEntriesByName(`wt:translate-done:${jobId}`)[0]?.startTime;
-          if (detectDone == null || translateStart == null) continue;
-          ocrMs += translateStart - detectDone;
-          measured++;
-          if (translateDone != null) translateWorkMs += translateDone - translateStart;
+          if (detectDone != null && ocrDone != null) { ocrMs += ocrDone - detectDone; ocrMeasured++; }
+          if (translateStart != null && translateDone != null) { translateWorkMs += translateDone - translateStart; translateMeasured++; }
         }
         const totalMs = Date.now() - runStartedAt;
         console.log(
           `[WebtoonTranslate] Pre-translate run: ${_batchJobIds.length} bubbles, ${(totalMs / 1000).toFixed(1)}s total. ` +
-          `OCR (serialized, wall-clock): ${(ocrMs / 1000).toFixed(1)}s. ` +
-          `Translate (concurrent, cumulative work — not wall-clock): ${(translateWorkMs / 1000).toFixed(1)}s. ` +
-          `Rest (scan + waits): ~${Math.max(0, (totalMs - ocrMs) / 1000).toFixed(1)}s. ` +
-          `(${measured}/${_batchJobIds.length} jobs had usable marks)`
+          `OCR (serialized, wall-clock): ${(ocrMs / 1000).toFixed(1)}s (${ocrMeasured}/${_batchJobIds.length} measured). ` +
+          `Translate (concurrent, cumulative work — not wall-clock): ${(translateWorkMs / 1000).toFixed(1)}s (${translateMeasured}/${_batchJobIds.length} measured). ` +
+          `Rest (scan + waits): ~${Math.max(0, (totalMs - ocrMs) / 1000).toFixed(1)}s.` +
+          (translateMeasured < _batchJobIds.length ? ` ${_batchJobIds.length - translateMeasured} job(s) never got a translate-done mark — likely cancelled after their group failed to translate.` : '')
         );
       } catch { /* diagnostic only — never let this break the actual run */ }
 
