@@ -5167,9 +5167,17 @@ function bootForPage() {
   const ONNX_MAX_BOX_PX   = 1000; // a bubble is never this tall/wide — bad box, would OCR huge crops
   const ONNX_MAX_OVERLAP  = 0.1;  // skip boxes already covered by a job/annotation
   const ONNX_MERGE_PAD    = 12;   // px halo used to merge fragments of one text block
-  const ONNX_AUTO_MIN_SCORE = 0.45; // SFX/stylised text scores lower than bubble text;
+  const ONNX_AUTO_MIN_SCORE = 0.32; // SFX/stylised text scores lower than bubble text;
                                     // the model's 2 classes are languages (eng/ja), not
-                                    // bubble-vs-SFX, so score is the only usable signal
+                                    // bubble-vs-SFX, so score is the only usable signal.
+                                    // Lowered from 0.45 — plain narration/caption text
+                                    // with no bubble shape was scoring below that and
+                                    // getting silently dropped entirely (see the
+                                    // console.log below for the boxes this still
+                                    // rejects, to tune further). A false positive here
+                                    // just fails OCR/errors silently for an onnx-detect
+                                    // job (see JobManager._process's onnx-detect catch
+                                    // branch) — cheaper than missing real text.
 
   // Nearby fragments (multi-line text detected as separate boxes) become one
   // OCR region; a merged box keeps the max score of its parts.
@@ -5244,7 +5252,12 @@ function bootForPage() {
       const bw = b.x2 - b.x1, bh = b.y2 - b.y1;
       if (bw < ONNX_MIN_BOX_PX || bh < ONNX_MIN_BOX_PX) continue;
       if (bw > ONNX_MAX_BOX_PX || bh > ONNX_MAX_BOX_PX) continue;
-      if (b.score < ONNX_AUTO_MIN_SCORE) continue;
+      if (b.score < ONNX_AUTO_MIN_SCORE) {
+        // Logged so a still-missed region's actual score is visible in
+        // DevTools instead of having to guess where to set the threshold.
+        console.log(`[WebtoonTranslate] Auto-detect: box below score threshold (${b.score.toFixed(2)} < ${ONNX_AUTO_MIN_SCORE})`, b);
+        continue;
+      }
 
       // Locate the panel image containing the box centre.
       const cx = (b.x1 + b.x2) / 2;
