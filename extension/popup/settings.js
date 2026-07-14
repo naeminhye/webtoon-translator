@@ -69,6 +69,8 @@ const BYOK_KEY_STR           = 'wt:byok-key';
 const BYOK_PROVIDER_KEY      = 'wt:byok-provider';
 const BYOK_MODEL_STR         = 'wt:byok-model';
 const BYOK_MODE_KEY          = 'wt:byok-mode';
+const BYOK_PRESETS_KEY       = 'wt:byok-presets';
+const BYOK_ACTIVE_PRESET_KEY = 'wt:byok-active-preset';
 const OVERLAY_MODE_KEY       = 'wt:overlay-mode';
 const AUTO_DETECT_KEY        = 'wt:auto-detect';
 
@@ -342,7 +344,6 @@ async function initTranslationSettings() {
   }
   applyProvider(initialProvider);
   $('target-lang').value = stored[TRANSLATE_LANG_KEY];
-  if (stored[BYOK_KEY_STR]) $('byok-key').value = stored[BYOK_KEY_STR];
 
   // Provider dropdown is populated from the shared adapter registry
   // (extension/shared/llm-adapters.js) — never a separately hardcoded list —
@@ -352,38 +353,149 @@ async function initTranslationSettings() {
     .map(a => `<option value="${a.id}">${a.label}</option>`)
     .join('');
 
-  let byokProvider = stored[BYOK_PROVIDER_KEY];
-  let byokModel    = stored[BYOK_MODEL_STR];
-  // Migrate a pre-existing combined "provider/model" string (the old single
-  // free-text field) into the two new separate fields, once, on first load.
-  if (!byokProvider && byokModel.includes('/')) {
-    const slash = byokModel.indexOf('/');
-    byokProvider = byokModel.slice(0, slash);
-    byokModel    = byokModel.slice(slash + 1);
-    await chrome.storage.local.set({ [BYOK_PROVIDER_KEY]: byokProvider, [BYOK_MODEL_STR]: byokModel });
-  }
-  if (!byokProvider) byokProvider = WT_LLM_ADAPTERS[0]?.id || '';
-
   function applyByokProviderPlaceholder(providerId) {
     const adapter = getLlmAdapter(providerId);
     $('byok-model').placeholder = adapter?.modelPlaceholder || '';
   }
 
-  providerSelect.value = byokProvider;
-  applyByokProviderPlaceholder(byokProvider);
-  if (byokModel) $('byok-model').value = byokModel;
+  // ── BYOK presets ─────────────────────────────────────────────────────
+  // Each preset bundles {name, provider, model, key, mode} so users can
+  // save e.g. a "Fast & cheap" and a "High quality" combo and switch
+  // between them without retyping a key. The active preset's fields are
+  // mirrored into the legacy flat wt:byok-* keys on every change, so the
+  // content-script translate pipeline (bundle.js) keeps reading a single
+  // "current" value and never needs to know presets exist.
+  function makePresetId() {
+    return `preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
 
-  // BYOK mode radio
+  const presetStored = await chrome.storage.local.get({
+    [BYOK_PRESETS_KEY]: [],
+    [BYOK_ACTIVE_PRESET_KEY]: '',
+  });
+  let presets = presetStored[BYOK_PRESETS_KEY];
+  let activePresetId = presetStored[BYOK_ACTIVE_PRESET_KEY];
+
+  if (!presets.length) {
+    // First run after presets shipped (or a fresh install): migrate
+    // whatever single BYOK config already existed (or blanks) into one
+    // "Default" preset.
+    let legacyProvider = stored[BYOK_PROVIDER_KEY];
+    let legacyModel    = stored[BYOK_MODEL_STR];
+    // Migrate a pre-existing combined "provider/model" string (the old
+    // single free-text field) into the two separate fields, once.
+    if (!legacyProvider && legacyModel.includes('/')) {
+      const slash = legacyModel.indexOf('/');
+      legacyProvider = legacyModel.slice(0, slash);
+      legacyModel    = legacyModel.slice(slash + 1);
+    }
+    presets = [{
+      id: makePresetId(),
+      name: 'Default',
+      provider: legacyProvider || WT_LLM_ADAPTERS[0]?.id || '',
+      model: legacyModel,
+      key: stored[BYOK_KEY_STR],
+      mode: stored[BYOK_MODE_KEY] || 'always',
+    }];
+    activePresetId = presets[0].id;
+    await chrome.storage.local.set({ [BYOK_PRESETS_KEY]: presets, [BYOK_ACTIVE_PRESET_KEY]: activePresetId });
+  }
+  if (!presets.some(p => p.id === activePresetId)) activePresetId = presets[0].id;
+
+  function getActivePreset() {
+    return presets.find(p => p.id === activePresetId) || presets[0];
+  }
+
+  async function persistPresets() {
+    await chrome.storage.local.set({ [BYOK_PRESETS_KEY]: presets, [BYOK_ACTIVE_PRESET_KEY]: activePresetId });
+  }
+
+  async function mirrorActivePresetToLegacy() {
+    const preset = getActivePreset();
+    await chrome.storage.local.set({
+      [BYOK_KEY_STR]:      preset.key,
+      [BYOK_PROVIDER_KEY]: preset.provider,
+      [BYOK_MODEL_STR]:    preset.model,
+      [BYOK_MODE_KEY]:     preset.mode,
+    });
+  }
+
+  function renderPresetSelect() {
+    const select = $('byok-preset-select');
+    select.innerHTML = presets.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+    select.value = activePresetId;
+    $('byok-preset-delete-btn').disabled = presets.length <= 1;
+  }
+
+  function applyActivePresetToFields() {
+    const preset = getActivePreset();
+    $('byok-key').value = preset.key || '';
+    providerSelect.value = preset.provider || WT_LLM_ADAPTERS[0]?.id || '';
+    applyByokProviderPlaceholder(providerSelect.value);
+    $('byok-model').value = preset.model || '';
+    byokModeRadios.forEach(r => { r.checked = r.value === (preset.mode || 'always'); });
+    updateKeyWarnings();
+  }
+
+  renderPresetSelect();
+
+  $('byok-preset-select').addEventListener('change', async (e) => {
+    activePresetId = e.target.value;
+    applyActivePresetToFields();
+    await persistPresets();
+    await mirrorActivePresetToLegacy();
+  });
+
+  $('byok-preset-add-btn').addEventListener('click', async () => {
+    const name = window.prompt('Preset name:', `Preset ${presets.length + 1}`);
+    if (!name) return;
+    const preset = { id: makePresetId(), name: name.trim(), provider: WT_LLM_ADAPTERS[0]?.id || '', model: '', key: '', mode: 'always' };
+    presets.push(preset);
+    activePresetId = preset.id;
+    renderPresetSelect();
+    applyActivePresetToFields();
+    await persistPresets();
+    await mirrorActivePresetToLegacy();
+  });
+
+  $('byok-preset-rename-btn').addEventListener('click', async () => {
+    const preset = getActivePreset();
+    const name = window.prompt('Preset name:', preset.name);
+    if (!name) return;
+    preset.name = name.trim();
+    renderPresetSelect();
+    await persistPresets();
+  });
+
+  $('byok-preset-delete-btn').addEventListener('click', async () => {
+    if (presets.length <= 1) return;
+    const preset = getActivePreset();
+    if (!window.confirm(`Delete preset "${preset.name}"?`)) return;
+    presets = presets.filter(p => p.id !== preset.id);
+    activePresetId = presets[0].id;
+    renderPresetSelect();
+    applyActivePresetToFields();
+    await persistPresets();
+    await mirrorActivePresetToLegacy();
+  });
+
+  // BYOK mode radio — scoped to the active preset.
   const byokModeRadios = document.querySelectorAll('input[name="byok-mode"]');
-  byokModeRadios.forEach(r => { r.checked = r.value === stored[BYOK_MODE_KEY]; });
   byokModeRadios.forEach(r => r.addEventListener('change', async () => {
-    if (r.checked) await chrome.storage.local.set({ [BYOK_MODE_KEY]: r.value });
+    if (!r.checked) return;
+    getActivePreset().mode = r.value;
+    await persistPresets();
+    await mirrorActivePresetToLegacy();
   }));
 
   providerSelect.addEventListener('change', async (e) => {
     applyByokProviderPlaceholder(e.target.value);
-    await chrome.storage.local.set({ [BYOK_PROVIDER_KEY]: e.target.value });
+    getActivePreset().provider = e.target.value;
+    await persistPresets();
+    await mirrorActivePresetToLegacy();
   });
+
+  applyActivePresetToFields();
 
   // ── Autosave: every control persists on change; no Save button ──
   // Provider radios: warn (not block) when a paid provider is picked without
@@ -406,19 +518,23 @@ async function initTranslationSettings() {
     if ([...radios].find(r => r.checked)?.value === 'chrome-builtin') refreshChromeBuiltinStatus();
   });
 
-  // Debounced autosave for text inputs so we don't hammer storage per keystroke.
-  function autosaveInput(el, key) {
+  // Debounced autosave for text inputs — writes into the active preset and
+  // mirrors to the legacy flat key bundle.js reads.
+  function autosavePresetField(el, field, legacyKey) {
     let t = null;
     el.addEventListener('input', () => {
       clearTimeout(t);
       t = setTimeout(async () => {
-        await chrome.storage.local.set({ [key]: el.value.trim() });
+        const value = el.value.trim();
+        getActivePreset()[field] = value;
+        await persistPresets();
+        await chrome.storage.local.set({ [legacyKey]: value });
         updateKeyWarnings();
       }, 400);
     });
   }
-  autosaveInput($('byok-key'),    BYOK_KEY_STR);
-  autosaveInput($('byok-model'),  BYOK_MODEL_STR);
+  autosavePresetField($('byok-key'),   'key',   BYOK_KEY_STR);
+  autosavePresetField($('byok-model'), 'model', BYOK_MODEL_STR);
 }
 
 async function initDisplaySettings() {

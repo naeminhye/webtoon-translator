@@ -77,6 +77,7 @@ async function init() {
   if (__DEV_TOOLS__) {
     $('btn-panel')?.addEventListener('click', () => { chrome.tabs.sendMessage(activeTabId, { type: 'TOGGLE_PANEL' }); window.close(); });
   }
+  $('btn-translate-all').addEventListener('click', () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRANSLATE_ALL_PANELS' }); window.close(); });
   $('btn-clear').addEventListener('click',  () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_CLEAR' }); window.close(); });
 }
 

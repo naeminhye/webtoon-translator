@@ -5446,6 +5446,7 @@ function bootForPage() {
       panel?.toggle();
     }
     if (message.type === 'TRIGGER_CLEAR')  triggerClear();
+    if (message.type === 'TRANSLATE_ALL_PANELS') triggerTranslateAllPanels();
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
@@ -5466,6 +5467,47 @@ function bootForPage() {
       showToast('✓ Cleared all translations for this chapter.');
     } catch (err) {
       showToast(`✗ Clear failed: ${err.message}`, '#ef4444');
+    }
+  }
+
+  // ── batch: pre-translate the whole chapter ──────────────────────────────
+  // Reuses the exact same detect → onDetectedBoxes → createJobFromSelection →
+  // jobManager pipeline that auto-detect uses while scrolling. bubbleDetector
+  // is viewport-gated by design (see scheduleTiles), so instead of bypassing
+  // that we drive real scroll steps down the page — this also naturally
+  // triggers each site adapter's lazy-load watcher (watchNewImages) so
+  // panels that haven't rendered yet get picked up too.
+
+  let _batchTranslating = false;
+
+  async function triggerTranslateAllPanels() {
+    if (_batchTranslating) { showToast('Already translating this chapter…', '#f59e0b'); return; }
+    if (!images.length) { showToast('No panels found on this page yet.', '#f59e0b'); return; }
+    _batchTranslating = true;
+
+    const wasArmed = !!bubbleDetector.onBoxes;
+    bubbleDetector.onBoxes = onDetectedBoxes;
+    const startY = window.scrollY;
+    showToast('Scanning whole chapter for bubbles…', '#3b82f6', 4000);
+
+    try {
+      const step = Math.max(200, Math.round(window.innerHeight * 0.8));
+      let y = 0;
+      const MAX_STEPS = 500; // safety cap — a chapter this tall would be a bug elsewhere
+      for (let i = 0; i < MAX_STEPS; i++) {
+        if (disposed) return;
+        const maxScroll = Math.max(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) - window.innerHeight);
+        window.scrollTo(0, Math.min(y, maxScroll));
+        await new Promise(r => setTimeout(r, 300)); // let lazy-loaders + the scroll listener settle
+        bubbleDetector.detect();
+        if (y >= maxScroll) break;
+        y += step;
+      }
+      showToast('✓ Finished scanning — translations will keep appearing as OCR/translate jobs complete.');
+    } finally {
+      if (!disposed) window.scrollTo(0, startY);
+      if (!wasArmed) bubbleDetector.onBoxes = null;
+      _batchTranslating = false;
     }
   }
 

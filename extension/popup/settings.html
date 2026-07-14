@@ -305,7 +305,19 @@
 
       <!-- BYOK API key + model (shown when Bring Your Own Key selected) -->
       <div id="byok-key-row" class="field-block hidden">
-        <div class="field-label">LLM API Key</div>
+        <div class="field-label">Preset</div>
+        <div class="lang-select-wrap">
+          <select id="byok-preset-select" class="lang-select"></select>
+          <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button type="button" id="byok-preset-add-btn" class="btn-ghost">+ New preset</button>
+          <button type="button" id="byok-preset-rename-btn" class="btn-ghost">Rename</button>
+          <button type="button" id="byok-preset-delete-btn" class="btn-ghost">Delete</button>
+        </div>
+        <p class="field-hint">Save separate key/provider/model/mode combos — e.g. "Fast &amp; cheap" vs "High quality" — and switch between them instantly without retyping a key.</p>
+
+        <div class="field-label" style="margin-top:16px">LLM API Key</div>
         <input type="password" id="byok-key" class="text-input" placeholder="Paste your LLM API key…" autocomplete="off" />
         <p id="byok-key-error" class="field-error hidden">An API key is required to use Bring Your Own Key.</p>
         <div class="field-label" style="margin-top:14px">Provider</div>

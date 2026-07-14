@@ -79,6 +79,8 @@ function walk(dir, fn) {
   }
 }
 
+require('./check-version.js');
+
 rmrf(DIST_DIR);
 copyDir(SRC_DIR, DIST_DIR);
 walk(DIST_DIR, processFile);
