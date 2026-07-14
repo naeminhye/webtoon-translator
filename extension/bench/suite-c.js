@@ -78,7 +78,14 @@ async function injectPages(pages) {
     const img = document.createElement('img');
     img.className = 'wt-bench-page';
     img.style.display = 'block';
-    img.style.width = '400px'; // fixed display width — deterministic tiling math across machines
+    // Deliberately NO forced width. content/bundle.js's bubbleDetector tiles
+    // off getBoundingClientRect() (displayed size), not naturalWidth/Height —
+    // forcing a small display width here would shrink real page content
+    // before the detector ever sees it, silently tanking recall (this was
+    // a real bug: an earlier version forced width:400px "for deterministic
+    // tiling math", which instead produced 0 detections against a real
+    // corpus with real page resolutions). Natural size is what a real
+    // webtoon viewer actually renders close to, so it's what belongs here.
     await new Promise((resolve, reject) => {
       img.onload = resolve;
       img.onerror = () => reject(new Error(`Failed to load fixtures/${page.file}`));
