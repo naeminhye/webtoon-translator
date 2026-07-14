@@ -388,7 +388,19 @@ async function initTranslationSettings() {
     chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: initialProvider });
   }
   applyProvider(initialProvider);
-  $('target-lang').value = stored[TRANSLATE_LANG_KEY];
+
+  // Target language options were trimmed down to just Vietnamese/English —
+  // fall a stored value from before that change back to the default so the
+  // dropdown and chrome.storage.local (which the content script's
+  // autoTranslate() reads directly, not the dropdown) don't silently drift
+  // apart: an unmigrated stale value would keep translating into the old
+  // language while this UI displays "Vietnamese".
+  let initialLang = stored[TRANSLATE_LANG_KEY];
+  if (!['vi', 'en'].includes(initialLang)) {
+    initialLang = 'vi';
+    chrome.storage.local.set({ [TRANSLATE_LANG_KEY]: initialLang });
+  }
+  $('target-lang').value = initialLang;
 
   // Provider dropdown is populated from the shared adapter registry
   // (extension/shared/llm-adapters.js) — never a separately hardcoded list —

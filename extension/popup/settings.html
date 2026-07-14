@@ -233,7 +233,7 @@
 
       <div id="paddleocr-local-row" class="field-block hidden">
         <div class="field-label" data-i18n="settings.ocr.models_label">PaddleOCR Models</div>
-        <div class="model-status">
+        <div class="model-status model-status-2col">
           <div class="model-status-row">
             <span class="model-status-dot" id="paddle-det-dot"></span>
             <span class="model-status-name"><span data-i18n="settings.ocr.detector_name">Detector</span> <span class="model-status-size">≈4.7 MB</span></span>
@@ -303,7 +303,19 @@
         </div>
       </div>
 
-      <div class="field-label" style="margin-bottom:8px" data-i18n="settings.tr.api_label">Translation API</div>
+      <!-- Target language -->
+      <div class="field-block" style="margin-top:0">
+        <div class="field-label" data-i18n="settings.tr.target_lang_label">Target Language</div>
+        <div class="lang-select-wrap">
+          <select id="target-lang" class="lang-select">
+            <option value="vi">🇻🇳 Vietnamese</option>
+            <option value="en">🇬🇧 English</option>
+          </select>
+          <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+      </div>
+
+      <div class="field-label card-margin-top" style="margin-bottom:8px" data-i18n="settings.tr.api_label">Translation API</div>
       <div class="engine-grid">
         <label class="engine-card" id="card-chrome-builtin">
           <input type="radio" name="translate-provider" value="chrome-builtin" class="engine-radio" checked />
@@ -351,27 +363,36 @@
       <!-- BYOK API key + model (shown when Bring Your Own Key selected) -->
       <div id="byok-key-row" class="field-block hidden">
         <div class="field-label" data-i18n="settings.tr.preset_label">Preset</div>
-        <div class="lang-select-wrap">
-          <select id="byok-preset-select" class="lang-select"></select>
-          <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-        </div>
-        <div class="btn-row" style="margin-top:8px">
-          <button type="button" id="byok-preset-add-btn" class="btn-ghost" data-i18n="settings.tr.preset_add_btn">+ New preset</button>
-          <button type="button" id="byok-preset-rename-btn" class="btn-ghost" data-i18n="settings.tr.preset_rename_btn">Rename</button>
-          <button type="button" id="byok-preset-delete-btn" class="btn-ghost" data-i18n="settings.tr.preset_delete_btn">Delete</button>
+        <div class="preset-row">
+          <div class="lang-select-wrap">
+            <select id="byok-preset-select" class="lang-select"></select>
+            <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+          <div class="btn-row">
+            <button type="button" id="byok-preset-add-btn" class="btn-ghost" data-i18n="settings.tr.preset_add_btn">+ New preset</button>
+            <button type="button" id="byok-preset-rename-btn" class="btn-ghost" data-i18n="settings.tr.preset_rename_btn">Rename</button>
+            <button type="button" id="byok-preset-delete-btn" class="btn-ghost" data-i18n="settings.tr.preset_delete_btn">Delete</button>
+          </div>
         </div>
         <p class="field-hint" data-i18n="settings.tr.preset_hint">Save separate key/provider/model/mode combos — e.g. "Fast &amp; cheap" vs "High quality" — and switch between them instantly without retyping a key.</p>
 
         <div class="field-label" style="margin-top:16px" data-i18n="settings.tr.api_key_label">LLM API Key</div>
         <input type="password" id="byok-key" class="text-input" placeholder="Paste your LLM API key…" data-i18n-placeholder="settings.tr.api_key_placeholder" autocomplete="off" />
         <p id="byok-key-error" class="field-error hidden" data-i18n="settings.tr.api_key_error">An API key is required to use Bring Your Own Key.</p>
-        <div class="field-label" style="margin-top:14px" data-i18n="settings.tr.provider_label">Provider</div>
-        <div class="lang-select-wrap">
-          <select id="byok-provider" class="lang-select"></select>
-          <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+
+        <div class="field-row-2" style="margin-top:14px">
+          <div>
+            <div class="field-label" data-i18n="settings.tr.provider_label">Provider</div>
+            <div class="lang-select-wrap">
+              <select id="byok-provider" class="lang-select"></select>
+              <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </div>
+          <div>
+            <div class="field-label" data-i18n="settings.tr.model_label">Model</div>
+            <input type="text" id="byok-model" class="text-input" placeholder="gpt-4o-mini" autocomplete="off" />
+          </div>
         </div>
-        <div class="field-label" style="margin-top:14px" data-i18n="settings.tr.model_label">Model</div>
-        <input type="text" id="byok-model" class="text-input" placeholder="gpt-4o-mini" autocomplete="off" />
         <p class="field-hint" data-i18n="settings.tr.model_hint">Which provider your key is for, and the exact model name to request.</p>
         <div class="field-label" style="margin-top:16px" data-i18n="settings.tr.mode_label">Translation Mode</div>
         <div class="byok-mode-group">
@@ -389,46 +410,6 @@
               <span class="byok-mode-desc" data-i18n="settings.tr.mode_smart_desc">Simple text uses Google Translate (free, fast); complex or low-confidence text uses your LLM.</span>
             </span>
           </label>
-        </div>
-      </div>
-
-      <!-- Target language -->
-      <div class="field-block">
-        <div class="field-label" data-i18n="settings.tr.target_lang_label">Target Language</div>
-        <div class="lang-select-wrap">
-          <select id="target-lang" class="lang-select">
-            <optgroup label="Southeast Asia">
-              <option value="vi">🇻🇳 Vietnamese</option>
-              <option value="th">🇹🇭 Thai</option>
-              <option value="id">🇮🇩 Indonesian</option>
-              <option value="ms">🇲🇾 Malay</option>
-              <option value="tl">🇵🇭 Filipino</option>
-            </optgroup>
-            <optgroup label="East Asia">
-              <option value="zh-CN">🇨🇳 Chinese (Simplified)</option>
-              <option value="zh-TW">🇹🇼 Chinese (Traditional)</option>
-              <option value="ja">🇯🇵 Japanese</option>
-              <option value="ko">🇰🇷 Korean</option>
-            </optgroup>
-            <optgroup label="Europe">
-              <option value="en">🇬🇧 English</option>
-              <option value="fr">🇫🇷 French</option>
-              <option value="de">🇩🇪 German</option>
-              <option value="es">🇪🇸 Spanish</option>
-              <option value="pt">🇵🇹 Portuguese</option>
-              <option value="it">🇮🇹 Italian</option>
-              <option value="ru">🇷🇺 Russian</option>
-              <option value="pl">🇵🇱 Polish</option>
-              <option value="nl">🇳🇱 Dutch</option>
-            </optgroup>
-            <optgroup label="Other">
-              <option value="ar">🇸🇦 Arabic</option>
-              <option value="hi">🇮🇳 Hindi</option>
-              <option value="tr">🇹🇷 Turkish</option>
-              <option value="uk">🇺🇦 Ukrainian</option>
-            </optgroup>
-          </select>
-          <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
       </div>
 
