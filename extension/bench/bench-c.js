@@ -3,6 +3,7 @@ import { runSuiteC } from './suite-c.js';
 const runBtn      = document.getElementById('runCBtn');
 const downloadBtn = document.getElementById('downloadCBtn');
 const logEl       = document.getElementById('logC');
+const ocrProviderSelect = document.getElementById('ocrProviderSelect');
 
 let lastWriter = null;
 
@@ -17,7 +18,7 @@ runBtn.addEventListener('click', async () => {
   logEl.textContent = '';
 
   try {
-    lastWriter = await runSuiteC({ onProgress: log });
+    lastWriter = await runSuiteC({ onProgress: log, ocrProvider: ocrProviderSelect.value });
     downloadBtn.disabled = false;
   } catch (err) {
     log(`FAILED: ${err.message}`);

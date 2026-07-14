@@ -24,6 +24,18 @@
  * that into "detect %" here would double-count and confuse Suite A's
  * cleaner number, so stage attribution below is OCR / translate / render
  * only.
+ *
+ * `ocrProvider` defaults to 'paddleocr-local', NOT 'tesseract' — a real
+ * quality gate in bundle.js's runOcr hook (job.source === 'onnx-detect')
+ * drops any auto-detect job with OCR confidence < 55. On a real corpus,
+ * tesseract's confidence on Korean webtoon dialogue is consistently well
+ * under that (see Suite B's CER ~6x for tesseract vs ~0.5 for
+ * paddleocr-local on the same corpus), so every single auto-detected job
+ * gets silently cancelled and regionCount stays 0 — the gate working
+ * exactly as intended, not a Suite C bug. Confirmed by reproducing it: real
+ * console output showed detection + OCR running fine, then
+ * "[WebtoonTranslate] auto-detect region dropped (conf=32/48/15, ...)" for
+ * every single job.
  */
 
 import { loadCorpus } from './lib/corpus.js';
@@ -177,7 +189,7 @@ async function runScenario({ onProgress, pages, cold, ocrProvider, replayDelayMs
   return metrics;
 }
 
-export async function runSuiteC({ onProgress = () => {}, ocrProvider = 'tesseract', replayDelayMs = 400 } = {}) {
+export async function runSuiteC({ onProgress = () => {}, ocrProvider = 'paddleocr-local', replayDelayMs = 400 } = {}) {
   if (!window.__WT_BENCH__?.bootForPage) {
     throw new Error('window.__WT_BENCH__ not found — bench-flag.js must load before content/bundle.js in bench-c.html');
   }

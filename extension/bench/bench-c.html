@@ -20,6 +20,19 @@
         Translation is replayed from a fixture with synthetic delay — no real
         API calls, no API key needed.
       </p>
+      <p>
+        <label>OCR provider:
+          <select id="ocrProviderSelect">
+            <option value="tesseract">tesseract</option>
+            <option value="paddleocr-local" selected>paddleocr-local</option>
+          </select>
+        </label>
+        — a real quality gate in bundle.js's runOcr hook drops any
+        auto-detect job with OCR confidence &lt; 55, so a weak engine (e.g.
+        tesseract on this corpus, see Suite B's CER) can legitimately produce
+        <code>regionCount: 0</code> here — that's the gate working correctly,
+        not a bug.
+      </p>
       <button id="runCBtn">Run Suite C</button>
       <button id="downloadCBtn" disabled>Download JSONL</button>
       <div id="logC" class="log"></div>

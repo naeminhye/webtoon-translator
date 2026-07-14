@@ -140,10 +140,18 @@ section, same page).
   soak (up to 50 pages, capped by however many pages your corpus has).
   Concurrency sweep (1/2/4 concurrent jobs) isn't implemented — see
   `suite-c.js`'s header comment for why.
-- If `regionCount: 0` across all scenarios despite Suite B successfully
-  OCRing real regions from the same corpus, that's a real bug, not your
-  setup — check `console` output on the bench-c.html page for detector
-  errors first.
+- OCR provider defaults to `paddleocr-local`, not `tesseract` — bundle.js's
+  real quality gate drops any auto-detect job with OCR confidence < 55, and
+  tesseract's confidence on real Korean webtoon dialogue tends to sit well
+  under that (see Suite B's CER numbers). Picking `tesseract` from the
+  dropdown can legitimately produce `regionCount: 0` across every
+  scenario — that's the gate working correctly, not a Suite C bug. Confirmed
+  by reproducing it: detection + OCR ran fine, then console showed
+  `[WebtoonTranslate] auto-detect region dropped (conf=32/48/15, ...)` for
+  every job.
+- If `regionCount: 0` even with `paddleocr-local`, check `console` output
+  on the bench-c.html page for detector/OCR errors (missing model, etc.)
+  before assuming it's a Suite C bug.
 
 ## Corpus hash
 
