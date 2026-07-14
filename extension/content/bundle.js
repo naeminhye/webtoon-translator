@@ -4161,7 +4161,7 @@ function showToast(text, color = '#22c55e', duration = 3000) {
 let _batchOverlayStartedAt     = 0;
 let _batchOverlayTimerInterval = null;
 
-function showBatchOverlay(text) {
+function showBatchOverlay(text, onCancel) {
   if (!document.getElementById('wt-batch-overlay-style')) {
     const style = document.createElement('style');
     style.id = 'wt-batch-overlay-style';
@@ -4201,13 +4201,31 @@ function showBatchOverlay(text) {
     '<div id="wt-batch-overlay-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#22c55e,#3b82f6,#f59e0b);transition:width 0.35s ease;"></div>' +
     '</div>' +
     '<div id="wt-batch-overlay-pct" style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.8);margin:6px 0 4px;">0%</div>' +
-    '<div id="wt-batch-overlay-timer" style="font-size:11px;font-family:ui-monospace,Menlo,monospace;color:rgba(255,255,255,0.5);margin-bottom:12px;">0:00</div>' +
-    '<div style="font-size:12px;color:rgba(255,255,255,0.65);">Đừng đóng tab hoặc chuyển trang cho đến khi hoàn tất — bản dịch đang chạy trên toàn bộ chapter.</div>' +
+    '<div id="wt-batch-overlay-timer" style="font-size:11px;font-family:ui-monospace,Menlo,monospace;color:rgba(255,255,255,0.5);margin-bottom:14px;">0:00</div>' +
+    '<div style="font-size:12px;color:rgba(255,255,255,0.65);margin-bottom:16px;">Đừng đóng tab hoặc chuyển trang cho đến khi hoàn tất — bản dịch đang chạy trên toàn bộ chapter.</div>' +
+    '<button id="wt-batch-overlay-cancel" style="background:none;border:1px solid rgba(255,255,255,0.3);' +
+    'color:rgba(255,255,255,0.85);font-size:12px;font-weight:600;padding:7px 18px;border-radius:6px;cursor:pointer;">Hủy</button>' +
     '</div>';
-  // Swallow all interaction with the underlying page while this is up.
+  // Swallow all interaction with the underlying page while this is up —
+  // except the Cancel button itself. Checked here (not just skipped via a
+  // stopPropagation on the button) because this listener runs in the
+  // CAPTURE phase, ahead of the button's own click handler — calling
+  // stopPropagation() unconditionally here would stop the event before it
+  // ever reaches the button at all.
   ['click', 'mousedown', 'mouseup', 'keydown', 'wheel'].forEach(evt =>
-    el.addEventListener(evt, e => e.stopPropagation(), { capture: true })
+    el.addEventListener(evt, e => {
+      if (e.target.closest('#wt-batch-overlay-cancel')) return;
+      e.stopPropagation();
+    }, { capture: true })
   );
+  const cancelBtn = el.querySelector('#wt-batch-overlay-cancel');
+  cancelBtn.addEventListener('click', () => {
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Đang dừng…';
+    cancelBtn.style.opacity = '0.6';
+    cancelBtn.style.cursor = 'default';
+    onCancel?.();
+  });
   document.body.appendChild(el);
   setBatchOverlayText(text);
 
@@ -5805,11 +5823,15 @@ function bootForPage() {
   //   4. A full-page overlay (showBatchOverlay) blocks clicks and warns on
   //      tab-close for the whole run, since it drives real window.scrollTo()
   //      calls and would lose in-flight OCR/translate state if interrupted.
+  //      Its Cancel button sets _batchCancelled, which stops scanning for
+  //      MORE bubbles (and nulls bubbleDetector.onBoxes so no new jobs get
+  //      created) but does not touch jobs already in flight — those still
+  //      finish OCR/translate/save normally, so nothing already done is lost.
   let _batchTranslating = false;
 
   async function triggerTranslateAllPanels() {
-    if (_batchTranslating) { showToast('Already translating this chapter…', '#f59e0b'); return; }
-    if (!images.length) { showToast('No panels found on this page yet.', '#f59e0b'); return; }
+    if (_batchTranslating) { showToast('Đang dịch chapter này rồi…', '#f59e0b'); return; }
+    if (!images.length) { showToast('Chưa tìm thấy panel nào trên trang này.', '#f59e0b'); return; }
     _batchTranslating = true;
 
     const wasArmed = !!bubbleDetector.onBoxes;
@@ -5823,13 +5845,24 @@ function bootForPage() {
     MAX_CONCURRENT_JOBS = 200;
     _batchTranslateMode = true;
     _batchJobsTotal = 0;
+    // Cancel doesn't discard anything already OCR'd/translated — it just
+    // stops scanning for MORE bubbles and skips waiting around for new
+    // ones. Whatever's already a job at the moment Cancel is clicked keeps
+    // running to completion (still gets OCR'd, translated, saved) since
+    // that work is already invested; only *new* detections are stopped by
+    // nulling bubbleDetector.onBoxes below.
+    let _batchCancelled = false;
     const beforeUnloadGuard = (e) => { e.preventDefault(); e.returnValue = ''; };
     window.addEventListener('beforeunload', beforeUnloadGuard);
     // Overall progress is 3 weighted stages: scan/scroll (0-30%), OCR
     // (30-90%, real ratio once jobs start getting created), translate
     // (90-100% — a single API call has no meaningful sub-progress).
     const STAGE_SCAN_PCT = 30, STAGE_OCR_PCT = 90;
-    showBatchOverlay('Đang quét chapter…');
+    showBatchOverlay('Đang quét chapter…', () => {
+      _batchCancelled = true;
+      bubbleDetector.onBoxes = null; // stop any further boxes from creating new jobs
+      setBatchOverlayText('Đang dừng — chờ nốt phần đang xử lý rồi lưu lại…');
+    });
     setBatchOverlayProgress(0);
 
     try {
@@ -5838,7 +5871,7 @@ function bootForPage() {
       let stableRounds = 0;
       const STABLE_ROUNDS_NEEDED = 4; // ~4 * 700ms of no growth before we believe it
       const MAX_STEPS = 2000; // safety cap — a chapter needing this many rounds would be a bug elsewhere
-      for (let i = 0; i < MAX_STEPS && stableRounds < STABLE_ROUNDS_NEEDED; i++) {
+      for (let i = 0; i < MAX_STEPS && stableRounds < STABLE_ROUNDS_NEEDED && !_batchCancelled; i++) {
         if (disposed) return;
         const beforeImageCount = images.length;
         const maxScroll = Math.max(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) - window.innerHeight);
@@ -5870,21 +5903,26 @@ function bootForPage() {
       }
 
       if (disposed) return;
-      setBatchOverlayText('Đang quét lại toàn trang (bắt các panel lỡ tải chậm)…');
-      setBatchOverlayProgress(STAGE_SCAN_PCT);
-      bubbleDetector.detectAll();
-      await new Promise(r => setTimeout(r, 1500));
-      if (disposed) return;
-      bubbleDetector.detectAll(); // second pass catches any late lazy-loaders from the first
+      if (!_batchCancelled) {
+        setBatchOverlayText('Đang quét lại toàn trang (bắt các panel lỡ tải chậm)…');
+        setBatchOverlayProgress(STAGE_SCAN_PCT);
+        bubbleDetector.detectAll();
+        await new Promise(r => setTimeout(r, 1500));
+        if (disposed) return;
+        if (!_batchCancelled) bubbleDetector.detectAll(); // second pass catches any late lazy-loaders from the first
+      }
 
-      // Wait for every detected tile/job to actually finish OCR instead of
-      // declaring victory the moment scanning stops — detection and OCR
-      // both keep running async in the background well after the scroll
-      // loop above returns. The translate batch auto-flushes every
+      // Wait for every already-detected tile/job to actually finish OCR
+      // instead of declaring victory the moment scanning stops (or Cancel
+      // is clicked) — detection and OCR both keep running async in the
+      // background. The translate batch auto-flushes every
       // BATCH_FLUSH_SIZE lines while this runs (see queueBatchTranslate),
       // so translations for earlier groups are already showing up on the
-      // page by the time this loop finishes for the last few bubbles.
-      const IDLE_STABLE_NEEDED = 3;
+      // page by the time this loop finishes for the last few bubbles. If
+      // cancelled, no NEW jobs can appear (onBoxes was nulled by the
+      // Cancel handler), so this just waits out whatever was already
+      // in-flight instead of the usual "stable for a while" confirmation.
+      const IDLE_STABLE_NEEDED = _batchCancelled ? 1 : 3;
       const MAX_IDLE_CHECKS    = 1200; // ~10 min safety cap
       let idleStable = 0;
       for (let i = 0; i < MAX_IDLE_CHECKS && idleStable < IDLE_STABLE_NEEDED; i++) {
@@ -5892,16 +5930,20 @@ function bootForPage() {
         const remaining = jobManager.jobs.size;
         const done  = Math.max(0, _batchJobsTotal - remaining);
         const total = Math.max(_batchJobsTotal, done, 1);
-        setBatchOverlayText(`Đang OCR + dịch theo từng nhóm… ${done}/${_batchJobsTotal || done} đoạn text đã xong`);
+        setBatchOverlayText(_batchCancelled
+          ? `Đang dừng… ${done}/${_batchJobsTotal || done} đoạn text đã xong, đang lưu nốt`
+          : `Đang OCR + dịch theo từng nhóm… ${done}/${_batchJobsTotal || done} đoạn text đã xong`);
         setBatchOverlayProgress(STAGE_SCAN_PCT + (done / total) * (STAGE_OCR_PCT - STAGE_SCAN_PCT));
-        const detectIdle = bubbleDetector.isIdle();
+        const detectIdle = _batchCancelled || bubbleDetector.isIdle();
         const jobsIdle    = jobManager.activeCount() === 0 && jobManager.queuedCount() === 0;
         idleStable = (detectIdle && jobsIdle) ? idleStable + 1 : 0;
         await new Promise(r => setTimeout(r, 500));
       }
 
       // OCR (and translation of everything that already formed a full
-      // group) is done — flush whatever's left over (a partial group).
+      // group) is done — flush whatever's left over (a partial group),
+      // whether that's the real end of the chapter or just wherever Cancel
+      // caught things. Nothing already OCR'd is thrown away either way.
       if (disposed) return;
       setBatchOverlayProgress(STAGE_OCR_PCT);
       if (_batchPending.length) {
@@ -5911,9 +5953,15 @@ function bootForPage() {
       }
 
       setBatchOverlayProgress(100);
-      setBatchOverlayText('✓ Hoàn tất!');
-      await new Promise(r => setTimeout(r, 700)); // let the 100% state be visible before the overlay closes
-      showToast('✓ Finished translating this chapter.');
+      if (_batchCancelled) {
+        setBatchOverlayText(`✓ Đã dừng — đã lưu ${_batchJobsTotal} đoạn đã dịch xong.`);
+        await new Promise(r => setTimeout(r, 700));
+        showToast(`✓ Đã hủy — đã lưu ${_batchJobsTotal} bubble đã dịch xong.`, '#f59e0b');
+      } else {
+        setBatchOverlayText('✓ Hoàn tất!');
+        await new Promise(r => setTimeout(r, 700)); // let the 100% state be visible before the overlay closes
+        showToast('✓ Đã dịch xong chapter này.');
+      }
     } finally {
       if (!disposed) window.scrollTo(0, startY);
       if (!wasArmed) bubbleDetector.onBoxes = null;
