@@ -2156,7 +2156,14 @@ class DetectionPreview {
 // serialized (Tesseract.js is CPU-bound) even when multiple jobs are active,
 // while each job's translate step (network-bound) can overlap with others'.
 
-const MAX_CONCURRENT_JOBS = 3;   // total active jobs (OCR+translate combined) — tune against real usage/API limits
+// `let` (not `const`): triggerTranslateAllPanels temporarily raises this
+// during a whole-chapter batch-translate run. OCR itself stays serialized
+// regardless (_runExclusiveOcr, below) — raising the cap just lets many
+// jobs finish OCR and sit "waiting for a batch-translate flush" at once
+// instead of trickling through 3 at a time, which is what actually lets
+// the batch coalescer collect a real chapter-sized group of lines instead
+// of flushing 1-3 at a time.
+let MAX_CONCURRENT_JOBS  = 3;   // total active jobs (OCR+translate combined) — tune against real usage/API limits
 const OVERLAP_THRESHOLD   = 0.55; // intersection / min(areaA, areaB) — needs tuning against real screenshots
 
 // Minimum crop size Tesseract's WASM build will accept, measured in the IMAGE'S
@@ -3195,6 +3202,99 @@ function targetLanguageDisplayName(langCode) {
 // Plain string formatting (title + tags + synopsis + OCR text) — no template
 // engine and no LLM-based compression. Used by both the automatic BYOK
 // translation pipeline (autoTranslate) and the manual "Test LLM" preview popover.
+// Batch variant of formatLlmPrompt — one prompt carrying every OCR'd line
+// from a "pre-translate whole chapter" run, numbered so the response can be
+// split back apart deterministically. Sharing one request (instead of one
+// per bubble) also lets the model use cross-bubble context (same scene,
+// same characters) it wouldn't have translating lines in isolation.
+function formatLlmBatchPrompt(storyContext, texts, targetLang) {
+  const lines = [];
+  if (storyContext?.title)          lines.push(`Title: ${storyContext.title}`);
+  if (storyContext?.tags?.length)   lines.push(`Tags: ${storyContext.tags.join(', ')}`);
+  if (storyContext?.synopsis)       lines.push(`Synopsis: ${storyContext.synopsis}`);
+  lines.push('');
+  lines.push(
+    `Translate each of the following ${texts.length} numbered Korean webtoon dialogue/narration lines into ${targetLanguageDisplayName(targetLang)}. ` +
+    'They are in reading order and may share context with each other (same scene/characters). ' +
+    'Output EXACTLY one translated line per input, in the same order, each prefixed with its number and a period ' +
+    '(e.g. "1. …"), nothing else — no extra commentary, no markdown, no blank lines, no merging or splitting lines.'
+  );
+  lines.push('');
+  texts.forEach((t, i) => lines.push(`${i + 1}. ${t}`));
+  return lines.join('\n');
+}
+
+// Parses formatLlmBatchPrompt's expected "N. translated text" response
+// format back into an array aligned with the original input order. Any
+// line that doesn't match (or is missing) is left as '' — the caller falls
+// back to the original OCR text for those slots.
+function parseNumberedBatchResponse(raw, count) {
+  const out = new Array(count).fill('');
+  for (const line of String(raw || '').split('\n')) {
+    const m = line.trim().match(/^(\d+)[.)]\s*(.*)$/);
+    if (!m) continue;
+    const idx = parseInt(m[1], 10) - 1;
+    if (idx >= 0 && idx < count) out[idx] = m[2];
+  }
+  return out;
+}
+
+// Sends `texts` to the user's BYOK LLM in chunks of CHUNK lines per request
+// (keeps prompts a reasonable size and caps how many lines a single bad
+// response can affect), returning translations in the same order.
+async function llmTranslateBatch(llmAdapter, apiKey, model, texts, targetLang, storyCtx) {
+  const CHUNK = 40;
+  const out = new Array(texts.length).fill('');
+  for (let start = 0; start < texts.length; start += CHUNK) {
+    const chunk = texts.slice(start, start + CHUNK);
+    const prompt = formatLlmBatchPrompt(storyCtx ?? null, chunk, targetLang);
+    const raw = await llmAdapter.callApi(apiKey, model, prompt);
+    const parsed = parseNumberedBatchResponse(raw, chunk.length);
+    for (let i = 0; i < chunk.length; i++) out[start + i] = parsed[i];
+  }
+  return out;
+}
+
+/**
+ * Batch entry point for "pre-translate whole chapter": translates every
+ * OCR'd line in one pass instead of one bubble at a time.
+ *   - BYOK LLM: one prompt per chunk of lines (see llmTranslateBatch) — a
+ *     real single-request batch, and the only provider where cross-bubble
+ *     context can actually help.
+ *   - Chrome built-in / Google: no batch endpoint we can rely on, so these
+ *     translate sequentially — still a separate phase from OCR (all OCR
+ *     happens first, translation happens after), just not one network call.
+ */
+async function autoTranslateBatch(texts, { storyCtx } = {}) {
+  if (!texts.length) return [];
+  const s = await chrome.storage.local.get({
+    'wt:translate-provider': 'chrome-builtin',
+    'wt:translate-lang':     'vi',
+    'wt:byok-key':           '',
+    'wt:byok-provider':      '',
+    'wt:byok-model':         '',
+  });
+  const provider   = s['wt:translate-provider'];
+  const targetLang = s['wt:translate-lang'];
+
+  if (provider === 'byok' && s['wt:byok-key'] && s['wt:byok-provider'] && s['wt:byok-model']) {
+    const llmAdapter = getLlmAdapter(s['wt:byok-provider']);
+    if (llmAdapter) {
+      try {
+        return await llmTranslateBatch(llmAdapter, s['wt:byok-key'], s['wt:byok-model'], texts, targetLang, storyCtx);
+      } catch (err) {
+        console.warn('[WebtoonTranslate] Batch LLM translate failed, falling back to per-line translation:', err?.message || err);
+      }
+    }
+  }
+
+  const out = [];
+  for (const text of texts) {
+    out.push(await autoTranslate(text, { storyCtx, forceGoogle: provider === 'byok' }));
+  }
+  return out;
+}
+
 function formatLlmPrompt(storyContext, ocrText, targetLang) {
   const lines = [];
   if (storyContext?.title)          lines.push(`Title: ${storyContext.title}`);
@@ -4816,6 +4916,48 @@ function bootForPage() {
     return result;
   }
 
+  // ── batch translate coalescer ────────────────────────────────────────
+  // While _batchTranslateMode is on (set by triggerTranslateAllPanels
+  // below), runTranslate doesn't translate each job the instant its OCR
+  // finishes — it parks the job's OCR'd text here and returns a promise
+  // that resolves once a flush collects everyone waiting and sends them
+  // through autoTranslateBatch() together: OCR-all-first, translate-all-
+  // together-second, then split back onto each job/bubble, instead of one
+  // interleaved OCR+translate round trip per bubble.
+  let _batchTranslateMode = false;
+  let _batchPending       = []; // { job, resolve, reject }
+  let _batchFlushTimer    = null;
+  const BATCH_FLUSH_DEBOUNCE_MS = 1200; // flush once no new OCR result has arrived for this long
+  const BATCH_FLUSH_MAX_PENDING = 40;   // or flush early once this many are waiting
+
+  function queueBatchTranslate(job) {
+    return new Promise((resolve, reject) => {
+      _batchPending.push({ job, resolve, reject });
+      if (_batchPending.length >= BATCH_FLUSH_MAX_PENDING) {
+        flushBatchTranslate();
+      } else {
+        clearTimeout(_batchFlushTimer);
+        _batchFlushTimer = setTimeout(flushBatchTranslate, BATCH_FLUSH_DEBOUNCE_MS);
+      }
+    });
+  }
+
+  async function flushBatchTranslate() {
+    clearTimeout(_batchFlushTimer);
+    _batchFlushTimer = null;
+    if (!_batchPending.length) return;
+    const items = _batchPending;
+    _batchPending = [];
+    try {
+      const storyCtx = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
+      const texts     = items.map(it => it.job.originalText);
+      const translated = await autoTranslateBatch(texts, { storyCtx });
+      items.forEach((it, i) => it.resolve(translated[i] || it.job.originalText));
+    } catch (err) {
+      items.forEach(it => it.reject(err));
+    }
+  }
+
   const jobManager = new JobManager({
     runOcr:        async (job) => {
       // Suite C (E2E) stage marks — M2 (detect-done, i.e. this job's box was
@@ -4886,6 +5028,13 @@ function bootForPage() {
     },
     runTranslate: async (job) => {
       performance.mark(`wt:translate-start:${job.id}`); // M4≈M5-start: no adapter in llm-adapters.js streams, so there is no distinct "first token" — see Phase 4 discussion
+      // "Pre-translate whole chapter" mode: don't translate this job on its
+      // own — hand its OCR'd text to the batch coalescer and wait for a
+      // flush (see queueBatchTranslate/flushBatchTranslate above) that
+      // translates every currently-waiting bubble together.
+      if (_batchTranslateMode) {
+        return _markTranslateDone(job, await queueBatchTranslate(job));
+      }
       const s = await chrome.storage.local.get({ 'wt:translate-provider': 'chrome-builtin', 'wt:byok-mode': 'always' });
       const prov     = s['wt:translate-provider'];
       const byokMode = s['wt:byok-mode'];
@@ -5472,11 +5621,11 @@ function bootForPage() {
 
   // ── batch: pre-translate the whole chapter ──────────────────────────────
   // Reuses the exact same detect → onDetectedBoxes → createJobFromSelection →
-  // jobManager pipeline that auto-detect uses while scrolling, in two passes:
+  // jobManager pipeline that auto-detect uses while scrolling, in phases:
   //   1. A real scroll from top to bottom, so every site adapter's lazy-load
   //      watcher (watchNewImages) fires and panels actually get their pixel
-  //      data loaded — and so bubbles get queued for translation as early as
-  //      possible instead of all at once at the very end.
+  //      data loaded — and so bubbles get OCR'd as early as possible instead
+  //      of all at once at the very end.
   //
   //      Naver/Kakao-style infinite scroll only APPENDS later panels to the
   //      DOM once the reader nears the current bottom — document.body /
@@ -5496,6 +5645,16 @@ function bootForPage() {
   //      image the moment it's scrolled above the viewport, loaded or not).
   //      Run twice with a pause so a panel still mid-load after the first
   //      call gets a second chance.
+  //   3. OCR happens per-bubble as usual (still serialized — see
+  //      _runExclusiveOcr), but translation is deferred: _batchTranslateMode
+  //      makes runTranslate above park each job in the batch coalescer
+  //      instead of translating it immediately, so OCR keeps running well
+  //      ahead of translation. MAX_CONCURRENT_JOBS is raised for the
+  //      duration so jobs can pile up waiting for a flush instead of being
+  //      throttled to 3 "active" at a time — the batch coalescer (not job
+  //      concurrency) is what caps how many lines go into one translate
+  //      request. Once detection is done, wait for every OCR job (and any
+  //      leftover batch) to actually finish before restoring normal mode.
   let _batchTranslating = false;
 
   async function triggerTranslateAllPanels() {
@@ -5506,7 +5665,16 @@ function bootForPage() {
     const wasArmed = !!bubbleDetector.onBoxes;
     bubbleDetector.onBoxes = onDetectedBoxes;
     const startY = window.scrollY;
-    showToast('Scanning whole chapter for bubbles…', '#3b82f6', 4000);
+    const prevMaxConcurrent = MAX_CONCURRENT_JOBS;
+    // High enough that essentially no chapter hits this ceiling — OCR stays
+    // serialized (_runExclusiveOcr) regardless, so this doesn't parallelize
+    // OCR itself, it just stops jobs from being throttled to 3-at-a-time
+    // while parked waiting for a translate flush, which is what let the
+    // batch coalescer actually accumulate full-size (BATCH_FLUSH_MAX_PENDING)
+    // groups instead of flushing 1-3 lines at a time.
+    MAX_CONCURRENT_JOBS = 200;
+    _batchTranslateMode = true;
+    showToast('Scanning whole chapter and running OCR…', '#3b82f6', 4000);
 
     try {
       const step = Math.max(200, Math.round(window.innerHeight * 0.8));
@@ -5518,14 +5686,24 @@ function bootForPage() {
         if (disposed) return;
         const beforeImageCount = images.length;
         const maxScroll = Math.max(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) - window.innerHeight);
-        window.scrollTo(0, Math.min(y, maxScroll));
+        const targetY = Math.min(y, maxScroll);
+        window.scrollTo(0, targetY);
         await new Promise(r => setTimeout(r, 400)); // let lazy-loaders + the scroll listener settle
         bubbleDetector.detect();
 
-        const grew = images.length > beforeImageCount || y < maxScroll;
-        if (grew) {
+        if (targetY < maxScroll) {
+          // Not at the bottom yet — keep walking down one step at a time so
+          // every panel gets real dwell time for its lazy-loader to fire.
           stableRounds = 0;
-          y = Math.max(y + step, maxScroll); // keep pace with newly-appended content, not just +step
+          y += step;
+          continue;
+        }
+        if (images.length > beforeImageCount) {
+          // Pinned at the bottom, but new panels just got appended — resume
+          // the normal step-by-step walk into them (never jump straight to
+          // the new bottom, or their lazy-loaders get skipped the same way).
+          stableRounds = 0;
+          y += step;
         } else {
           // Looks like the bottom — wait a bit longer for the next batch of
           // panels to actually get appended before trusting it.
@@ -5540,10 +5718,39 @@ function bootForPage() {
       if (disposed) return;
       bubbleDetector.detectAll(); // second pass catches any late lazy-loaders from the first
 
-      showToast('✓ Finished scanning — translations will keep appearing as OCR/translate jobs complete.');
+      showToast('Running OCR on every detected bubble…', '#3b82f6', 4000);
+
+      // Wait for every detected tile/job to actually finish OCR (and any
+      // translate-batch flush it triggers) instead of declaring victory the
+      // moment scanning stops — detection and OCR both keep running async
+      // in the background well after the scroll loop above returns.
+      const IDLE_STABLE_NEEDED = 3;
+      const MAX_IDLE_CHECKS    = 1200; // ~10 min safety cap
+      let idleStable = 0;
+      for (let i = 0; i < MAX_IDLE_CHECKS && idleStable < IDLE_STABLE_NEEDED; i++) {
+        if (disposed) return;
+        const detectIdle = bubbleDetector.isIdle();
+        const jobsIdle    = jobManager.activeCount() === 0 && jobManager.queuedCount() === 0;
+        if (detectIdle && jobsIdle) {
+          if (_batchPending.length) {
+            await flushBatchTranslate();
+            idleStable = 0;
+          } else {
+            idleStable++;
+          }
+        } else {
+          idleStable = 0;
+        }
+        await new Promise(r => setTimeout(r, 500));
+      }
+      if (_batchPending.length) await flushBatchTranslate(); // safety: don't strand a leftover group
+
+      showToast('✓ Finished translating this chapter.');
     } finally {
       if (!disposed) window.scrollTo(0, startY);
       if (!wasArmed) bubbleDetector.onBoxes = null;
+      _batchTranslateMode = false;
+      MAX_CONCURRENT_JOBS = prevMaxConcurrent;
       _batchTranslating = false;
     }
   }
@@ -5866,6 +6073,7 @@ const bubbleDetector = (() => {
     detect:    scheduleTiles,
     detectAll: scheduleAllTiles,
     reset()  { doneTiles.clear(); inFlight.clear(); _tileQueue.length = 0; _queuedTileKeys.clear(); },
+    isIdle()  { return _tileQueue.length === 0 && _activeTileCount === 0 && inFlight.size === 0; },
   };
   return api;
 })();
