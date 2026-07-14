@@ -6084,13 +6084,27 @@ function bootForPage() {
         // not added into a "the rest was scanning" subtraction (which
         // could go negative).
         let ocrMs = 0, ocrMeasured = 0, translateWorkMs = 0, translateMeasured = 0;
+        let neverReachedTranslate = 0; // OCR'd fine but never even started translating —
+                                        // runOcr's quality gate cancels onnx-detect jobs it
+                                        // decides are garbage/false-positive detections
+                                        // *before* they ever reach runTranslate; expected,
+                                        // not a failure.
+        let translateStartedNeverFinished = 0; // reached translate-start but no translate-done —
+                                                // this WOULD indicate a real stuck/failed job.
         for (const jobId of _batchJobIds) {
           const detectDone     = performance.getEntriesByName(`wt:detect-done:${jobId}`)[0]?.startTime;
           const ocrDone        = performance.getEntriesByName(`wt:ocr-done:${jobId}`)[0]?.startTime;
           const translateStart = performance.getEntriesByName(`wt:translate-start:${jobId}`)[0]?.startTime;
           const translateDone  = performance.getEntriesByName(`wt:translate-done:${jobId}`)[0]?.startTime;
           if (detectDone != null && ocrDone != null) { ocrMs += ocrDone - detectDone; ocrMeasured++; }
-          if (translateStart != null && translateDone != null) { translateWorkMs += translateDone - translateStart; translateMeasured++; }
+          if (translateStart != null && translateDone != null) {
+            translateWorkMs += translateDone - translateStart;
+            translateMeasured++;
+          } else if (translateStart != null) {
+            translateStartedNeverFinished++;
+          } else if (ocrDone != null) {
+            neverReachedTranslate++;
+          }
         }
         const totalMs = Date.now() - runStartedAt;
         console.log(
@@ -6098,7 +6112,8 @@ function bootForPage() {
           `OCR (serialized, wall-clock): ${(ocrMs / 1000).toFixed(1)}s (${ocrMeasured}/${_batchJobIds.length} measured). ` +
           `Translate (concurrent, cumulative work — not wall-clock): ${(translateWorkMs / 1000).toFixed(1)}s (${translateMeasured}/${_batchJobIds.length} measured). ` +
           `Rest (scan + waits): ~${Math.max(0, (totalMs - ocrMs) / 1000).toFixed(1)}s.` +
-          (translateMeasured < _batchJobIds.length ? ` ${_batchJobIds.length - translateMeasured} job(s) never got a translate-done mark — likely cancelled after their group failed to translate.` : '')
+          (neverReachedTranslate ? ` ${neverReachedTranslate} job(s) OCR'd fine but never reached translate — dropped by runOcr's quality gate as a likely false-positive detection (expected/normal).` : '') +
+          (translateStartedNeverFinished ? ` ${translateStartedNeverFinished} job(s) started translating but never finished — this IS unexpected, worth reporting with this log line.` : '')
         );
       } catch { /* diagnostic only — never let this break the actual run */ }
 
