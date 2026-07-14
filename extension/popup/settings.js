@@ -138,11 +138,29 @@ async function initOcrSettings() {
   // the choice rather than only appearing after the user has already picked
   // this engine. No hard cutoff exists for "too weak"; this is a soft nudge
   // based on the same navigator.gpu check ort-runner.js/paddle-runner.js use
-  // to pick an execution provider, plus a low core-count heuristic.
+  // to pick an execution provider, plus a low core-count heuristic. Not a
+  // silent auto-switch — that could yank the engine out from under someone
+  // who picked PaddleOCR deliberately (e.g. for its accuracy) — instead a
+  // one-click fallback button sits right next to the warning.
   const hasGpu = !!navigator.gpu;
   const cores  = navigator.hardwareConcurrency || 0;
   const weakHardware = !hasGpu && cores > 0 && cores < 4;
   $('paddleocr-local-hw-warning').classList.toggle('hidden', !weakHardware);
+  $('paddleocr-local-hw-fallback-btn').classList.toggle('hidden', !weakHardware);
+
+  // The warning/button live inside the PaddleOCR (in-browser) <label>, which
+  // otherwise forwards any click on it (including this nested button) to its
+  // radio input — preventDefault stops that forwarding so clicking the
+  // fallback button can't accidentally *select* the very engine it's
+  // steering the user away from.
+  $('paddleocr-local-hw-fallback-btn').addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    await chrome.storage.local.set({ [OCR_PROVIDER_KEY]: 'tesseract' });
+    applyProvider('tesseract');
+    $('paddleocr-local-hw-fallback-done').classList.remove('hidden');
+    setTimeout(() => $('paddleocr-local-hw-fallback-done').classList.add('hidden'), 2500);
+  });
 
   radios.forEach(r => r.addEventListener('change', async () => {
     await chrome.storage.local.set({ [OCR_PROVIDER_KEY]: r.value });

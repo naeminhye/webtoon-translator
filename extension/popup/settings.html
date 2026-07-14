@@ -173,6 +173,8 @@
             <div class="engine-badge engine-badge-recommended" data-i18n="settings.ocr.badge_recommended">Recommended</div>
             <p class="engine-detail" data-i18n="settings.ocr.paddlelocal_detail">PP-OCR models run locally via WebGPU/WASM. One-time ~15 MB download, cached in the browser — see the model status below.</p>
             <p id="paddleocr-local-hw-warning" class="field-warning hidden" data-i18n="settings.ocr.paddlelocal_hw_warning">⚠ This device may not have WebGPU and has few CPU cores — in-browser PaddleOCR could run slowly. Tesseract.js is faster on weak hardware; self-hosted PaddleOCR keeps the same accuracy without local inference cost.</p>
+            <button type="button" id="paddleocr-local-hw-fallback-btn" class="btn-ghost hidden" style="margin-top:8px" data-i18n="settings.ocr.paddlelocal_hw_fallback_btn">Use Tesseract.js instead</button>
+            <p id="paddleocr-local-hw-fallback-done" class="field-success hidden" data-i18n="settings.ocr.paddlelocal_hw_fallback_done">✓ Switched to Tesseract.js</p>
           </div>
         </label>
         <label class="engine-card">
