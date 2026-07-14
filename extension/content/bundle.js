@@ -20,6 +20,18 @@ const __DEV_TOOLS__ = true;
 // this file) since the guards themselves must survive the production build.
 const __BENCH_MODE__ = typeof window !== 'undefined' && window.__WT_BENCH_LOAD__ === true;
 
+// UI language for this feature's overlay/toast strings — see
+// extension/shared/i18n.js (currently only the "pre-translate whole
+// chapter" feature is wired through it). Read once at content-script load
+// and kept live via storage.onChanged, since Settings can be open in
+// another tab and change it while this page is up.
+if (typeof WT_I18N !== 'undefined' && chrome?.storage?.local) {
+  chrome.storage.local.get({ 'wt:locale': 'en' }, (s) => WT_I18N.setLocale(s['wt:locale']));
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes['wt:locale']) WT_I18N.setLocale(changes['wt:locale'].newValue);
+  });
+}
+
 const SITES = { NAVER: 'naver', RIDI: 'ridi', KAKAO: 'kakao' };
 const MSG    = {
   SAVE_TRANSLATIONS: 'SAVE_TRANSLATIONS',
@@ -2156,7 +2168,14 @@ class DetectionPreview {
 // serialized (Tesseract.js is CPU-bound) even when multiple jobs are active,
 // while each job's translate step (network-bound) can overlap with others'.
 
-const MAX_CONCURRENT_JOBS = 3;   // total active jobs (OCR+translate combined) — tune against real usage/API limits
+// `let` (not `const`): triggerTranslateAllPanels temporarily raises this
+// during a whole-chapter batch-translate run. OCR itself stays serialized
+// regardless (_runExclusiveOcr, below) — raising the cap just lets many
+// jobs finish OCR and sit "waiting for a batch-translate flush" at once
+// instead of trickling through 3 at a time, which is what actually lets
+// the batch coalescer collect a real chapter-sized group of lines instead
+// of flushing 1-3 at a time.
+let MAX_CONCURRENT_JOBS  = 3;   // total active jobs (OCR+translate combined) — tune against real usage/API limits
 const OVERLAP_THRESHOLD   = 0.55; // intersection / min(areaA, areaB) — needs tuning against real screenshots
 
 // Minimum crop size Tesseract's WASM build will accept, measured in the IMAGE'S
@@ -3195,6 +3214,141 @@ function targetLanguageDisplayName(langCode) {
 // Plain string formatting (title + tags + synopsis + OCR text) — no template
 // engine and no LLM-based compression. Used by both the automatic BYOK
 // translation pipeline (autoTranslate) and the manual "Test LLM" preview popover.
+// Batch variant of formatLlmPrompt — one prompt carrying every OCR'd line
+// from a "pre-translate whole chapter" run, numbered so the response can be
+// split back apart deterministically. Sharing one request (instead of one
+// per bubble) also lets the model use cross-bubble context (same scene,
+// same characters) it wouldn't have translating lines in isolation.
+function formatLlmBatchPrompt(storyContext, texts, targetLang) {
+  const lines = [];
+  if (storyContext?.title)          lines.push(`Title: ${storyContext.title}`);
+  if (storyContext?.tags?.length)   lines.push(`Tags: ${storyContext.tags.join(', ')}`);
+  if (storyContext?.synopsis)       lines.push(`Synopsis: ${storyContext.synopsis}`);
+  lines.push('');
+  lines.push(
+    `Translate each of the following ${texts.length} numbered Korean webtoon dialogue/narration lines into ${targetLanguageDisplayName(targetLang)}. ` +
+    'They are in reading order and may share context with each other (same scene/characters). ' +
+    'Output EXACTLY one translated line per input, in the same order, each prefixed with its number and a period ' +
+    '(e.g. "1. …"), nothing else — no extra commentary, no markdown, no blank lines, no merging or splitting lines.'
+  );
+  lines.push('');
+  texts.forEach((t, i) => lines.push(`${i + 1}. ${t}`));
+  return lines.join('\n');
+}
+
+// Parses formatLlmBatchPrompt's expected "N. translated text" response
+// format back into an array aligned with the original input order. Any
+// line that doesn't match (or is missing) is left as '' — the caller falls
+// back to the original OCR text for those slots.
+function parseNumberedBatchResponse(raw, count) {
+  const out = new Array(count).fill('');
+  for (const line of String(raw || '').split('\n')) {
+    const m = line.trim().match(/^(\d+)[.)]\s*(.*)$/);
+    if (!m) continue;
+    const idx = parseInt(m[1], 10) - 1;
+    if (idx >= 0 && idx < count) out[idx] = m[2];
+  }
+  return out;
+}
+
+// A single giant prompt for an entire chapter (200+ lines) is fragile —
+// large requests are more likely to hit a provider's capacity limits
+// ("high demand"/503, rate limits, timeouts), and a failure used to fall
+// back to translating every single line individually, which is far slower
+// than the batching was supposed to avoid. Retries a transient-looking
+// failure a couple of times with backoff before giving up.
+async function callLlmWithRetry(llmAdapter, apiKey, model, prompt, retries = 3) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await llmAdapter.callApi(apiKey, model, prompt);
+    } catch (err) {
+      const transient = /\b(429|5\d\d)\b|high demand|overloaded|rate.?limit|timeout/i.test(String(err?.message || err));
+      if (!transient || attempt >= retries) throw err;
+      await new Promise(r => setTimeout(r, 2000 * (attempt + 1))); // 2s, 4s, 6s
+    }
+  }
+}
+
+// Splits `texts` into fixed-size chunks and sends every chunk as its own
+// prompt/request IN PARALLEL (Promise.all) — still far fewer requests than
+// one per bubble, but each request stays a reasonable size and a failure
+// only affects its own ~CHUNK lines instead of the whole chapter. A chunk
+// that fails even after retrying falls back to translating just its own
+// lines individually (also in parallel), not the entire batch.
+async function llmTranslateBatch(llmAdapter, apiKey, model, texts, targetLang, storyCtx) {
+  const CHUNK = 20; // matches BATCH_FLUSH_SIZE in bootForPage — see the comment there
+  const chunks = [];
+  for (let start = 0; start < texts.length; start += CHUNK) chunks.push(texts.slice(start, start + CHUNK));
+
+  const results = await Promise.all(chunks.map(async (chunk) => {
+    const prompt = formatLlmBatchPrompt(storyCtx ?? null, chunk, targetLang);
+    try {
+      const raw = await callLlmWithRetry(llmAdapter, apiKey, model, prompt);
+      return parseNumberedBatchResponse(raw, chunk.length);
+    } catch (err) {
+      console.warn(`[WebtoonTranslate] Batch LLM chunk (${chunk.length} lines) failed after retries, falling back to per-line for just this chunk:`, err?.message || err);
+      return Promise.all(chunk.map(t => autoTranslate(t, { storyCtx, forceLlm: true }).catch(() => '')));
+    }
+  }));
+  return results.flat();
+}
+
+/**
+ * Batch entry point for "pre-translate whole chapter": OCR runs for every
+ * bubble first (or a chunk's worth — see BATCH_FLUSH_SIZE below, which
+ * flushes as soon as enough lines are ready instead of waiting for the
+ * entire chapter), then this translates everything collected in one pass
+ * instead of one bubble at a time.
+ *   - BYOK LLM: chunked + parallel requests (see llmTranslateBatch) — the
+ *     only provider where cross-bubble context can actually help, and
+ *     where fewer, larger requests are a real win.
+ *   - Chrome built-in / Google: no batch endpoint we can rely on, so these
+ *     translate with a handful of lines in flight at once (see CONCURRENCY
+ *     below) instead of a single request — still only after all OCR is
+ *     done, same two-phase order, just not one network call.
+ */
+async function autoTranslateBatch(texts, { storyCtx } = {}) {
+  if (!texts.length) return [];
+  const s = await chrome.storage.local.get({
+    'wt:translate-provider': 'chrome-builtin',
+    'wt:translate-lang':     'vi',
+    'wt:byok-key':           '',
+    'wt:byok-provider':      '',
+    'wt:byok-model':         '',
+  });
+  const provider   = s['wt:translate-provider'];
+  const targetLang = s['wt:translate-lang'];
+
+  if (provider === 'byok' && s['wt:byok-key'] && s['wt:byok-provider'] && s['wt:byok-model']) {
+    const llmAdapter = getLlmAdapter(s['wt:byok-provider']);
+    if (llmAdapter) {
+      try {
+        return await llmTranslateBatch(llmAdapter, s['wt:byok-key'], s['wt:byok-model'], texts, targetLang, storyCtx);
+      } catch (err) {
+        console.warn('[WebtoonTranslate] Batch LLM translate failed, falling back to per-line translation:', err?.message || err);
+      }
+    }
+  }
+
+  // Chrome built-in / Google have no batch endpoint, but each call is
+  // still independent and network/API-bound (or fully local for Chrome
+  // built-in) — running them one at a time serialized the whole chapter's
+  // translate phase for no reason. A handful run concurrently instead;
+  // capped well below BYOK's LLM chunk size since Google's free endpoint
+  // in particular can start erroring under too much concurrent load.
+  const CONCURRENCY = 6;
+  const out = new Array(texts.length);
+  let next = 0;
+  async function worker() {
+    while (next < texts.length) {
+      const i = next++;
+      out[i] = await autoTranslate(texts[i], { storyCtx, forceGoogle: provider === 'byok' });
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, texts.length) }, worker));
+  return out;
+}
+
 function formatLlmPrompt(storyContext, ocrText, targetLang) {
   const lines = [];
   if (storyContext?.title)          lines.push(`Title: ${storyContext.title}`);
@@ -4023,6 +4177,113 @@ function showToast(text, color = '#22c55e', duration = 3000) {
   setTimeout(() => t.remove(), duration);
 }
 
+// ── Batch-run blocking overlay ──────────────────────────────────────────
+// Used by "pre-translate whole chapter": it drives real window.scrollTo()
+// calls and reads live DOM state (image count, scroll height) while it
+// runs, so the user clicking around or navigating away mid-run would both
+// confuse the run and lose whatever OCR/translation was still in flight.
+// This overlay eats all page clicks and beforeunload warns on tab-close.
+let _batchOverlayStartedAt     = 0;
+let _batchOverlayTimerInterval = null;
+
+function showBatchOverlay(text, onCancel) {
+  if (!document.getElementById('wt-batch-overlay-style')) {
+    const style = document.createElement('style');
+    style.id = 'wt-batch-overlay-style';
+    // Four dots orbiting/swapping corners — reads as "processing" rather
+    // than a generic spinner.
+    style.textContent =
+      '.wt-batch-loader {' +
+      '  width: 32px; aspect-ratio: 1; margin: 0 auto 16px;' +
+      '  --wt-g: no-repeat radial-gradient(farthest-side, #fff 90%, #0000);' +
+      '  background: var(--wt-g), var(--wt-g), var(--wt-g), var(--wt-g);' +
+      '  background-size: 40% 40%;' +
+      '  animation: wt-batch-l46 1s infinite;' +
+      '}' +
+      '@keyframes wt-batch-l46 {' +
+      '  0%       { background-position: 0 0,       100% 0,   100% 100%, 0 100%; }' +
+      '  40%, 50% { background-position: 100% 100%,  100% 0,  0 0,        0 100%; }' +
+      '  90%, 100%{ background-position: 100% 100%,  0 100%,  0 0,        100% 0; }' +
+      '}';
+    document.head.appendChild(style);
+  }
+  let el = document.getElementById('wt-batch-overlay');
+  if (el) { setBatchOverlayText(text); return el; }
+  el = document.createElement('div');
+  el.id = 'wt-batch-overlay';
+  el.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(12,14,20,0.6);' +
+    'display:flex;align-items:center;justify-content:center;cursor:wait;font-family:system-ui,-apple-system,sans-serif;';
+  el.innerHTML =
+    '<div style="background:#1f2430;border:1px solid rgba(255,255,255,0.14);border-radius:12px;' +
+    'padding:24px 32px;max-width:380px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,0.45);">' +
+    '<div class="wt-batch-loader"></div>' +
+    '<div id="wt-batch-overlay-text" style="font-size:14px;font-weight:600;color:#fff;margin-bottom:10px;"></div>' +
+    '<div style="width:100%;height:6px;background:rgba(255,255,255,0.15);border-radius:3px;overflow:hidden;">' +
+    '<div id="wt-batch-overlay-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#22c55e,#3b82f6,#f59e0b);transition:width 0.35s ease;"></div>' +
+    '</div>' +
+    '<div id="wt-batch-overlay-pct" style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.8);margin:6px 0 4px;">0%</div>' +
+    '<div id="wt-batch-overlay-timer" style="font-size:11px;font-family:ui-monospace,Menlo,monospace;color:rgba(255,255,255,0.5);margin-bottom:14px;">0:00</div>' +
+    `<div style="font-size:12px;color:rgba(255,255,255,0.65);margin-bottom:16px;">${WT_I18N.t('batch.dont_close')}</div>` +
+    '<button id="wt-batch-overlay-cancel" style="background:none;border:1px solid rgba(255,255,255,0.3);' +
+    `color:rgba(255,255,255,0.85);font-size:12px;font-weight:600;padding:7px 18px;border-radius:6px;cursor:pointer;">${WT_I18N.t('batch.cancel_btn')}</button>` +
+    '</div>';
+  // Swallow all interaction with the underlying page while this is up —
+  // except the Cancel button itself. Checked here (not just skipped via a
+  // stopPropagation on the button) because this listener runs in the
+  // CAPTURE phase, ahead of the button's own click handler — calling
+  // stopPropagation() unconditionally here would stop the event before it
+  // ever reaches the button at all.
+  ['click', 'mousedown', 'mouseup', 'keydown', 'wheel'].forEach(evt =>
+    el.addEventListener(evt, e => {
+      if (e.target.closest('#wt-batch-overlay-cancel')) return;
+      e.stopPropagation();
+    }, { capture: true })
+  );
+  const cancelBtn = el.querySelector('#wt-batch-overlay-cancel');
+  cancelBtn.addEventListener('click', () => {
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = WT_I18N.t('batch.cancelling_btn');
+    cancelBtn.style.opacity = '0.6';
+    cancelBtn.style.cursor = 'default';
+    onCancel?.();
+  });
+  document.body.appendChild(el);
+  setBatchOverlayText(text);
+
+  // Elapsed-time readout — handy for eyeballing how long a chapter this
+  // size actually takes (OCR engine, LLM provider, chunk size all affect it).
+  _batchOverlayStartedAt = Date.now();
+  clearInterval(_batchOverlayTimerInterval);
+  const tick = () => {
+    const el2 = document.getElementById('wt-batch-overlay-timer');
+    if (!el2) return;
+    const secs = Math.floor((Date.now() - _batchOverlayStartedAt) / 1000);
+    el2.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  };
+  tick();
+  _batchOverlayTimerInterval = setInterval(tick, 1000);
+  return el;
+}
+
+function setBatchOverlayText(text) {
+  const t = document.getElementById('wt-batch-overlay-text');
+  if (t) t.textContent = text;
+}
+
+function setBatchOverlayProgress(percent) {
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
+  const bar = document.getElementById('wt-batch-overlay-bar');
+  const label = document.getElementById('wt-batch-overlay-pct');
+  if (bar)   bar.style.width = `${pct}%`;
+  if (label) label.textContent = `${pct}%`;
+}
+
+function hideBatchOverlay() {
+  clearInterval(_batchOverlayTimerInterval);
+  _batchOverlayTimerInterval = null;
+  document.getElementById('wt-batch-overlay')?.remove();
+}
+
 // ── BomtoonAdapter ────────────────────────────────────────────────────────────
 // https://www.bomtoon.com/viewer/{titleId}/{chapterId}
 
@@ -4816,6 +5077,75 @@ function bootForPage() {
     return result;
   }
 
+  // ── batch translate coalescer ────────────────────────────────────────
+  // While _batchTranslateMode is on (set by triggerTranslateAllPanels
+  // below), runTranslate doesn't translate each job the instant its OCR
+  // finishes — it parks the job's OCR'd text here and just waits. Nothing
+  // auto-flushes once BATCH_FLUSH_SIZE lines are waiting — translation of
+  // that group starts immediately and runs concurrently with OCR still in
+  // progress for the rest of the chapter, instead of every bubble sitting
+  // idle until the very last one finishes OCR. This still translates in
+  // large groups (llmTranslateBatch further splits/parallelizes per-request
+  // — see there), it just doesn't force ALL OCR to finish first: OCR-ahead,
+  // translate-in-groups-behind it, then split each group's results back
+  // onto their jobs/bubbles — instead of one interleaved OCR+translate
+  // round trip per bubble.
+  let _batchTranslateMode = false;
+  let _batchPending       = []; // { job, resolve, reject }
+  // Lowered from 40 — each flush is one LLM request for this many lines,
+  // and a 40-line request was measured taking long enough (tens of
+  // seconds) that it fell noticeably behind serialized OCR's pace,
+  // building up a backlog; smaller/more-frequent requests pipeline with
+  // ongoing OCR better and shrink the final chunk's tail latency.
+  const BATCH_FLUSH_SIZE  = 20; // matches llmTranslateBatch's own per-request chunk size
+  // Progress accounting for the overlay's OCR-phase percentage: every job
+  // onDetectedBoxes actually creates during a batch run increments this;
+  // "done" is inferred as (total - jobManager.jobs.size) since the job map
+  // only ever holds jobs that are still queued/OCR'ing/waiting-for-flush —
+  // both success and (for onnx-detect jobs) silent-cancel-on-error remove
+  // the entry, so this stays accurate without a second counter to keep in sync.
+  let _batchJobsTotal = 0;
+  // Job ids created during the current batch run, so its OCR/translate
+  // performance.mark()s (already emitted per-job for Suite C — see
+  // wt:detect-done/translate-start/translate-done below) can be summed up
+  // into a "where did the time go" console log once the run finishes,
+  // instead of only ever seeing one opaque total duration.
+  let _batchJobIds = [];
+
+  function queueBatchTranslate(job) {
+    return new Promise((resolve, reject) => {
+      _batchPending.push({ job, resolve, reject });
+      if (_batchPending.length >= BATCH_FLUSH_SIZE) flushBatchTranslate(); // fire-and-forget
+    });
+  }
+
+  async function flushBatchTranslate() {
+    if (!_batchPending.length) return;
+    const items = _batchPending;
+    _batchPending = [];
+    for (const it of items) performance.mark(`wt:translate-start:${it.job.id}`);
+    try {
+      const storyCtx = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
+      const texts     = items.map(it => it.job.originalText);
+      const translated = await autoTranslateBatch(texts, { storyCtx });
+      items.forEach((it, i) => it.resolve(translated[i] || it.job.originalText));
+    } catch (err) {
+      // autoTranslateBatch already retries and falls back to per-line
+      // translation internally (see llmTranslateBatch) — reaching here
+      // means the whole group failed completely. Rejecting used to cancel
+      // every job in the group silently (JobManager._process's catch
+      // treats a rejected translate on an onnx-detect job as "drop it, no
+      // error shown" — see there): a whole chunk's worth of bubbles would
+      // just vanish with zero indication why. Resolve with each job's own
+      // original (untranslated) text instead, same fallback already used
+      // on the success path above — the bubble still gets an overlay (in
+      // Korean) that the user can see and manually re-translate, instead
+      // of disappearing outright.
+      console.warn(`[WebtoonTranslate] Batch translate group of ${items.length} failed entirely, showing original text for these bubbles:`, err?.message || err);
+      items.forEach(it => it.resolve(it.job.originalText));
+    }
+  }
+
   const jobManager = new JobManager({
     runOcr:        async (job) => {
       // Suite C (E2E) stage marks — M2 (detect-done, i.e. this job's box was
@@ -4885,6 +5215,19 @@ function bootForPage() {
       return text;
     },
     runTranslate: async (job) => {
+      // "Pre-translate whole chapter" mode: don't translate this job on its
+      // own — hand its OCR'd text to the batch coalescer and wait for a
+      // flush (see queueBatchTranslate/flushBatchTranslate above) that
+      // translates every currently-waiting bubble together. translate-start
+      // is marked per-job inside flushBatchTranslate, right when its
+      // group's actual API call begins — NOT here, since reaching this
+      // point can mean a long queue-wait for the rest of the group to
+      // finish OCR, not real translate latency (marking it here used to
+      // make the batch-run time-breakdown log wildly overstate translate
+      // time).
+      if (_batchTranslateMode) {
+        return _markTranslateDone(job, await queueBatchTranslate(job));
+      }
       performance.mark(`wt:translate-start:${job.id}`); // M4≈M5-start: no adapter in llm-adapters.js streams, so there is no distinct "first token" — see Phase 4 discussion
       const s = await chrome.storage.local.get({ 'wt:translate-provider': 'chrome-builtin', 'wt:byok-mode': 'always' });
       const prov     = s['wt:translate-provider'];
@@ -4987,11 +5330,28 @@ function bootForPage() {
   // all behave identically.
   const ONNX_MIN_BOX_PX   = 24;   // discard sub-bubble noise
   const ONNX_MAX_BOX_PX   = 1000; // a bubble is never this tall/wide — bad box, would OCR huge crops
-  const ONNX_MAX_OVERLAP  = 0.1;  // skip boxes already covered by a job/annotation
+  const ONNX_MAX_OVERLAP  = 0.3;  // skip boxes already covered by a job/annotation.
+                                   // Was 0.1 — genuine duplicate detections (the same
+                                   // bubble caught by two overlapping tiles) overlap
+                                   // nearly 100%, so 0.1 was far stricter than needed
+                                   // for that and was instead discarding distinct,
+                                   // closely-spaced bubbles (common in dense back-and-
+                                   // forth dialogue) that only incidentally touched an
+                                   // existing box by a small margin — a likely
+                                   // contributor to bubbles missing from a full-chapter
+                                   // pre-translate run.
   const ONNX_MERGE_PAD    = 12;   // px halo used to merge fragments of one text block
-  const ONNX_AUTO_MIN_SCORE = 0.45; // SFX/stylised text scores lower than bubble text;
+  const ONNX_AUTO_MIN_SCORE = 0.32; // SFX/stylised text scores lower than bubble text;
                                     // the model's 2 classes are languages (eng/ja), not
-                                    // bubble-vs-SFX, so score is the only usable signal
+                                    // bubble-vs-SFX, so score is the only usable signal.
+                                    // Lowered from 0.45 — plain narration/caption text
+                                    // with no bubble shape was scoring below that and
+                                    // getting silently dropped entirely (see the
+                                    // console.log below for the boxes this still
+                                    // rejects, to tune further). A false positive here
+                                    // just fails OCR/errors silently for an onnx-detect
+                                    // job (see JobManager._process's onnx-detect catch
+                                    // branch) — cheaper than missing real text.
 
   // Nearby fragments (multi-line text detected as separate boxes) become one
   // OCR region; a merged box keeps the max score of its parts.
@@ -5066,7 +5426,12 @@ function bootForPage() {
       const bw = b.x2 - b.x1, bh = b.y2 - b.y1;
       if (bw < ONNX_MIN_BOX_PX || bh < ONNX_MIN_BOX_PX) continue;
       if (bw > ONNX_MAX_BOX_PX || bh > ONNX_MAX_BOX_PX) continue;
-      if (b.score < ONNX_AUTO_MIN_SCORE) continue;
+      if (b.score < ONNX_AUTO_MIN_SCORE) {
+        // Logged so a still-missed region's actual score is visible in
+        // DevTools instead of having to guess where to set the threshold.
+        console.log(`[WebtoonTranslate] Auto-detect: box below score threshold (${b.score.toFixed(2)} < ${ONNX_AUTO_MIN_SCORE})`, b);
+        continue;
+      }
 
       // Locate the panel image containing the box centre.
       const cx = (b.x1 + b.x2) / 2;
@@ -5113,7 +5478,9 @@ function bootForPage() {
       if (overlapsExistingOnPage(b)) continue;
       if (findOverlapForBbox(bbox, imageIndex) > ONNX_MAX_OVERLAP) continue;
 
-      createJobFromSelection({ bbox, imageEl: img, imageIndex });
+      createJobFromSelection({ bbox, imageEl: img, imageIndex }).then(job => {
+        if (job && _batchTranslateMode) { _batchJobsTotal++; _batchJobIds.push(job.id); }
+      });
     }
   }
 
@@ -5446,6 +5813,7 @@ function bootForPage() {
       panel?.toggle();
     }
     if (message.type === 'TRIGGER_CLEAR')  triggerClear();
+    if (message.type === 'TRANSLATE_ALL_PANELS') triggerTranslateAllPanels();
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
@@ -5466,6 +5834,298 @@ function bootForPage() {
       showToast('✓ Cleared all translations for this chapter.');
     } catch (err) {
       showToast(`✗ Clear failed: ${err.message}`, '#ef4444');
+    }
+  }
+
+  // ── batch: pre-translate the whole chapter ──────────────────────────────
+  // Reuses the exact same detect → onDetectedBoxes → createJobFromSelection →
+  // jobManager pipeline that auto-detect uses while scrolling, in phases:
+  //   1. A real scroll from top to bottom, so every site adapter's lazy-load
+  //      watcher (watchNewImages) fires and panels actually get their pixel
+  //      data loaded — and so bubbles get OCR'd as early as possible instead
+  //      of all at once at the very end.
+  //
+  //      Naver/Kakao-style infinite scroll only APPENDS later panels to the
+  //      DOM once the reader nears the current bottom — document.body /
+  //      documentElement.scrollHeight only grows after that happens. A
+  //      single "y >= maxScroll → we're done" check races that: if the next
+  //      batch of panels hasn't been appended yet at the moment we sample
+  //      scrollHeight, the loop concludes the chapter is over early and
+  //      every panel after that point is never even added to the DOM — no
+  //      amount of re-scanning fixes that, the <img> nodes simply don't
+  //      exist yet. So "at the bottom" isn't good enough; we require
+  //      scrollHeight AND the adapter's image count to both stay unchanged
+  //      across several consecutive checks before believing it.
+  //   2. bubbleDetector.detectAll(), which — unlike the scroll-driven
+  //      detect() — is NOT viewport-gated, so it catches any panel that
+  //      hadn't finished lazy-loading its pixel data in time during pass 1
+  //      and would otherwise be silently skipped (scheduleTiles drops an
+  //      image the moment it's scrolled above the viewport, loaded or not).
+  //      Run twice with a pause so a panel still mid-load after the first
+  //      call gets a second chance.
+  //   3. OCR happens per-bubble as usual (still serialized — see
+  //      _runExclusiveOcr), but translation is deferred: _batchTranslateMode
+  //      makes runTranslate above park each job in the batch coalescer
+  //      instead of translating it immediately. MAX_CONCURRENT_JOBS is
+  //      raised for the duration so jobs aren't throttled to 3 "active" at
+  //      a time while parked. The coalescer auto-flushes every
+  //      BATCH_FLUSH_SIZE (40) lines instead of waiting for the whole
+  //      chapter — translation of an early group starts while OCR keeps
+  //      running for the rest, and llmTranslateBatch further splits/
+  //      parallelizes each flush's own texts across a few concurrent
+  //      requests with retry-on-transient-failure. A single giant
+  //      "everything in one request" prompt turned out to be both slower
+  //      (nothing translates until literally the last bubble finishes OCR)
+  //      and fragile (one provider hiccup on a 200+ line prompt used to
+  //      fall back to translating all 200+ lines individually). Whatever's
+  //      still pending once detection AND every job's OCR go idle gets one
+  //      final flush, and results are split back onto each job/bubble.
+  //   4. A full-page overlay (showBatchOverlay) blocks clicks and warns on
+  //      tab-close for the whole run, since it drives real window.scrollTo()
+  //      calls and would lose in-flight OCR/translate state if interrupted.
+  //      Its Cancel button sets _batchCancelled, which stops scanning for
+  //      MORE bubbles (and nulls bubbleDetector.onBoxes so no new jobs get
+  //      created) but does not touch jobs already in flight — those still
+  //      finish OCR/translate/save normally, so nothing already done is lost.
+  let _batchTranslating = false;
+
+  async function triggerTranslateAllPanels() {
+    if (_batchTranslating) { showToast(WT_I18N.t('batch.already_running'), '#f59e0b'); return; }
+    if (!images.length) { showToast(WT_I18N.t('batch.no_panels'), '#f59e0b'); return; }
+    _batchTranslating = true;
+    const runStartedAt = Date.now(); // for the run-stats log (see completion below), independent of the overlay's own display timer
+
+    const wasArmed = !!bubbleDetector.onBoxes;
+    bubbleDetector.onBoxes = onDetectedBoxes;
+    const startY = window.scrollY;
+    const prevMaxConcurrent = MAX_CONCURRENT_JOBS;
+    // High enough that essentially no chapter hits this ceiling — OCR stays
+    // serialized (_runExclusiveOcr) regardless, so this doesn't parallelize
+    // OCR itself, it just stops jobs from being throttled to 3-at-a-time
+    // while parked waiting for the single translate flush at the end.
+    MAX_CONCURRENT_JOBS = 200;
+    _batchTranslateMode = true;
+    _batchJobsTotal = 0;
+    _batchJobIds = [];
+    // Cancel doesn't discard anything already OCR'd/translated — it just
+    // stops scanning for MORE bubbles and skips waiting around for new
+    // ones. Whatever's already a job at the moment Cancel is clicked keeps
+    // running to completion (still gets OCR'd, translated, saved) since
+    // that work is already invested; only *new* detections are stopped by
+    // nulling bubbleDetector.onBoxes below.
+    let _batchCancelled = false;
+    const beforeUnloadGuard = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', beforeUnloadGuard);
+    // Overall progress is 3 weighted stages: scan/scroll (0-30%), OCR
+    // (30-90%, real ratio once jobs start getting created), translate
+    // (90-100% — a single API call has no meaningful sub-progress).
+    const STAGE_SCAN_PCT = 30, STAGE_OCR_PCT = 90;
+    showBatchOverlay(WT_I18N.t('batch.scanning'), () => {
+      _batchCancelled = true;
+      bubbleDetector.onBoxes = null; // stop any further boxes from creating new jobs
+      setBatchOverlayText(WT_I18N.t('batch.stopping'));
+    });
+    setBatchOverlayProgress(0);
+
+    try {
+      const step = Math.max(200, Math.round(window.innerHeight * 0.8));
+      let y = 0;
+      let stableRounds = 0;
+      const STABLE_ROUNDS_NEEDED = 4; // ~4 * 700ms of no growth before we believe it
+      const MAX_STEPS = 2000; // safety cap — a chapter needing this many rounds would be a bug elsewhere
+      for (let i = 0; i < MAX_STEPS && stableRounds < STABLE_ROUNDS_NEEDED && !_batchCancelled; i++) {
+        if (disposed) return;
+        const beforeImageCount = images.length;
+        const maxScroll = Math.max(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) - window.innerHeight);
+        const targetY = Math.min(y, maxScroll);
+        window.scrollTo(0, targetY);
+        await new Promise(r => setTimeout(r, 400)); // let lazy-loaders + the scroll listener settle
+        bubbleDetector.detect();
+        setBatchOverlayProgress(maxScroll > 0 ? (targetY / maxScroll) * STAGE_SCAN_PCT : 0);
+
+        if (targetY < maxScroll) {
+          // Not at the bottom yet — keep walking down one step at a time so
+          // every panel gets real dwell time for its lazy-loader to fire.
+          stableRounds = 0;
+          y += step;
+          continue;
+        }
+        if (images.length > beforeImageCount) {
+          // Pinned at the bottom, but new panels just got appended — resume
+          // the normal step-by-step walk into them (never jump straight to
+          // the new bottom, or their lazy-loaders get skipped the same way).
+          stableRounds = 0;
+          y += step;
+        } else {
+          // Looks like the bottom — wait a bit longer for the next batch of
+          // panels to actually get appended before trusting it.
+          stableRounds++;
+          await new Promise(r => setTimeout(r, 700));
+        }
+      }
+
+      if (disposed) return;
+      if (!_batchCancelled) {
+        setBatchOverlayText(WT_I18N.t('batch.rescan'));
+        setBatchOverlayProgress(STAGE_SCAN_PCT);
+        bubbleDetector.detectAll();
+        await new Promise(r => setTimeout(r, 1500));
+        if (disposed) return;
+        if (!_batchCancelled) bubbleDetector.detectAll(); // second pass catches any late lazy-loaders from the first
+      }
+
+      // Wait for every already-detected tile/job to actually finish OCR
+      // instead of declaring victory the moment scanning stops (or Cancel
+      // is clicked) — detection and OCR both keep running async in the
+      // background. The translate batch auto-flushes every
+      // BATCH_FLUSH_SIZE lines while this runs (see queueBatchTranslate),
+      // so translations for earlier groups are already showing up on the
+      // page by the time this loop finishes for the last few bubbles. If
+      // cancelled, no NEW jobs can appear (onBoxes was nulled by the
+      // Cancel handler), so this just waits out whatever was already
+      // in-flight instead of the usual "stable for a while" confirmation.
+      const IDLE_STABLE_NEEDED = _batchCancelled ? 1 : 3;
+      const MAX_IDLE_CHECKS    = 1200; // ~10 min safety cap — should never actually be reached now (see below)
+      let idleStable = 0;
+      for (let i = 0; i < MAX_IDLE_CHECKS && idleStable < IDLE_STABLE_NEEDED; i++) {
+        if (disposed) return;
+        const remaining = jobManager.jobs.size;
+        const done  = Math.max(0, _batchJobsTotal - remaining);
+        const total = Math.max(_batchJobsTotal, done, 1);
+        const totalLabel = _batchJobsTotal || done;
+        setBatchOverlayText(_batchCancelled
+          ? WT_I18N.t('batch.stopping_progress', { done, total: totalLabel })
+          : WT_I18N.t('batch.ocr_translating', { done, total: totalLabel }));
+        setBatchOverlayProgress(STAGE_SCAN_PCT + (done / total) * (STAGE_OCR_PCT - STAGE_SCAN_PCT));
+        const detectIdle = _batchCancelled || bubbleDetector.isIdle();
+        const jobsIdle    = jobManager.activeCount() === 0 && jobManager.queuedCount() === 0;
+        if (detectIdle && jobsIdle) {
+          idleStable++;
+        } else if (
+          detectIdle && jobManager.queuedCount() === 0 && _batchPending.length > 0 &&
+          jobManager.activeCount() === _batchPending.length
+        ) {
+          // Detection is done and every remaining active job has already
+          // finished OCR and is just parked waiting for its group to reach
+          // BATCH_FLUSH_SIZE — which the chapter's last, smaller-than-a-
+          // full-chunk leftover group can never do on its own (a chapter's
+          // bubble count is essentially never an exact multiple of the
+          // chunk size). Without this, the loop just spun here doing
+          // nothing until MAX_IDLE_CHECKS before falling through to the
+          // flush after this loop — silently burning up to ~10 minutes on
+          // every single run, which is why earlier fixes to OCR/translate
+          // speed didn't move the needle: this dwarfed all of them.
+          await flushBatchTranslate();
+          idleStable = 0;
+        } else {
+          idleStable = 0;
+        }
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      // OCR (and translation of everything that already formed a full
+      // group) is done — flush whatever's left over (a partial group),
+      // whether that's the real end of the chapter or just wherever Cancel
+      // caught things. Nothing already OCR'd is thrown away either way.
+      if (disposed) return;
+      setBatchOverlayProgress(STAGE_OCR_PCT);
+      if (_batchPending.length) {
+        setBatchOverlayText(WT_I18N.t('batch.translating_remaining', { count: _batchPending.length }));
+        setBatchOverlayProgress(95);
+        await flushBatchTranslate();
+      }
+
+      // Log this run (duration + how much it covered) so Settings can show
+      // a rolling average across runs instead of just this one overlay's
+      // timer. Sent for both a normal finish and a Cancel — a cancelled run
+      // still did real, measurable work up to that point. Not sent if the
+      // page was torn down mid-run (disposed — see the early returns above),
+      // since that's an abnormal exit, not a representative data point.
+      sendToBackground({
+        type: 'SAVE_BATCH_RUN_STAT',
+        payload: {
+          durationMs:  Date.now() - runStartedAt,
+          imageCount:  images.length,
+          bubbleCount: _batchJobsTotal,
+          cancelled:   _batchCancelled,
+        },
+      }).catch(() => {});
+
+      // Time breakdown for whoever's staring at "why did this take 11
+      // minutes" — sums each job's own detect→translate-start (OCR) and
+      // translate-start→translate-done (translate) performance.mark()
+      // deltas (already emitted for Suite C, reused here) instead of only
+      // ever having one opaque total. OCR being the dominant chunk usually
+      // means the OCR engine itself (Tesseract/PaddleOCR) is the ceiling —
+      // it's serialized one-at-a-time on purpose (_runExclusiveOcr) even
+      // during a batch run, since none of these engines are safe to run
+      // concurrently; translate concurrency was the lever actually pulled
+      // (see autoTranslateBatch/llmTranslateBatch).
+      try {
+        // OCR is fully serialized (_runExclusiveOcr) — zero overlap between
+        // jobs — so summing each job's own detect-done→ocr-done duration
+        // equals real OCR wall-clock time exactly. (NOT translate-start:
+        // that now marks when a job's GROUP actually starts its API call —
+        // see flushBatchTranslate — which can be well after this job's own
+        // OCR finished, while it sat waiting for the rest of its group.)
+        // Translate is NOT serialized (concurrent requests, see
+        // autoTranslateBatch/llmTranslateBatch), so summing per-job
+        // translate-start→translate-done durations is cumulative work
+        // time, not wall-clock — reported separately and labeled as such,
+        // not added into a "the rest was scanning" subtraction (which
+        // could go negative).
+        let ocrMs = 0, ocrMeasured = 0, translateWorkMs = 0, translateMeasured = 0;
+        let neverReachedTranslate = 0; // OCR'd fine but never even started translating —
+                                        // runOcr's quality gate cancels onnx-detect jobs it
+                                        // decides are garbage/false-positive detections
+                                        // *before* they ever reach runTranslate; expected,
+                                        // not a failure.
+        let translateStartedNeverFinished = 0; // reached translate-start but no translate-done —
+                                                // this WOULD indicate a real stuck/failed job.
+        for (const jobId of _batchJobIds) {
+          const detectDone     = performance.getEntriesByName(`wt:detect-done:${jobId}`)[0]?.startTime;
+          const ocrDone        = performance.getEntriesByName(`wt:ocr-done:${jobId}`)[0]?.startTime;
+          const translateStart = performance.getEntriesByName(`wt:translate-start:${jobId}`)[0]?.startTime;
+          const translateDone  = performance.getEntriesByName(`wt:translate-done:${jobId}`)[0]?.startTime;
+          if (detectDone != null && ocrDone != null) { ocrMs += ocrDone - detectDone; ocrMeasured++; }
+          if (translateStart != null && translateDone != null) {
+            translateWorkMs += translateDone - translateStart;
+            translateMeasured++;
+          } else if (translateStart != null) {
+            translateStartedNeverFinished++;
+          } else if (ocrDone != null) {
+            neverReachedTranslate++;
+          }
+        }
+        const totalMs = Date.now() - runStartedAt;
+        console.log(
+          `[WebtoonTranslate] Pre-translate run: ${_batchJobIds.length} bubbles, ${(totalMs / 1000).toFixed(1)}s total. ` +
+          `OCR (serialized, wall-clock): ${(ocrMs / 1000).toFixed(1)}s (${ocrMeasured}/${_batchJobIds.length} measured). ` +
+          `Translate (concurrent, cumulative work — not wall-clock): ${(translateWorkMs / 1000).toFixed(1)}s (${translateMeasured}/${_batchJobIds.length} measured). ` +
+          `Rest (scan + waits): ~${Math.max(0, (totalMs - ocrMs) / 1000).toFixed(1)}s.` +
+          (neverReachedTranslate ? ` ${neverReachedTranslate} job(s) OCR'd fine but never reached translate — dropped by runOcr's quality gate as a likely false-positive detection (expected/normal).` : '') +
+          (translateStartedNeverFinished ? ` ${translateStartedNeverFinished} job(s) started translating but never finished — this IS unexpected, worth reporting with this log line.` : '')
+        );
+      } catch { /* diagnostic only — never let this break the actual run */ }
+
+      setBatchOverlayProgress(100);
+      if (_batchCancelled) {
+        setBatchOverlayText(WT_I18N.t('batch.cancelled_overlay', { count: _batchJobsTotal }));
+        await new Promise(r => setTimeout(r, 700));
+        showToast(WT_I18N.t('batch.cancelled_toast', { count: _batchJobsTotal }), '#f59e0b');
+      } else {
+        setBatchOverlayText(WT_I18N.t('batch.done'));
+        await new Promise(r => setTimeout(r, 700)); // let the 100% state be visible before the overlay closes
+        showToast(WT_I18N.t('batch.done_toast'));
+      }
+    } finally {
+      if (!disposed) window.scrollTo(0, startY);
+      if (!wasArmed) bubbleDetector.onBoxes = null;
+      _batchTranslateMode = false;
+      MAX_CONCURRENT_JOBS = prevMaxConcurrent;
+      _batchTranslating = false;
+      window.removeEventListener('beforeunload', beforeUnloadGuard);
+      hideBatchOverlay();
     }
   }
 
@@ -5744,6 +6404,33 @@ const bubbleDetector = (() => {
     _pumpTileQueue();
   }
 
+  // Viewport-independent variant of scheduleTiles, for "translate whole
+  // chapter now" instead of the scroll-driven prefetch above. Queues every
+  // tile of every eligible image regardless of where it currently sits
+  // relative to the viewport — safe because detectImageTile's canvas
+  // composeTileLocally() reads the <img>'s already-loaded bitmap directly,
+  // it doesn't screenshot the page, so an off-screen (or scrolled-past)
+  // image tiles just as correctly as a visible one. This exists because
+  // scheduleTiles' viewport gate means a single scroll pass can permanently
+  // skip a panel that hadn't finished lazy-loading yet when scrolled past
+  // (r.bottom <= 0 drops it from every future call, even once it loads).
+  function scheduleAllTiles() {
+    if (!api.onBoxes) return; // armed by bootForPage; dormant otherwise
+    for (const img of document.querySelectorAll('img')) {
+      if (!eligible(img)) continue;
+      const r = img.getBoundingClientRect();
+      if (r.height === 0) continue;
+      const last = Math.max(0, Math.floor(Math.max(0, r.height - 1) / STRIDE));
+      for (let i = 0; i <= last; i++) {
+        const key = `${img.currentSrc}#${i}`;
+        if (doneTiles.has(key) || inFlight.has(key) || _queuedTileKeys.has(key)) continue;
+        _queuedTileKeys.add(key);
+        _tileQueue.push({ img, tileIdx: i, key });
+      }
+    }
+    _pumpTileQueue();
+  }
+
   // Throttled scroll listener. capture:true so scrolls of INNER containers
   // (Ridi/Kakao viewers scroll a div, not the window — scroll events don't
   // bubble, but they do capture) reach us too.
@@ -5757,8 +6444,10 @@ const bubbleDetector = (() => {
     // Set by bootForPage to receive page-absolute boxes as tiles complete;
     // while null the whole detector (including the scroll listener) is dormant.
     onBoxes: null,
-    detect:  scheduleTiles,
+    detect:    scheduleTiles,
+    detectAll: scheduleAllTiles,
     reset()  { doneTiles.clear(); inFlight.clear(); _tileQueue.length = 0; _queuedTileKeys.clear(); },
+    isIdle()  { return _tileQueue.length === 0 && _activeTileCount === 0 && inFlight.size === 0; },
   };
   return api;
 })();

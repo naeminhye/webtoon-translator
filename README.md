@@ -30,6 +30,7 @@ An **OCR Confidence Stats** panel (Settings → OCR Engine) tracks each engine's
 
 - **Google Translate** (free, no key) — default fallback
 - **BYOK LLM** (optional) — bring your own key for OpenAI, Anthropic, or Gemini; enables LLM-quality translation and vision fallback
+  - **Presets**: save multiple key/provider/model/mode combos (e.g. "Fast & cheap" vs "High quality") in Settings → Translation & Appearance and switch the active one instantly, without retyping a key
 
 ### Bubble detection
 
@@ -101,6 +102,12 @@ scripts/
 
 ## Development
 
+### Versioning
+
+`package.json`, `extension/manifest.json`, and the "applies to version …" line in
+`data/publish/privacy-policy.html` must all agree. Run `npm run check:version` after bumping
+the version (also enforced automatically by `npm run build`).
+
 ### Load the extension
 
 1. Open Chrome → `chrome://extensions`
@@ -119,6 +126,8 @@ scripts/
 3. Or click and drag to manually draw a bounding box
 4. OCR runs automatically → translation appears in the overlay
 5. Click an existing bubble to edit or delete it
+
+**Pre-translate whole chapter:** click the extension icon → **Pre-translate whole chapter** to scroll through the entire chapter automatically and queue OCR/translation for every detected bubble (same pipeline as auto-detect-while-scrolling, just driven end-to-end), so the chapter is ready to read offline without manual scrolling.
 
 ### Settings
 

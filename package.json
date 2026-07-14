@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node scripts/dev.js",
     "build": "node scripts/build.js",
-    "bench:compare": "node scripts/bench-compare.mjs"
+    "bench:compare": "node scripts/bench-compare.mjs",
+    "check:version": "node scripts/check-version.js"
   },
   "dependencies": {
     "onnxruntime-web": "^1.18.0"

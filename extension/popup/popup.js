@@ -5,6 +5,7 @@ const __DEV_TOOLS__ = true;
 const $ = id => document.getElementById(id);
 const ENABLED_KEY = 'wt:enabled';
 const THEME_KEY   = 'wt:settings-theme'; // shares the same key settings.js's initTheme writes
+const LOCALE_KEY  = 'wt:locale';         // shares the same key settings.js's initLocale writes
 
 let activeTabId = null;
 
@@ -39,7 +40,9 @@ function refreshMeta() {
     const translated = meta.translatedPanels ?? 0;
     const total      = meta.imageCount ?? 0;
     const pct        = total > 0 ? Math.round((translated / total) * 100) : 0;
-    $('progress-text').textContent = total > 0 ? `${translated}/${total} panels (${pct}%)` : '—';
+    $('progress-text').textContent = total > 0
+      ? WT_I18N.t('popup.progress_value', { done: translated, total, pct })
+      : '—';
     $('progress-bar-fill').style.width = `${pct}%`;
 
     const badge = $('site-badge');
@@ -50,6 +53,18 @@ function refreshMeta() {
 
 async function init() {
   applyStoredTheme();
+  $('footer-version').textContent = `v${chrome.runtime.getManifest().version}`;
+
+  const localeStored = await chrome.storage.local.get({ [LOCALE_KEY]: 'en' });
+  WT_I18N.setLocale(localeStored[LOCALE_KEY]);
+  $('ui-locale').value = WT_I18N.getLocale();
+  WT_I18N.applyTo(document);
+  $('ui-locale').addEventListener('change', async (e) => {
+    WT_I18N.setLocale(e.target.value);
+    await chrome.storage.local.set({ [LOCALE_KEY]: e.target.value });
+    WT_I18N.applyTo(document);
+  });
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab?.id ?? null;
 
@@ -76,6 +91,7 @@ async function init() {
   if (__DEV_TOOLS__) {
     $('btn-panel')?.addEventListener('click', () => { chrome.tabs.sendMessage(activeTabId, { type: 'TOGGLE_PANEL' }); window.close(); });
   }
+  $('btn-translate-all').addEventListener('click', () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRANSLATE_ALL_PANELS' }); window.close(); });
   $('btn-clear').addEventListener('click',  () => { chrome.tabs.sendMessage(activeTabId, { type: 'TRIGGER_CLEAR' }); window.close(); });
 }
 

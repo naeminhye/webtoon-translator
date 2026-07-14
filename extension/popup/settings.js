@@ -1,10 +1,48 @@
 const $ = id => document.getElementById(id);
-const THEME_KEY = 'wt:settings-theme';
-const TAB_KEY   = 'wt:settings-tab';
+const THEME_KEY  = 'wt:settings-theme';
+const TAB_KEY    = 'wt:settings-tab';
+const LOCALE_KEY = 'wt:locale';
+
+// ── UI language ──────────────────────────────────────────────────────────
+// See extension/shared/i18n.js. WT_I18N.applyTo(document) fills in every
+// data-i18n-tagged element on the page from the current locale; called once
+// on load and again on every change so switching languages updates live
+// without a reload.
+async function initLocale() {
+  const stored = await chrome.storage.local.get({ [LOCALE_KEY]: 'en' });
+  WT_I18N.setLocale(stored[LOCALE_KEY]);
+  $('ui-locale').value = WT_I18N.getLocale();
+  WT_I18N.applyTo(document);
+  updateThemeButtonLabel();
+
+  $('ui-locale').addEventListener('change', async (e) => {
+    WT_I18N.setLocale(e.target.value);
+    await chrome.storage.local.set({ [LOCALE_KEY]: e.target.value });
+    WT_I18N.applyTo(document);
+    updateThemeButtonLabel();
+  });
+}
+
+// ── Version display ─────────────────────────────────────────────────────
+// Reads the real extension version from manifest.json instead of a
+// hardcoded string, so the UI can never drift out of sync with it.
+function initVersion() {
+  const version = `v${chrome.runtime.getManifest().version}`;
+  $('navbar-version').textContent = version;
+  $('footer-version').textContent = version;
+}
 
 // ── Theme (light/dark) ──────────────────────────────────────────────────
 // Persisted separately from every other 'wt:' setting below — this is a
 // UI preference for this settings page only, not an extension behavior.
+// updateThemeButtonLabel is also called by initLocale (below) after a
+// language switch, since the button's label is translated text too.
+function updateThemeButtonLabel() {
+  const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const effective = document.documentElement.getAttribute('data-theme') || (systemDark ? 'dark' : 'light');
+  $('theme-toggle').textContent = effective === 'dark' ? WT_I18N.t('settings.theme.to_light') : WT_I18N.t('settings.theme.to_dark');
+}
+
 async function initTheme() {
   const stored = await chrome.storage.local.get({ [THEME_KEY]: '' });
   const btn = $('theme-toggle');
@@ -14,11 +52,9 @@ async function initTheme() {
     // prefers-color-scheme media query in settings.css decides — the
     // toggle button still needs a concrete label, so fall back to what
     // the media query would currently resolve to.
-    const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const effective = theme || (systemDark ? 'dark' : 'light');
     if (theme) document.documentElement.setAttribute('data-theme', theme);
     else document.documentElement.removeAttribute('data-theme');
-    btn.textContent = effective === 'dark' ? 'Light' : 'Dark';
+    updateThemeButtonLabel();
   }
 
   apply(stored[THEME_KEY]);
@@ -60,6 +96,8 @@ const BYOK_KEY_STR           = 'wt:byok-key';
 const BYOK_PROVIDER_KEY      = 'wt:byok-provider';
 const BYOK_MODEL_STR         = 'wt:byok-model';
 const BYOK_MODE_KEY          = 'wt:byok-mode';
+const BYOK_PRESETS_KEY       = 'wt:byok-presets';
+const BYOK_ACTIVE_PRESET_KEY = 'wt:byok-active-preset';
 const OVERLAY_MODE_KEY       = 'wt:overlay-mode';
 const AUTO_DETECT_KEY        = 'wt:auto-detect';
 
@@ -100,11 +138,29 @@ async function initOcrSettings() {
   // the choice rather than only appearing after the user has already picked
   // this engine. No hard cutoff exists for "too weak"; this is a soft nudge
   // based on the same navigator.gpu check ort-runner.js/paddle-runner.js use
-  // to pick an execution provider, plus a low core-count heuristic.
+  // to pick an execution provider, plus a low core-count heuristic. Not a
+  // silent auto-switch — that could yank the engine out from under someone
+  // who picked PaddleOCR deliberately (e.g. for its accuracy) — instead a
+  // one-click fallback button sits right next to the warning.
   const hasGpu = !!navigator.gpu;
   const cores  = navigator.hardwareConcurrency || 0;
   const weakHardware = !hasGpu && cores > 0 && cores < 4;
   $('paddleocr-local-hw-warning').classList.toggle('hidden', !weakHardware);
+  $('paddleocr-local-hw-fallback-btn').classList.toggle('hidden', !weakHardware);
+
+  // The warning/button live inside the PaddleOCR (in-browser) <label>, which
+  // otherwise forwards any click on it (including this nested button) to its
+  // radio input — preventDefault stops that forwarding so clicking the
+  // fallback button can't accidentally *select* the very engine it's
+  // steering the user away from.
+  $('paddleocr-local-hw-fallback-btn').addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    await chrome.storage.local.set({ [OCR_PROVIDER_KEY]: 'tesseract' });
+    applyProvider('tesseract');
+    $('paddleocr-local-hw-fallback-done').classList.remove('hidden');
+    setTimeout(() => $('paddleocr-local-hw-fallback-done').classList.add('hidden'), 2500);
+  });
 
   radios.forEach(r => r.addEventListener('change', async () => {
     await chrome.storage.local.set({ [OCR_PROVIDER_KEY]: r.value });
@@ -332,8 +388,19 @@ async function initTranslationSettings() {
     chrome.storage.local.set({ [TRANSLATE_PROVIDER_KEY]: initialProvider });
   }
   applyProvider(initialProvider);
-  $('target-lang').value = stored[TRANSLATE_LANG_KEY];
-  if (stored[BYOK_KEY_STR]) $('byok-key').value = stored[BYOK_KEY_STR];
+
+  // Target language options were trimmed down to just Vietnamese/English —
+  // fall a stored value from before that change back to the default so the
+  // dropdown and chrome.storage.local (which the content script's
+  // autoTranslate() reads directly, not the dropdown) don't silently drift
+  // apart: an unmigrated stale value would keep translating into the old
+  // language while this UI displays "Vietnamese".
+  let initialLang = stored[TRANSLATE_LANG_KEY];
+  if (!['vi', 'en'].includes(initialLang)) {
+    initialLang = 'vi';
+    chrome.storage.local.set({ [TRANSLATE_LANG_KEY]: initialLang });
+  }
+  $('target-lang').value = initialLang;
 
   // Provider dropdown is populated from the shared adapter registry
   // (extension/shared/llm-adapters.js) — never a separately hardcoded list —
@@ -343,38 +410,149 @@ async function initTranslationSettings() {
     .map(a => `<option value="${a.id}">${a.label}</option>`)
     .join('');
 
-  let byokProvider = stored[BYOK_PROVIDER_KEY];
-  let byokModel    = stored[BYOK_MODEL_STR];
-  // Migrate a pre-existing combined "provider/model" string (the old single
-  // free-text field) into the two new separate fields, once, on first load.
-  if (!byokProvider && byokModel.includes('/')) {
-    const slash = byokModel.indexOf('/');
-    byokProvider = byokModel.slice(0, slash);
-    byokModel    = byokModel.slice(slash + 1);
-    await chrome.storage.local.set({ [BYOK_PROVIDER_KEY]: byokProvider, [BYOK_MODEL_STR]: byokModel });
-  }
-  if (!byokProvider) byokProvider = WT_LLM_ADAPTERS[0]?.id || '';
-
   function applyByokProviderPlaceholder(providerId) {
     const adapter = getLlmAdapter(providerId);
     $('byok-model').placeholder = adapter?.modelPlaceholder || '';
   }
 
-  providerSelect.value = byokProvider;
-  applyByokProviderPlaceholder(byokProvider);
-  if (byokModel) $('byok-model').value = byokModel;
+  // ── BYOK presets ─────────────────────────────────────────────────────
+  // Each preset bundles {name, provider, model, key, mode} so users can
+  // save e.g. a "Fast & cheap" and a "High quality" combo and switch
+  // between them without retyping a key. The active preset's fields are
+  // mirrored into the legacy flat wt:byok-* keys on every change, so the
+  // content-script translate pipeline (bundle.js) keeps reading a single
+  // "current" value and never needs to know presets exist.
+  function makePresetId() {
+    return `preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
 
-  // BYOK mode radio
+  const presetStored = await chrome.storage.local.get({
+    [BYOK_PRESETS_KEY]: [],
+    [BYOK_ACTIVE_PRESET_KEY]: '',
+  });
+  let presets = presetStored[BYOK_PRESETS_KEY];
+  let activePresetId = presetStored[BYOK_ACTIVE_PRESET_KEY];
+
+  if (!presets.length) {
+    // First run after presets shipped (or a fresh install): migrate
+    // whatever single BYOK config already existed (or blanks) into one
+    // "Default" preset.
+    let legacyProvider = stored[BYOK_PROVIDER_KEY];
+    let legacyModel    = stored[BYOK_MODEL_STR];
+    // Migrate a pre-existing combined "provider/model" string (the old
+    // single free-text field) into the two separate fields, once.
+    if (!legacyProvider && legacyModel.includes('/')) {
+      const slash = legacyModel.indexOf('/');
+      legacyProvider = legacyModel.slice(0, slash);
+      legacyModel    = legacyModel.slice(slash + 1);
+    }
+    presets = [{
+      id: makePresetId(),
+      name: 'Default',
+      provider: legacyProvider || WT_LLM_ADAPTERS[0]?.id || '',
+      model: legacyModel,
+      key: stored[BYOK_KEY_STR],
+      mode: stored[BYOK_MODE_KEY] || 'always',
+    }];
+    activePresetId = presets[0].id;
+    await chrome.storage.local.set({ [BYOK_PRESETS_KEY]: presets, [BYOK_ACTIVE_PRESET_KEY]: activePresetId });
+  }
+  if (!presets.some(p => p.id === activePresetId)) activePresetId = presets[0].id;
+
+  function getActivePreset() {
+    return presets.find(p => p.id === activePresetId) || presets[0];
+  }
+
+  async function persistPresets() {
+    await chrome.storage.local.set({ [BYOK_PRESETS_KEY]: presets, [BYOK_ACTIVE_PRESET_KEY]: activePresetId });
+  }
+
+  async function mirrorActivePresetToLegacy() {
+    const preset = getActivePreset();
+    await chrome.storage.local.set({
+      [BYOK_KEY_STR]:      preset.key,
+      [BYOK_PROVIDER_KEY]: preset.provider,
+      [BYOK_MODEL_STR]:    preset.model,
+      [BYOK_MODE_KEY]:     preset.mode,
+    });
+  }
+
+  function renderPresetSelect() {
+    const select = $('byok-preset-select');
+    select.innerHTML = presets.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+    select.value = activePresetId;
+    $('byok-preset-delete-btn').disabled = presets.length <= 1;
+  }
+
+  function applyActivePresetToFields() {
+    const preset = getActivePreset();
+    $('byok-key').value = preset.key || '';
+    providerSelect.value = preset.provider || WT_LLM_ADAPTERS[0]?.id || '';
+    applyByokProviderPlaceholder(providerSelect.value);
+    $('byok-model').value = preset.model || '';
+    byokModeRadios.forEach(r => { r.checked = r.value === (preset.mode || 'always'); });
+    updateKeyWarnings();
+  }
+
+  renderPresetSelect();
+
+  $('byok-preset-select').addEventListener('change', async (e) => {
+    activePresetId = e.target.value;
+    applyActivePresetToFields();
+    await persistPresets();
+    await mirrorActivePresetToLegacy();
+  });
+
+  $('byok-preset-add-btn').addEventListener('click', async () => {
+    const name = window.prompt('Preset name:', `Preset ${presets.length + 1}`);
+    if (!name) return;
+    const preset = { id: makePresetId(), name: name.trim(), provider: WT_LLM_ADAPTERS[0]?.id || '', model: '', key: '', mode: 'always' };
+    presets.push(preset);
+    activePresetId = preset.id;
+    renderPresetSelect();
+    applyActivePresetToFields();
+    await persistPresets();
+    await mirrorActivePresetToLegacy();
+  });
+
+  $('byok-preset-rename-btn').addEventListener('click', async () => {
+    const preset = getActivePreset();
+    const name = window.prompt('Preset name:', preset.name);
+    if (!name) return;
+    preset.name = name.trim();
+    renderPresetSelect();
+    await persistPresets();
+  });
+
+  $('byok-preset-delete-btn').addEventListener('click', async () => {
+    if (presets.length <= 1) return;
+    const preset = getActivePreset();
+    if (!window.confirm(`Delete preset "${preset.name}"?`)) return;
+    presets = presets.filter(p => p.id !== preset.id);
+    activePresetId = presets[0].id;
+    renderPresetSelect();
+    applyActivePresetToFields();
+    await persistPresets();
+    await mirrorActivePresetToLegacy();
+  });
+
+  // BYOK mode radio — scoped to the active preset.
   const byokModeRadios = document.querySelectorAll('input[name="byok-mode"]');
-  byokModeRadios.forEach(r => { r.checked = r.value === stored[BYOK_MODE_KEY]; });
   byokModeRadios.forEach(r => r.addEventListener('change', async () => {
-    if (r.checked) await chrome.storage.local.set({ [BYOK_MODE_KEY]: r.value });
+    if (!r.checked) return;
+    getActivePreset().mode = r.value;
+    await persistPresets();
+    await mirrorActivePresetToLegacy();
   }));
 
   providerSelect.addEventListener('change', async (e) => {
     applyByokProviderPlaceholder(e.target.value);
-    await chrome.storage.local.set({ [BYOK_PROVIDER_KEY]: e.target.value });
+    getActivePreset().provider = e.target.value;
+    await persistPresets();
+    await mirrorActivePresetToLegacy();
   });
+
+  applyActivePresetToFields();
 
   // ── Autosave: every control persists on change; no Save button ──
   // Provider radios: warn (not block) when a paid provider is picked without
@@ -397,19 +575,23 @@ async function initTranslationSettings() {
     if ([...radios].find(r => r.checked)?.value === 'chrome-builtin') refreshChromeBuiltinStatus();
   });
 
-  // Debounced autosave for text inputs so we don't hammer storage per keystroke.
-  function autosaveInput(el, key) {
+  // Debounced autosave for text inputs — writes into the active preset and
+  // mirrors to the legacy flat key bundle.js reads.
+  function autosavePresetField(el, field, legacyKey) {
     let t = null;
     el.addEventListener('input', () => {
       clearTimeout(t);
       t = setTimeout(async () => {
-        await chrome.storage.local.set({ [key]: el.value.trim() });
+        const value = el.value.trim();
+        getActivePreset()[field] = value;
+        await persistPresets();
+        await chrome.storage.local.set({ [legacyKey]: value });
         updateKeyWarnings();
       }, 400);
     });
   }
-  autosaveInput($('byok-key'),    BYOK_KEY_STR);
-  autosaveInput($('byok-model'),  BYOK_MODEL_STR);
+  autosavePresetField($('byok-key'),   'key',   BYOK_KEY_STR);
+  autosavePresetField($('byok-model'), 'model', BYOK_MODEL_STR);
 }
 
 async function initDisplaySettings() {
@@ -616,10 +798,56 @@ async function initOcrStatsSettings() {
   });
 }
 
+// ── "Pre-translate whole chapter" run stats ─────────────────────────────
+// Mirrors background/worker.js's BATCH_RUN_STATS_KEY shape: { count,
+// cancelledCount, durationSumMs, imageSum, bubbleSum } — a rolling
+// aggregate across every run, not a per-run log (see the worker.js comment
+// on BATCH_RUN_STATS_KEY for why).
+function formatBatchDuration(ms) {
+  const totalSec = ms / 1000;
+  if (totalSec < 60) return `${totalSec.toFixed(1)}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = Math.round(totalSec % 60);
+  return `${min}m ${sec}s`;
+}
+
+async function initBatchStatsSettings() {
+  async function refresh() {
+    const res = await chrome.runtime.sendMessage({ type: 'GET_BATCH_RUN_STATS' });
+    const s = res?.stats || {};
+    const totalRuns = (s.count || 0) + (s.cancelledCount || 0);
+
+    $('batch-stat-runs').textContent = String(totalRuns);
+    if (!totalRuns) {
+      $('batch-stat-avg-duration').textContent   = '–';
+      $('batch-stat-avg-per-panel').textContent  = '–';
+      $('batch-stat-avg-per-bubble').textContent = '–';
+      return;
+    }
+    $('batch-stat-avg-duration').textContent = formatBatchDuration((s.durationSumMs || 0) / totalRuns);
+    $('batch-stat-avg-per-panel').textContent = s.imageSum > 0
+      ? formatBatchDuration((s.durationSumMs || 0) / s.imageSum)
+      : '–';
+    $('batch-stat-avg-per-bubble').textContent = s.bubbleSum > 0
+      ? formatBatchDuration((s.durationSumMs || 0) / s.bubbleSum)
+      : '–';
+  }
+
+  await refresh();
+
+  $('batch-stats-reset-btn').addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: 'RESET_BATCH_RUN_STATS' });
+    await refresh();
+  });
+}
+
+initVersion();
+initLocale();
 initTheme();
 initTabs();
 initTranslationSettings();
 initOcrSettings();
 initOcrStatsSettings();
+initBatchStatsSettings();
 initDisplaySettings();
 initAppearanceSettings();

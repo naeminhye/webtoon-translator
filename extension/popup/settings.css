@@ -99,6 +99,21 @@ html, body {
 }
 .theme-toggle:hover { background: var(--border-soft); }
 
+.navbar-locale {
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.navbar-locale:hover { background: var(--border-soft); }
+
 /* ── Tab bar ────────────────────────────────────────────────────────────── */
 
 .tab-bar {
@@ -449,6 +464,19 @@ html, body {
 
 .btn-row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 
+/* Preset dropdown + its 3 action buttons on one row on wide screens (the
+   dropdown is full-width by default, which left a lot of empty horizontal
+   space with the buttons stacked below it); split to stacked rows below
+   RESPONSIVE_BREAK (shared with the other rows below). */
+.preset-row { display: flex; align-items: flex-start; gap: 10px; margin-top: 4px; }
+.preset-row .lang-select-wrap { flex: 1; min-width: 0; }
+.preset-row .btn-row { margin-top: 0; flex-shrink: 0; }
+
+/* Two form fields side by side (e.g. BYOK Provider + Model) on wide
+   screens, stacked below RESPONSIVE_BREAK. */
+.field-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.field-row-2 .field-label { margin-bottom: 6px; }
+
 /* ── Field feedback ─────────────────────────────────────────────────────── */
 
 .field-hint { font-size: 12px; color: var(--text-faint); line-height: 1.6; margin-top: 9px; }
@@ -520,7 +548,9 @@ html, body {
 
 /* ── BYOK Mode selector ─────────────────────────────────────────────────── */
 
-.byok-mode-group { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+/* Side by side on wide screens so both options are visible without
+   scrolling; stacked below RESPONSIVE_BREAK. */
+.byok-mode-group { display: flex; flex-direction: row; align-items: stretch; gap: 8px; margin-top: 4px; }
 
 .byok-mode-option {
   display: flex;
@@ -531,6 +561,8 @@ html, body {
   border-radius: 8px;
   cursor: pointer;
   transition: border-color .15s, background .15s;
+  flex: 1;
+  min-width: 0;
 }
 .byok-mode-option:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .byok-mode-option input[type="radio"] { margin-top: 2px; flex-shrink: 0; accent-color: var(--accent); }
@@ -725,6 +757,20 @@ html, body {
 }
 .model-status-row:last-child { border-bottom: none; }
 
+/* Detector + Recognizer rows side by side on wide screens instead of
+   stacked, since each row is short and stacking wastes vertical space;
+   reverts to stacked below RESPONSIVE_BREAK. */
+.model-status-2col {
+  flex-direction: row;
+}
+.model-status-2col .model-status-row {
+  flex: 1;
+  min-width: 0;
+  border-bottom: none;
+  border-right: 1px solid var(--border-soft);
+}
+.model-status-2col .model-status-row:last-child { border-right: none; }
+
 .model-status-name { display: flex; align-items: baseline; gap: 5px; color: var(--text); font-weight: 500; }
 .model-status-size { font-size: 10.5px; color: var(--text-faint); font-weight: 500; }
 .model-status-text { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--text-faint); }
@@ -768,4 +814,19 @@ html, body {
   font-weight: 600;
   color: var(--text);
   flex-shrink: 0;
+}
+
+/* ── Responsive: split the side-by-side rows above back into stacked rows
+   on narrow windows (settings opens as a full tab, so window width is
+   whatever the user resized it to, not fixed like the popup). ───────────── */
+@media (max-width: 640px) {
+  .preset-row { flex-direction: column; align-items: stretch; }
+  .field-row-2 { grid-template-columns: 1fr; }
+  .byok-mode-group { flex-direction: column; }
+  .model-status-2col { flex-direction: column; }
+  .model-status-2col .model-status-row {
+    border-right: none;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .model-status-2col .model-status-row:last-child { border-bottom: none; }
 }
