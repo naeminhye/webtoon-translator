@@ -4151,7 +4151,11 @@ function showBatchOverlay(text) {
     `<div style="display:flex;gap:10px;justify-content:center;margin:0 0 14px;">` +
     bubble('#22c55e', 0) + bubble('#3b82f6', 200) + bubble('#f59e0b', 400) +
     '</div>' +
-    '<div id="wt-batch-overlay-text" style="font-size:14px;font-weight:600;color:#fff;margin-bottom:6px;"></div>' +
+    '<div id="wt-batch-overlay-text" style="font-size:14px;font-weight:600;color:#fff;margin-bottom:10px;"></div>' +
+    '<div style="width:100%;height:6px;background:rgba(255,255,255,0.15);border-radius:3px;overflow:hidden;">' +
+    '<div id="wt-batch-overlay-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#22c55e,#3b82f6,#f59e0b);transition:width 0.35s ease;"></div>' +
+    '</div>' +
+    '<div id="wt-batch-overlay-pct" style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.8);margin:6px 0 12px;">0%</div>' +
     '<div style="font-size:12px;color:rgba(255,255,255,0.65);">Đừng đóng tab hoặc chuyển trang cho đến khi hoàn tất — bản dịch đang chạy trên toàn bộ chapter.</div>' +
     '</div>';
   // Swallow all interaction with the underlying page while this is up.
@@ -4166,6 +4170,14 @@ function showBatchOverlay(text) {
 function setBatchOverlayText(text) {
   const t = document.getElementById('wt-batch-overlay-text');
   if (t) t.textContent = text;
+}
+
+function setBatchOverlayProgress(percent) {
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
+  const bar = document.getElementById('wt-batch-overlay-bar');
+  const label = document.getElementById('wt-batch-overlay-pct');
+  if (bar)   bar.style.width = `${pct}%`;
+  if (label) label.textContent = `${pct}%`;
 }
 
 function hideBatchOverlay() {
@@ -4977,6 +4989,13 @@ function bootForPage() {
   // per bubble.
   let _batchTranslateMode = false;
   let _batchPending       = []; // { job, resolve, reject }
+  // Progress accounting for the overlay's OCR-phase percentage: every job
+  // onDetectedBoxes actually creates during a batch run increments this;
+  // "done" is inferred as (total - jobManager.jobs.size) since the job map
+  // only ever holds jobs that are still queued/OCR'ing/waiting-for-flush —
+  // both success and (for onnx-detect jobs) silent-cancel-on-error remove
+  // the entry, so this stays accurate without a second counter to keep in sync.
+  let _batchJobsTotal = 0;
 
   function queueBatchTranslate(job) {
     return new Promise((resolve, reject) => {
@@ -5315,7 +5334,9 @@ function bootForPage() {
       if (overlapsExistingOnPage(b)) continue;
       if (findOverlapForBbox(bbox, imageIndex) > ONNX_MAX_OVERLAP) continue;
 
-      createJobFromSelection({ bbox, imageEl: img, imageIndex });
+      createJobFromSelection({ bbox, imageEl: img, imageIndex }).then(job => {
+        if (job && _batchTranslateMode) _batchJobsTotal++;
+      });
     }
   }
 
@@ -5728,9 +5749,15 @@ function bootForPage() {
     // while parked waiting for the single translate flush at the end.
     MAX_CONCURRENT_JOBS = 200;
     _batchTranslateMode = true;
+    _batchJobsTotal = 0;
     const beforeUnloadGuard = (e) => { e.preventDefault(); e.returnValue = ''; };
     window.addEventListener('beforeunload', beforeUnloadGuard);
-    showBatchOverlay('Đang quét & chạy OCR toàn bộ chapter…');
+    // Overall progress is 3 weighted stages: scan/scroll (0-30%), OCR
+    // (30-90%, real ratio once jobs start getting created), translate
+    // (90-100% — a single API call has no meaningful sub-progress).
+    const STAGE_SCAN_PCT = 30, STAGE_OCR_PCT = 90;
+    showBatchOverlay('Đang quét chapter…');
+    setBatchOverlayProgress(0);
 
     try {
       const step = Math.max(200, Math.round(window.innerHeight * 0.8));
@@ -5746,6 +5773,7 @@ function bootForPage() {
         window.scrollTo(0, targetY);
         await new Promise(r => setTimeout(r, 400)); // let lazy-loaders + the scroll listener settle
         bubbleDetector.detect();
+        setBatchOverlayProgress(maxScroll > 0 ? (targetY / maxScroll) * STAGE_SCAN_PCT : 0);
 
         if (targetY < maxScroll) {
           // Not at the bottom yet — keep walking down one step at a time so
@@ -5769,6 +5797,8 @@ function bootForPage() {
       }
 
       if (disposed) return;
+      setBatchOverlayText('Đang quét lại toàn trang (bắt các panel lỡ tải chậm)…');
+      setBatchOverlayProgress(STAGE_SCAN_PCT);
       bubbleDetector.detectAll();
       await new Promise(r => setTimeout(r, 1500));
       if (disposed) return;
@@ -5784,7 +5814,11 @@ function bootForPage() {
       let idleStable = 0;
       for (let i = 0; i < MAX_IDLE_CHECKS && idleStable < IDLE_STABLE_NEEDED; i++) {
         if (disposed) return;
-        setBatchOverlayText(`Đang chạy OCR… ${_batchPending.length} đoạn text đã xong, đang chờ nốt phần còn lại`);
+        const remaining = jobManager.jobs.size;
+        const done  = Math.max(0, _batchJobsTotal - remaining);
+        const total = Math.max(_batchJobsTotal, done, 1);
+        setBatchOverlayText(`Đang chạy OCR… ${done}/${_batchJobsTotal || done} đoạn text đã xong`);
+        setBatchOverlayProgress(STAGE_SCAN_PCT + (done / total) * (STAGE_OCR_PCT - STAGE_SCAN_PCT));
         const detectIdle = bubbleDetector.isIdle();
         const jobsIdle    = jobManager.activeCount() === 0 && jobManager.queuedCount() === 0;
         idleStable = (detectIdle && jobsIdle) ? idleStable + 1 : 0;
@@ -5794,11 +5828,16 @@ function bootForPage() {
       // OCR for the whole chapter is done now — translate everything
       // collected in exactly one flush (one API call for BYOK LLM).
       if (disposed) return;
+      setBatchOverlayProgress(STAGE_OCR_PCT);
       if (_batchPending.length) {
         setBatchOverlayText(`Đang dịch ${_batchPending.length} đoạn text (1 lần gọi API cho toàn bộ)…`);
+        setBatchOverlayProgress(95); // no real sub-progress for one request — just show "almost there"
         await flushBatchTranslate();
       }
 
+      setBatchOverlayProgress(100);
+      setBatchOverlayText('✓ Hoàn tất!');
+      await new Promise(r => setTimeout(r, 700)); // let the 100% state be visible before the overlay closes
       showToast('✓ Finished translating this chapter.');
     } finally {
       if (!disposed) window.scrollTo(0, startY);
