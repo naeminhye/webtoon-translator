@@ -3276,7 +3276,7 @@ async function callLlmWithRetry(llmAdapter, apiKey, model, prompt, retries = 2) 
 // that fails even after retrying falls back to translating just its own
 // lines individually (also in parallel), not the entire batch.
 async function llmTranslateBatch(llmAdapter, apiKey, model, texts, targetLang, storyCtx) {
-  const CHUNK = 40;
+  const CHUNK = 20; // matches BATCH_FLUSH_SIZE in bootForPage — see the comment there
   const chunks = [];
   for (let start = 0; start < texts.length; start += CHUNK) chunks.push(texts.slice(start, start + CHUNK));
 
@@ -5096,7 +5096,12 @@ function bootForPage() {
   // round trip per bubble.
   let _batchTranslateMode = false;
   let _batchPending       = []; // { job, resolve, reject }
-  const BATCH_FLUSH_SIZE  = 40; // matches llmTranslateBatch's own per-request chunk size
+  // Lowered from 40 — each flush is one LLM request for this many lines,
+  // and a 40-line request was measured taking long enough (tens of
+  // seconds) that it fell noticeably behind serialized OCR's pace,
+  // building up a backlog; smaller/more-frequent requests pipeline with
+  // ongoing OCR better and shrink the final chunk's tail latency.
+  const BATCH_FLUSH_SIZE  = 20; // matches llmTranslateBatch's own per-request chunk size
   // Progress accounting for the overlay's OCR-phase percentage: every job
   // onDetectedBoxes actually creates during a batch run increments this;
   // "done" is inferred as (total - jobManager.jobs.size) since the job map
@@ -5122,6 +5127,7 @@ function bootForPage() {
     if (!_batchPending.length) return;
     const items = _batchPending;
     _batchPending = [];
+    for (const it of items) performance.mark(`wt:translate-start:${it.job.id}`);
     try {
       const storyCtx = await getStoryContext(adapter, meta.site, meta.titleId).catch(() => null);
       const texts     = items.map(it => it.job.originalText);
@@ -5201,14 +5207,20 @@ function bootForPage() {
       return text;
     },
     runTranslate: async (job) => {
-      performance.mark(`wt:translate-start:${job.id}`); // M4≈M5-start: no adapter in llm-adapters.js streams, so there is no distinct "first token" — see Phase 4 discussion
       // "Pre-translate whole chapter" mode: don't translate this job on its
       // own — hand its OCR'd text to the batch coalescer and wait for a
       // flush (see queueBatchTranslate/flushBatchTranslate above) that
-      // translates every currently-waiting bubble together.
+      // translates every currently-waiting bubble together. translate-start
+      // is marked per-job inside flushBatchTranslate, right when its
+      // group's actual API call begins — NOT here, since reaching this
+      // point can mean a long queue-wait for the rest of the group to
+      // finish OCR, not real translate latency (marking it here used to
+      // make the batch-run time-breakdown log wildly overstate translate
+      // time).
       if (_batchTranslateMode) {
         return _markTranslateDone(job, await queueBatchTranslate(job));
       }
+      performance.mark(`wt:translate-start:${job.id}`); // M4≈M5-start: no adapter in llm-adapters.js streams, so there is no distinct "first token" — see Phase 4 discussion
       const s = await chrome.storage.local.get({ 'wt:translate-provider': 'chrome-builtin', 'wt:byok-mode': 'always' });
       const prov     = s['wt:translate-provider'];
       const byokMode = s['wt:byok-mode'];
@@ -5965,7 +5977,7 @@ function bootForPage() {
       // Cancel handler), so this just waits out whatever was already
       // in-flight instead of the usual "stable for a while" confirmation.
       const IDLE_STABLE_NEEDED = _batchCancelled ? 1 : 3;
-      const MAX_IDLE_CHECKS    = 1200; // ~10 min safety cap
+      const MAX_IDLE_CHECKS    = 1200; // ~10 min safety cap — should never actually be reached now (see below)
       let idleStable = 0;
       for (let i = 0; i < MAX_IDLE_CHECKS && idleStable < IDLE_STABLE_NEEDED; i++) {
         if (disposed) return;
@@ -5979,7 +5991,27 @@ function bootForPage() {
         setBatchOverlayProgress(STAGE_SCAN_PCT + (done / total) * (STAGE_OCR_PCT - STAGE_SCAN_PCT));
         const detectIdle = _batchCancelled || bubbleDetector.isIdle();
         const jobsIdle    = jobManager.activeCount() === 0 && jobManager.queuedCount() === 0;
-        idleStable = (detectIdle && jobsIdle) ? idleStable + 1 : 0;
+        if (detectIdle && jobsIdle) {
+          idleStable++;
+        } else if (
+          detectIdle && jobManager.queuedCount() === 0 && _batchPending.length > 0 &&
+          jobManager.activeCount() === _batchPending.length
+        ) {
+          // Detection is done and every remaining active job has already
+          // finished OCR and is just parked waiting for its group to reach
+          // BATCH_FLUSH_SIZE — which the chapter's last, smaller-than-a-
+          // full-chunk leftover group can never do on its own (a chapter's
+          // bubble count is essentially never an exact multiple of the
+          // chunk size). Without this, the loop just spun here doing
+          // nothing until MAX_IDLE_CHECKS before falling through to the
+          // flush after this loop — silently burning up to ~10 minutes on
+          // every single run, which is why earlier fixes to OCR/translate
+          // speed didn't move the needle: this dwarfed all of them.
+          await flushBatchTranslate();
+          idleStable = 0;
+        } else {
+          idleStable = 0;
+        }
         await new Promise(r => setTimeout(r, 500));
       }
 
