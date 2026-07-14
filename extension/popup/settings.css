@@ -99,6 +99,21 @@ html, body {
 }
 .theme-toggle:hover { background: var(--border-soft); }
 
+.navbar-locale {
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.navbar-locale:hover { background: var(--border-soft); }
+
 /* ── Tab bar ────────────────────────────────────────────────────────────── */
 
 .tab-bar {

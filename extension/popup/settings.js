@@ -4,16 +4,22 @@ const TAB_KEY    = 'wt:settings-tab';
 const LOCALE_KEY = 'wt:locale';
 
 // ── UI language ──────────────────────────────────────────────────────────
-// See extension/shared/i18n.js — currently only the pre-translate overlay's
-// strings are wired through WT_I18N; everything else stays English-only.
+// See extension/shared/i18n.js. WT_I18N.applyTo(document) fills in every
+// data-i18n-tagged element on the page from the current locale; called once
+// on load and again on every change so switching languages updates live
+// without a reload.
 async function initLocale() {
   const stored = await chrome.storage.local.get({ [LOCALE_KEY]: 'en' });
   WT_I18N.setLocale(stored[LOCALE_KEY]);
   $('ui-locale').value = WT_I18N.getLocale();
+  WT_I18N.applyTo(document);
+  updateThemeButtonLabel();
 
   $('ui-locale').addEventListener('change', async (e) => {
     WT_I18N.setLocale(e.target.value);
     await chrome.storage.local.set({ [LOCALE_KEY]: e.target.value });
+    WT_I18N.applyTo(document);
+    updateThemeButtonLabel();
   });
 }
 
@@ -29,6 +35,14 @@ function initVersion() {
 // ── Theme (light/dark) ──────────────────────────────────────────────────
 // Persisted separately from every other 'wt:' setting below — this is a
 // UI preference for this settings page only, not an extension behavior.
+// updateThemeButtonLabel is also called by initLocale (below) after a
+// language switch, since the button's label is translated text too.
+function updateThemeButtonLabel() {
+  const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const effective = document.documentElement.getAttribute('data-theme') || (systemDark ? 'dark' : 'light');
+  $('theme-toggle').textContent = effective === 'dark' ? WT_I18N.t('settings.theme.to_light') : WT_I18N.t('settings.theme.to_dark');
+}
+
 async function initTheme() {
   const stored = await chrome.storage.local.get({ [THEME_KEY]: '' });
   const btn = $('theme-toggle');
@@ -38,11 +52,9 @@ async function initTheme() {
     // prefers-color-scheme media query in settings.css decides — the
     // toggle button still needs a concrete label, so fall back to what
     // the media query would currently resolve to.
-    const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const effective = theme || (systemDark ? 'dark' : 'light');
     if (theme) document.documentElement.setAttribute('data-theme', theme);
     else document.documentElement.removeAttribute('data-theme');
-    btn.textContent = effective === 'dark' ? 'Light' : 'Dark';
+    updateThemeButtonLabel();
   }
 
   apply(stored[THEME_KEY]);

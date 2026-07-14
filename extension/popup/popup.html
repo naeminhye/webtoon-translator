@@ -14,11 +14,15 @@
   <header>
     <span class="logo"><span class="logo-icon">📖</span> Webtoon Translator</span>
     <div class="header-right">
-      <label class="switch" title="Enable / disable extension">
+      <select id="ui-locale" class="header-locale" aria-label="Language">
+        <option value="en">EN</option>
+        <option value="vi">VI</option>
+      </select>
+      <label class="switch" title="Enable / disable extension" data-i18n-title="popup.enabled_toggle_title">
         <input type="checkbox" id="enabled-toggle" checked />
         <span class="slider"></span>
       </label>
-      <button id="btn-settings" class="settings-btn" title="Settings">
+      <button id="btn-settings" class="settings-btn" title="Settings" data-i18n-title="popup.settings_title">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"/>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -27,7 +31,7 @@
     </div>
   </header>
 
-  <section id="disabled-notice" class="notice hidden">
+  <section id="disabled-notice" class="notice hidden" data-i18n="popup.disabled_notice">
     Extension is turned off. Flip the switch to re-enable translation overlays.
   </section>
 
@@ -37,9 +41,9 @@
         <span id="title-id" class="chapter-title">—</span>
         <span id="site-badge" class="badge"></span>
       </div>
-      <p class="info-line"><span class="label">Chapter</span><span id="chapter-id">—</span></p>
+      <p class="info-line"><span class="label" data-i18n="popup.chapter_label">Chapter</span><span id="chapter-id">—</span></p>
       <p class="info-line">
-        <span class="label">Progress</span>
+        <span class="label" data-i18n="popup.progress_label">Progress</span>
         <span id="progress-text">—</span>
       </p>
       <div class="progress-bar-wrap">
@@ -47,24 +51,24 @@
       </div>
     </section>
 
-    <section id="no-chapter" class="notice">
+    <section id="no-chapter" class="notice" data-i18n="popup.no_chapter">
       Open a supported webtoon chapter to get started.
     </section>
 
     <div class="actions hidden" id="action-buttons">
       <button id="btn-translate-all" class="action-btn">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
-        <span id="btn-translate-all-label">Pre-translate whole chapter</span>
+        <span id="btn-translate-all-label" data-i18n="popup.translate_all_btn">Pre-translate whole chapter</span>
       </button>
       <!-- __DEV_TOOLS_BLOCK_START__ -->
       <button id="btn-panel" class="action-btn">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
-        Translation list
+        <span data-i18n="popup.translation_list_btn">Translation list</span>
       </button>
       <!-- __DEV_TOOLS_BLOCK_END__ -->
       <button id="btn-clear" class="action-btn action-btn-danger">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-        Clear chapter translations
+        <span data-i18n="popup.clear_btn">Clear chapter translations</span>
       </button>
     </div>
   </div>

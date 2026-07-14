@@ -21,10 +21,14 @@
         <span class="brand-icon">WT</span>
         <span class="brand-name">Webtoon Translator</span>
         <span class="brand-divider">/</span>
-        <span class="brand-page">Settings</span>
+        <span class="brand-page" data-i18n="settings.nav.page">Settings</span>
       </div>
       <div class="navbar-right">
         <span class="navbar-version" id="navbar-version"></span>
+        <select id="ui-locale" class="navbar-locale" aria-label="Language" data-i18n-title="settings.locale.label" title="Language">
+          <option value="en">English</option>
+          <option value="vi">Tiếng Việt</option>
+        </select>
         <button type="button" id="theme-toggle" class="theme-toggle">Dark</button>
       </div>
     </div>
@@ -33,13 +37,13 @@
   <!-- Tab bar -->
   <div class="tab-bar">
     <button type="button" class="tab-pill active" data-tab="general" style="--tab-dot: var(--green)">
-      <span class="tab-pill-dot"></span>General
+      <span class="tab-pill-dot"></span><span data-i18n="settings.tabs.general">General</span>
     </button>
     <button type="button" class="tab-pill" data-tab="ocr" style="--tab-dot: var(--accent)">
-      <span class="tab-pill-dot"></span>OCR Engine
+      <span class="tab-pill-dot"></span><span data-i18n="settings.tabs.ocr">OCR Engine</span>
     </button>
     <button type="button" class="tab-pill" data-tab="translation" style="--tab-dot: var(--orange)">
-      <span class="tab-pill-dot"></span>Translation &amp; Appearance
+      <span class="tab-pill-dot"></span><span data-i18n="settings.tabs.translation">Translation &amp; Appearance</span>
     </button>
   </div>
 
@@ -51,62 +55,49 @@
       <div class="section-head-row">
         <div class="section-badge section-badge-green">G</div>
         <div>
-          <div class="h1">General</div>
-          <div class="subtitle">Core behavior while reading webtoons</div>
+          <div class="h1" data-i18n="settings.general.heading">General</div>
+          <div class="subtitle" data-i18n="settings.general.subtitle">Core behavior while reading webtoons</div>
         </div>
       </div>
 
       <div class="card">
-        <div class="field-block" style="margin-top:0">
-          <div class="field-label">Language <span style="font-weight:400;color:var(--text-faint)">(currently applies to the pre-translate overlay only — most of the extension is English-only for now)</span></div>
-          <div class="lang-select-wrap">
-            <select id="ui-locale" class="lang-select">
-              <option value="en">English</option>
-              <option value="vi">Tiếng Việt</option>
-            </select>
-            <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-          </div>
-        </div>
-      </div>
-
-      <div class="card-margin-top card">
         <div class="toggle-row">
           <div>
-            <div class="row-label">Auto-detect bubbles</div>
-            <div class="row-desc">Automatically detect, OCR and translate speech bubbles as you scroll. Turn off to only translate regions you select manually.</div>
+            <div class="row-label" data-i18n="settings.general.autodetect_label">Auto-detect bubbles</div>
+            <div class="row-desc" data-i18n="settings.general.autodetect_desc">Automatically detect, OCR and translate speech bubbles as you scroll. Turn off to only translate regions you select manually.</div>
           </div>
           <label class="switch">
             <input type="checkbox" id="auto-detect-toggle" />
             <span class="switch-track"><span class="switch-thumb"></span></span>
           </label>
         </div>
-        <p id="auto-detect-model-warning" class="field-warning hidden">⚠ Bubble detector model not downloaded yet — auto-detect won't find bubbles until you download it below.</p>
+        <p id="auto-detect-model-warning" class="field-warning hidden" data-i18n="settings.general.autodetect_warning">⚠ Bubble detector model not downloaded yet — auto-detect won't find bubbles until you download it below.</p>
 
         <div id="comic-detector-row" class="field-block hidden">
-          <div class="field-label">Bubble Detector Model</div>
+          <div class="field-label" data-i18n="settings.general.detector_model_label">Bubble Detector Model</div>
           <div class="model-status">
             <div class="model-status-row">
               <span class="model-status-dot" id="comic-detector-dot"></span>
-              <span class="model-status-name">Detector <span class="model-status-size">≈50 MB</span></span>
+              <span class="model-status-name"><span data-i18n="settings.general.detector_name">Detector</span> <span class="model-status-size">≈50 MB</span></span>
               <span class="model-status-text" id="comic-detector-text">checking…</span>
             </div>
           </div>
           <div class="btn-row">
-            <button type="button" id="comic-detector-download-btn" class="btn-primary" disabled>Download model</button>
-            <button type="button" id="comic-detector-clear-btn" class="btn-ghost hidden">Remove downloaded model</button>
+            <button type="button" id="comic-detector-download-btn" class="btn-primary" disabled data-i18n="settings.general.download_model_btn">Download model</button>
+            <button type="button" id="comic-detector-clear-btn" class="btn-ghost hidden" data-i18n="settings.general.remove_model_btn">Remove downloaded model</button>
           </div>
           <p id="comic-detector-error" class="field-error hidden"></p>
-          <p class="field-hint">
+          <p class="field-hint" data-i18n="settings.general.detector_hint">
             Downloaded once and cached in the browser — not part of the extension package, so this works whether you loaded the extension unpacked or installed it from the Chrome Web Store. Fully offline after that.
           </p>
         </div>
       </div>
 
       <div class="card-margin-top">
-        <div class="card-head-small">Keyboard shortcuts</div>
+        <div class="card-head-small" data-i18n="settings.general.shortcuts_heading">Keyboard shortcuts</div>
         <div class="shortcut-list" style="margin-top:10px">
-          <div class="shortcut-row"><kbd class="kbd">T</kbd><span>Toggle translation visibility</span></div>
-          <div class="shortcut-row"><kbd class="kbd">S</kbd><span>Toggle Quick OCR Translate scan mode</span></div>
+          <div class="shortcut-row"><kbd class="kbd">T</kbd><span data-i18n="settings.general.shortcut_toggle_vis">Toggle translation visibility</span></div>
+          <div class="shortcut-row"><kbd class="kbd">S</kbd><span data-i18n="settings.general.shortcut_scan_mode">Toggle Quick OCR Translate scan mode</span></div>
         </div>
       </div>
     </section>
@@ -116,8 +107,8 @@
       <div class="section-head-row">
         <div class="section-badge section-badge-accent">O</div>
         <div>
-          <div class="h1">OCR Engine</div>
-          <div class="subtitle">Choose how text is extracted from webtoon panels</div>
+          <div class="h1" data-i18n="settings.ocr.heading">OCR Engine</div>
+          <div class="subtitle" data-i18n="settings.ocr.subtitle">Choose how text is extracted from webtoon panels</div>
         </div>
       </div>
 
@@ -127,10 +118,10 @@
           <div class="engine-card-inner">
             <div class="engine-card-top-row">
               <div class="badge-letter">T</div>
-              <div class="engine-name">Tesseract.js</div>
+              <div class="engine-name" data-i18n="settings.ocr.tesseract_name">Tesseract.js</div>
             </div>
-            <div class="engine-badge engine-badge-offline">Offline</div>
-            <p class="engine-detail">Runs locally in your browser. No data sent externally. Slower on first use while model loads.</p>
+            <div class="engine-badge engine-badge-offline" data-i18n="settings.ocr.badge_offline">Offline</div>
+            <p class="engine-detail" data-i18n="settings.ocr.tesseract_detail">Runs locally in your browser. No data sent externally. Slower on first use while model loads.</p>
           </div>
         </label>
         <label class="engine-card">
@@ -138,12 +129,12 @@
           <div class="engine-card-inner">
             <div class="engine-card-top-row">
               <div class="badge-letter">P</div>
-              <div class="engine-name">PaddleOCR (in-browser)</div>
+              <div class="engine-name" data-i18n="settings.ocr.paddlelocal_name">PaddleOCR (in-browser)</div>
             </div>
-            <div class="engine-badge engine-badge-offline">Offline</div>
-            <div class="engine-badge engine-badge-recommended">Recommended</div>
-            <p class="engine-detail">PP-OCR models run locally via WebGPU/WASM. One-time ~15 MB download, cached in the browser — see the model status below.</p>
-            <p id="paddleocr-local-hw-warning" class="field-warning hidden">⚠ This device may not have WebGPU and has few CPU cores — in-browser PaddleOCR could run slowly. Tesseract.js is faster on weak hardware; self-hosted PaddleOCR keeps the same accuracy without local inference cost.</p>
+            <div class="engine-badge engine-badge-offline" data-i18n="settings.ocr.badge_offline">Offline</div>
+            <div class="engine-badge engine-badge-recommended" data-i18n="settings.ocr.badge_recommended">Recommended</div>
+            <p class="engine-detail" data-i18n="settings.ocr.paddlelocal_detail">PP-OCR models run locally via WebGPU/WASM. One-time ~15 MB download, cached in the browser — see the model status below.</p>
+            <p id="paddleocr-local-hw-warning" class="field-warning hidden" data-i18n="settings.ocr.paddlelocal_hw_warning">⚠ This device may not have WebGPU and has few CPU cores — in-browser PaddleOCR could run slowly. Tesseract.js is faster on weak hardware; self-hosted PaddleOCR keeps the same accuracy without local inference cost.</p>
           </div>
         </label>
         <label class="engine-card">
@@ -151,42 +142,42 @@
           <div class="engine-card-inner">
             <div class="engine-card-top-row">
               <div class="badge-letter">P</div>
-              <div class="engine-name">PaddleOCR (self-hosted)</div>
+              <div class="engine-name" data-i18n="settings.ocr.paddleself_name">PaddleOCR (self-hosted)</div>
             </div>
-            <div class="engine-badge engine-badge-selfhost">Self-hosted</div>
-            <p class="engine-detail">Best Korean accuracy. Runs on your own machine — see the setup guide below.</p>
+            <div class="engine-badge engine-badge-selfhost" data-i18n="settings.ocr.badge_selfhost">Self-hosted</div>
+            <p class="engine-detail" data-i18n="settings.ocr.paddleself_detail">Best Korean accuracy. Runs on your own machine — see the setup guide below.</p>
           </div>
         </label>
       </div>
 
       <div id="paddleocr-url-row" class="field-block hidden">
-        <div class="field-label">PaddleOCR Server URL</div>
+        <div class="field-label" data-i18n="settings.ocr.server_url_label">PaddleOCR Server URL</div>
         <input type="text" id="paddleocr-url" class="text-input" placeholder="http://127.0.0.1:8868" autocomplete="off" spellcheck="false" />
-        <p id="paddleocr-url-saved" class="field-success hidden">✓ Server URL saved successfully</p>
-        <p class="field-hint">Leave empty to use the default. You need to run this server yourself — see the setup guide below.</p>
+        <p id="paddleocr-url-saved" class="field-success hidden" data-i18n="settings.ocr.server_url_saved">✓ Server URL saved successfully</p>
+        <p class="field-hint" data-i18n="settings.ocr.server_url_hint">Leave empty to use the default. You need to run this server yourself — see the setup guide below.</p>
 
         <details class="setup-guide">
           <summary class="setup-guide-toggle">
-            <span>Setup guide — run the PaddleOCR server locally</span>
+            <span data-i18n="settings.ocr.setup_guide_toggle">Setup guide — run the PaddleOCR server locally</span>
             <span class="chevron">▾</span>
           </summary>
           <div class="setup-guide-body">
             <ol class="setup-steps">
-              <li>Download the files below into an empty folder.</li>
-              <li>Install Python 3.9–3.12, open a terminal in that folder, then run:
+              <li data-i18n="settings.ocr.setup_step1">Download the files below into an empty folder.</li>
+              <li><span data-i18n="settings.ocr.setup_step2">Install Python 3.9–3.12, open a terminal in that folder, then run:</span>
                 <code class="code-line">pip install -r requirements.txt</code>
               </li>
-              <li>Start the server:
+              <li><span data-i18n="settings.ocr.setup_step3a">Start the server:</span>
                 <code class="code-line">python server.py</code>
-                First run downloads ~30–60 MB of Korean OCR models — this can take a minute.
+                <span data-i18n="settings.ocr.setup_step3b">First run downloads ~30–60 MB of Korean OCR models — this can take a minute.</span>
               </li>
-              <li>Set the server URL above (default <code>http://127.0.0.1:8868</code> already matches — leave the field empty).</li>
+              <li data-i18n-html="settings.ocr.setup_step4_html">Set the server URL above (default <code>http://127.0.0.1:8868</code> already matches — leave the field empty).</li>
             </ol>
-            <p class="field-hint" style="margin-top:0">
+            <p class="field-hint" style="margin-top:0" data-i18n="settings.ocr.setup_cpu_hint">
               CPU-only works fine, no GPU required — but PaddlePaddle inference is memory-hungry at startup; 4 GB+ RAM recommended for smooth performance (a rough estimate, not a benchmarked figure).
             </p>
             <p class="field-hint" style="margin-top:0">
-              Prefer Docker? Download the Dockerfile too, then:
+              <span data-i18n="settings.ocr.setup_docker_hint">Prefer Docker? Download the Dockerfile too, then:</span>
               <code class="code-line">docker build -t webtoon-paddleocr .<br />docker run --rm -p 8868:8868 webtoon-paddleocr</code>
             </p>
             <div class="chip-row">
@@ -195,31 +186,31 @@
               <a id="dl-paddle-dockerfile" class="download-chip" download="Dockerfile">⬇ Dockerfile</a>
               <a id="dl-paddle-readme" class="download-chip" download="README.md">⬇ README.md</a>
             </div>
-            <p class="field-hint" style="margin-top:0">The server binds to 127.0.0.1 by default (not reachable from other devices) and has no built-in authentication — keep it that way unless you trust your local network.</p>
+            <p class="field-hint" style="margin-top:0" data-i18n="settings.ocr.setup_bind_hint">The server binds to 127.0.0.1 by default (not reachable from other devices) and has no built-in authentication — keep it that way unless you trust your local network.</p>
           </div>
         </details>
       </div>
 
       <div id="paddleocr-local-row" class="field-block hidden">
-        <div class="field-label">PaddleOCR Models</div>
+        <div class="field-label" data-i18n="settings.ocr.models_label">PaddleOCR Models</div>
         <div class="model-status">
           <div class="model-status-row">
             <span class="model-status-dot" id="paddle-det-dot"></span>
-            <span class="model-status-name">Detector <span class="model-status-size">≈4.7 MB</span></span>
+            <span class="model-status-name"><span data-i18n="settings.ocr.detector_name">Detector</span> <span class="model-status-size">≈4.7 MB</span></span>
             <span class="model-status-text" id="paddle-det-text">checking…</span>
           </div>
           <div class="model-status-row">
             <span class="model-status-dot" id="paddle-rec-dot"></span>
-            <span class="model-status-name">Recognizer <span class="model-status-size">≈10.6 MB</span></span>
+            <span class="model-status-name"><span data-i18n="settings.ocr.recognizer_name">Recognizer</span> <span class="model-status-size">≈10.6 MB</span></span>
             <span class="model-status-text" id="paddle-rec-text">checking…</span>
           </div>
         </div>
         <div class="btn-row">
-          <button type="button" id="paddle-models-download-btn" class="btn-primary" disabled>Download models</button>
-          <button type="button" id="paddle-models-clear-btn" class="btn-ghost hidden">Remove downloaded models</button>
+          <button type="button" id="paddle-models-download-btn" class="btn-primary" disabled data-i18n="settings.ocr.download_models_btn">Download models</button>
+          <button type="button" id="paddle-models-clear-btn" class="btn-ghost hidden" data-i18n="settings.ocr.remove_models_btn">Remove downloaded models</button>
         </div>
         <p id="paddle-models-error" class="field-error hidden"></p>
-        <p class="field-hint">
+        <p class="field-hint" data-i18n="settings.ocr.models_hint">
           Downloaded once (~15 MB total) and cached in the browser — not part of the extension package, so this works whether you loaded the extension unpacked or installed it from the Chrome Web Store. Fully offline after that.
         </p>
       </div>
@@ -228,8 +219,8 @@
         <details open>
           <summary class="stats-head-row" style="list-style:none">
             <div>
-              <div class="card-head-small">OCR Confidence Stats</div>
-              <div class="row-desc-small" style="margin-bottom:0">Average self-reported confidence per engine, tracked locally on this device</div>
+              <div class="card-head-small" data-i18n="settings.ocr.stats_heading">OCR Confidence Stats</div>
+              <div class="row-desc-small" style="margin-bottom:0" data-i18n="settings.ocr.stats_subtitle">Average self-reported confidence per engine, tracked locally on this device</div>
             </div>
             <span class="chevron">▾</span>
           </summary>
@@ -252,9 +243,9 @@
               </div>
             </div>
             <div class="btn-row">
-              <button type="button" id="ocr-stats-reset-btn" class="btn-ghost">Reset stats</button>
+              <button type="button" id="ocr-stats-reset-btn" class="btn-ghost" data-i18n="settings.ocr.stats_reset_btn">Reset stats</button>
             </div>
-            <p class="field-hint">
+            <p class="field-hint" data-i18n="settings.ocr.stats_hint">
               Confidence is each engine's own self-reported certainty, not a verified accuracy score — use it to compare relative trends between engines, not as an absolute quality measurement. Stats never leave your device.
             </p>
           </div>
@@ -267,42 +258,42 @@
       <div class="section-head-row">
         <div class="section-badge section-badge-orange">T</div>
         <div>
-          <div class="h1">Translation &amp; Appearance</div>
-          <div class="subtitle">Auto-translate OCR text and customize how translation bubbles look</div>
+          <div class="h1" data-i18n="settings.tr.heading">Translation &amp; Appearance</div>
+          <div class="subtitle" data-i18n="settings.tr.subtitle">Auto-translate OCR text and customize how translation bubbles look</div>
         </div>
       </div>
 
-      <div class="field-label" style="margin-bottom:8px">Translation API</div>
+      <div class="field-label" style="margin-bottom:8px" data-i18n="settings.tr.api_label">Translation API</div>
       <div class="engine-grid">
         <label class="engine-card" id="card-chrome-builtin">
           <input type="radio" name="translate-provider" value="chrome-builtin" class="engine-radio" checked />
           <div class="engine-card-inner">
-            <div class="engine-card-top-row"><div class="engine-name">Chrome Built-in AI</div></div>
-            <div class="engine-badge engine-badge-offline">Free · Offline · No key needed</div>
-            <p class="engine-detail">Uses Chrome's on-device Translator API. Fully private and works offline once the language model is downloaded. Desktop Chrome only — unsupported browsers/language pairs fall back to Google Translate automatically.</p>
+            <div class="engine-card-top-row"><div class="engine-name" data-i18n="settings.tr.chrome_name">Chrome Built-in AI</div></div>
+            <div class="engine-badge engine-badge-offline" data-i18n="settings.tr.chrome_badge">Free · Offline · No key needed</div>
+            <p class="engine-detail" data-i18n="settings.tr.chrome_detail">Uses Chrome's on-device Translator API. Fully private and works offline once the language model is downloaded. Desktop Chrome only — unsupported browsers/language pairs fall back to Google Translate automatically.</p>
           </div>
         </label>
         <label class="engine-card">
           <input type="radio" name="translate-provider" value="google" class="engine-radio" />
           <div class="engine-card-inner">
-            <div class="engine-card-top-row"><div class="engine-name">Google Translate</div></div>
-            <div class="engine-badge engine-badge-offline">Free · No key needed</div>
-            <p class="engine-detail">Uses Google's unofficial API. Fast and supports 130+ languages. No sign-up required.</p>
+            <div class="engine-card-top-row"><div class="engine-name" data-i18n="settings.tr.google_name">Google Translate</div></div>
+            <div class="engine-badge engine-badge-offline" data-i18n="settings.tr.google_badge">Free · No key needed</div>
+            <p class="engine-detail" data-i18n="settings.tr.google_detail">Uses Google's unofficial API. Fast and supports 130+ languages. No sign-up required.</p>
           </div>
         </label>
         <label class="engine-card" id="card-byok">
           <input type="radio" name="translate-provider" value="byok" class="engine-radio" />
           <div class="engine-card-inner">
-            <div class="engine-card-top-row"><div class="engine-name">Bring Your Own Key</div></div>
-            <div class="engine-badge engine-badge-selfhost">LLM · API key required</div>
-            <p class="engine-detail">Use your own LLM API key (OpenAI, Anthropic, etc). Translates automatically with story context for better accuracy.</p>
+            <div class="engine-card-top-row"><div class="engine-name" data-i18n="settings.tr.byok_name">Bring Your Own Key</div></div>
+            <div class="engine-badge engine-badge-selfhost" data-i18n="settings.tr.byok_badge">LLM · API key required</div>
+            <p class="engine-detail" data-i18n="settings.tr.byok_detail">Use your own LLM API key (OpenAI, Anthropic, etc). Translates automatically with story context for better accuracy.</p>
           </div>
         </label>
       </div>
 
       <!-- Chrome built-in model status (shown when Chrome Built-in AI selected) -->
       <div id="chrome-builtin-row" class="field-block hidden">
-        <div class="field-label">On-device Model (Korean → Target Language)</div>
+        <div class="field-label" data-i18n="settings.tr.chrome_model_label">On-device Model (Korean → Target Language)</div>
         <div class="model-status">
           <div class="model-status-row">
             <span class="model-status-dot" id="chrome-builtin-dot"></span>
@@ -311,51 +302,51 @@
           </div>
         </div>
         <div class="btn-row">
-          <button type="button" id="chrome-builtin-download-btn" class="btn-primary" disabled>Download model</button>
+          <button type="button" id="chrome-builtin-download-btn" class="btn-primary" disabled data-i18n="settings.general.download_model_btn">Download model</button>
         </div>
         <p id="chrome-builtin-error" class="field-error hidden"></p>
-        <p class="field-hint">Re-checked automatically whenever you change the target language below.</p>
+        <p class="field-hint" data-i18n="settings.tr.chrome_error_hint">Re-checked automatically whenever you change the target language below.</p>
       </div>
 
       <!-- BYOK API key + model (shown when Bring Your Own Key selected) -->
       <div id="byok-key-row" class="field-block hidden">
-        <div class="field-label">Preset</div>
+        <div class="field-label" data-i18n="settings.tr.preset_label">Preset</div>
         <div class="lang-select-wrap">
           <select id="byok-preset-select" class="lang-select"></select>
           <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
         <div class="btn-row" style="margin-top:8px">
-          <button type="button" id="byok-preset-add-btn" class="btn-ghost">+ New preset</button>
-          <button type="button" id="byok-preset-rename-btn" class="btn-ghost">Rename</button>
-          <button type="button" id="byok-preset-delete-btn" class="btn-ghost">Delete</button>
+          <button type="button" id="byok-preset-add-btn" class="btn-ghost" data-i18n="settings.tr.preset_add_btn">+ New preset</button>
+          <button type="button" id="byok-preset-rename-btn" class="btn-ghost" data-i18n="settings.tr.preset_rename_btn">Rename</button>
+          <button type="button" id="byok-preset-delete-btn" class="btn-ghost" data-i18n="settings.tr.preset_delete_btn">Delete</button>
         </div>
-        <p class="field-hint">Save separate key/provider/model/mode combos — e.g. "Fast &amp; cheap" vs "High quality" — and switch between them instantly without retyping a key.</p>
+        <p class="field-hint" data-i18n="settings.tr.preset_hint">Save separate key/provider/model/mode combos — e.g. "Fast &amp; cheap" vs "High quality" — and switch between them instantly without retyping a key.</p>
 
-        <div class="field-label" style="margin-top:16px">LLM API Key</div>
-        <input type="password" id="byok-key" class="text-input" placeholder="Paste your LLM API key…" autocomplete="off" />
-        <p id="byok-key-error" class="field-error hidden">An API key is required to use Bring Your Own Key.</p>
-        <div class="field-label" style="margin-top:14px">Provider</div>
+        <div class="field-label" style="margin-top:16px" data-i18n="settings.tr.api_key_label">LLM API Key</div>
+        <input type="password" id="byok-key" class="text-input" placeholder="Paste your LLM API key…" data-i18n-placeholder="settings.tr.api_key_placeholder" autocomplete="off" />
+        <p id="byok-key-error" class="field-error hidden" data-i18n="settings.tr.api_key_error">An API key is required to use Bring Your Own Key.</p>
+        <div class="field-label" style="margin-top:14px" data-i18n="settings.tr.provider_label">Provider</div>
         <div class="lang-select-wrap">
           <select id="byok-provider" class="lang-select"></select>
           <svg class="lang-select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
-        <div class="field-label" style="margin-top:14px">Model</div>
+        <div class="field-label" style="margin-top:14px" data-i18n="settings.tr.model_label">Model</div>
         <input type="text" id="byok-model" class="text-input" placeholder="gpt-4o-mini" autocomplete="off" />
-        <p class="field-hint">Which provider your key is for, and the exact model name to request.</p>
-        <div class="field-label" style="margin-top:16px">Translation Mode</div>
+        <p class="field-hint" data-i18n="settings.tr.model_hint">Which provider your key is for, and the exact model name to request.</p>
+        <div class="field-label" style="margin-top:16px" data-i18n="settings.tr.mode_label">Translation Mode</div>
         <div class="byok-mode-group">
           <label class="byok-mode-option">
             <input type="radio" name="byok-mode" value="always" />
             <span class="byok-mode-label">
-              <span class="byok-mode-title">Always use LLM</span>
-              <span class="byok-mode-desc">Every bubble is translated by your LLM — best quality, higher API cost.</span>
+              <span class="byok-mode-title" data-i18n="settings.tr.mode_always_title">Always use LLM</span>
+              <span class="byok-mode-desc" data-i18n="settings.tr.mode_always_desc">Every bubble is translated by your LLM — best quality, higher API cost.</span>
             </span>
           </label>
           <label class="byok-mode-option">
             <input type="radio" name="byok-mode" value="smart" />
             <span class="byok-mode-label">
-              <span class="byok-mode-title">Smart (Hybrid)</span>
-              <span class="byok-mode-desc">Simple text uses Google Translate (free, fast); complex or low-confidence text uses your LLM.</span>
+              <span class="byok-mode-title" data-i18n="settings.tr.mode_smart_title">Smart (Hybrid)</span>
+              <span class="byok-mode-desc" data-i18n="settings.tr.mode_smart_desc">Simple text uses Google Translate (free, fast); complex or low-confidence text uses your LLM.</span>
             </span>
           </label>
         </div>
@@ -363,7 +354,7 @@
 
       <!-- Target language -->
       <div class="field-block">
-        <div class="field-label">Target Language</div>
+        <div class="field-label" data-i18n="settings.tr.target_lang_label">Target Language</div>
         <div class="lang-select-wrap">
           <select id="target-lang" class="lang-select">
             <optgroup label="Southeast Asia">
@@ -402,44 +393,44 @@
       </div>
 
       <div class="card-margin-top">
-        <div class="card-head-small">Display Mode</div>
-        <div class="row-desc-small">Choose how the translation is positioned relative to the original text</div>
+        <div class="card-head-small" data-i18n="settings.tr.display_mode_heading">Display Mode</div>
+        <div class="row-desc-small" data-i18n="settings.tr.display_mode_subtitle">Choose how the translation is positioned relative to the original text</div>
         <div class="engine-grid" style="margin-top:12px">
           <label class="engine-card">
             <input type="radio" name="overlay-mode" value="overlay" class="engine-radio" />
             <div class="engine-card-inner">
-              <div class="engine-card-top-row"><div class="engine-name">Overlay on original</div></div>
-              <p class="engine-detail">Translation is drawn directly on top of the original text. Hold a bubble to peek at the source underneath.</p>
+              <div class="engine-card-top-row"><div class="engine-name" data-i18n="settings.tr.overlay_name">Overlay on original</div></div>
+              <p class="engine-detail" data-i18n="settings.tr.overlay_detail">Translation is drawn directly on top of the original text. Hold a bubble to peek at the source underneath.</p>
             </div>
           </label>
           <label class="engine-card">
             <input type="radio" name="overlay-mode" value="side-by-side" class="engine-radio" />
             <div class="engine-card-inner">
-              <div class="engine-card-top-row"><div class="engine-name">Side-by-side</div></div>
-              <p class="engine-detail">Translation is drawn beside the original region instead of on top of it, for direct comparison.</p>
+              <div class="engine-card-top-row"><div class="engine-name" data-i18n="settings.tr.sidebyside_name">Side-by-side</div></div>
+              <p class="engine-detail" data-i18n="settings.tr.sidebyside_detail">Translation is drawn beside the original region instead of on top of it, for direct comparison.</p>
             </div>
           </label>
         </div>
       </div>
 
-      <div class="divider-label">Appearance</div>
+      <div class="divider-label" data-i18n="settings.tr.appearance_divider">Appearance</div>
 
       <div class="card">
         <div class="slider-head-row">
-          <span class="row-label">Bubble background opacity</span>
+          <span class="row-label" data-i18n="settings.tr.opacity_label">Bubble background opacity</span>
           <span class="opacity-value" id="bubble-bg-opacity-val">88%</span>
         </div>
         <input type="range" id="bubble-bg-opacity" min="0" max="100" step="1" value="88" class="opacity-slider" />
-        <p class="field-hint">Controls bubble background transparency. Text always stays fully visible. Set to 0 for no background.</p>
+        <p class="field-hint" data-i18n="settings.tr.opacity_hint">Controls bubble background transparency. Text always stays fully visible. Set to 0 for no background.</p>
       </div>
 
       <div class="card-margin-top">
-        <div class="card-head-small" style="margin-bottom:10px">Translation font</div>
+        <div class="card-head-small" style="margin-bottom:10px" data-i18n="settings.tr.font_heading">Translation font</div>
         <div class="font-picker" id="font-picker">
           <label class="font-option" data-font="">
             <input type="radio" name="bubble-font" value="" checked />
             <div class="font-option-inner">
-              <span class="font-option-name">Default</span>
+              <span class="font-option-name" data-i18n="settings.tr.font_default_name">Default</span>
               <span class="font-option-preview" style="font-family:system-ui,-apple-system,'Segoe UI',sans-serif">Abc 가나다 123</span>
             </div>
           </label>
@@ -460,20 +451,20 @@
           <label class="font-option font-option-custom" data-font="__custom__" id="font-option-custom-label">
             <input type="radio" name="bubble-font" value="__custom__" id="font-radio-custom" />
             <div class="font-option-inner">
-              <span class="font-option-name">Custom…</span>
-              <span class="font-option-preview" id="font-custom-preview" style="color:var(--text-faint)">Enter a Google Font name</span>
+              <span class="font-option-name" data-i18n="settings.tr.font_custom_name">Custom…</span>
+              <span class="font-option-preview" id="font-custom-preview" style="color:var(--text-faint)" data-i18n="settings.tr.font_custom_placeholder_preview">Enter a Google Font name</span>
               <div id="font-custom-row" class="custom-font-row hidden">
-                <input type="text" id="font-custom-input" class="input-inline" placeholder="e.g. Noto Serif KR" />
-                <button type="button" id="font-custom-apply" class="btn-primary">Apply</button>
+                <input type="text" id="font-custom-input" class="input-inline" placeholder="e.g. Noto Serif KR" data-i18n-placeholder="settings.tr.font_custom_input_placeholder" />
+                <button type="button" id="font-custom-apply" class="btn-primary" data-i18n="settings.tr.font_apply_btn">Apply</button>
               </div>
             </div>
           </label>
         </div>
-        <p class="field-hint">Applied to all translation bubbles. <span class="link-text" id="font-gfonts-link">Browse Google Fonts ↗</span></p>
+        <p class="field-hint"><span data-i18n="settings.tr.font_hint_prefix">Applied to all translation bubbles.</span> <span class="link-text" id="font-gfonts-link" data-i18n="settings.tr.font_gfonts_link_text">Browse Google Fonts ↗</span></p>
       </div>
     </section>
 
-    <footer class="page-footer">Webtoon Translator <span id="footer-version"></span> · Settings save automatically</footer>
+    <footer class="page-footer">Webtoon Translator <span id="footer-version"></span> · <span data-i18n="settings.footer_hint">Settings save automatically</span></footer>
   </main>
 
   <script src="settings.js"></script>

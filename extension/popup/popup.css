@@ -53,6 +53,20 @@ header {
 }
 .settings-btn:hover { background: color-mix(in oklch, var(--on-accent) 35%, transparent); }
 
+.header-locale {
+  background: color-mix(in oklch, var(--on-accent) 20%, transparent);
+  border: none;
+  border-radius: 6px;
+  color: var(--on-accent);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 6px;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.header-locale:hover { background: color-mix(in oklch, var(--on-accent) 35%, transparent); }
+
 /* ── On/off switch (same visual language as settings.css's .switch) ──────── */
 
 .switch { position: relative; display: inline-block; width: 36px; height: 20px; flex-shrink: 0; cursor: pointer; }
