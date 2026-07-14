@@ -5472,12 +5472,18 @@ function bootForPage() {
 
   // ── batch: pre-translate the whole chapter ──────────────────────────────
   // Reuses the exact same detect → onDetectedBoxes → createJobFromSelection →
-  // jobManager pipeline that auto-detect uses while scrolling. bubbleDetector
-  // is viewport-gated by design (see scheduleTiles), so instead of bypassing
-  // that we drive real scroll steps down the page — this also naturally
-  // triggers each site adapter's lazy-load watcher (watchNewImages) so
-  // panels that haven't rendered yet get picked up too.
-
+  // jobManager pipeline that auto-detect uses while scrolling, in two passes:
+  //   1. A real scroll from top to bottom, so every site adapter's lazy-load
+  //      watcher (watchNewImages) fires and panels actually get their pixel
+  //      data loaded — and so bubbles get queued for translation as early as
+  //      possible instead of all at once at the very end.
+  //   2. bubbleDetector.detectAll(), which — unlike the scroll-driven
+  //      detect() — is NOT viewport-gated, so it catches any panel that
+  //      hadn't finished lazy-loading in time during pass 1 and would
+  //      otherwise be silently skipped forever (scheduleTiles drops an image
+  //      the moment it's scrolled above the viewport, loaded or not). Run
+  //      twice with a pause so a panel still mid-load after the first call
+  //      gets a second chance.
   let _batchTranslating = false;
 
   async function triggerTranslateAllPanels() {
@@ -5503,6 +5509,13 @@ function bootForPage() {
         if (y >= maxScroll) break;
         y += step;
       }
+
+      if (disposed) return;
+      bubbleDetector.detectAll();
+      await new Promise(r => setTimeout(r, 1500));
+      if (disposed) return;
+      bubbleDetector.detectAll(); // second pass catches any late lazy-loaders from the first
+
       showToast('✓ Finished scanning — translations will keep appearing as OCR/translate jobs complete.');
     } finally {
       if (!disposed) window.scrollTo(0, startY);
@@ -5786,6 +5799,33 @@ const bubbleDetector = (() => {
     _pumpTileQueue();
   }
 
+  // Viewport-independent variant of scheduleTiles, for "translate whole
+  // chapter now" instead of the scroll-driven prefetch above. Queues every
+  // tile of every eligible image regardless of where it currently sits
+  // relative to the viewport — safe because detectImageTile's canvas
+  // composeTileLocally() reads the <img>'s already-loaded bitmap directly,
+  // it doesn't screenshot the page, so an off-screen (or scrolled-past)
+  // image tiles just as correctly as a visible one. This exists because
+  // scheduleTiles' viewport gate means a single scroll pass can permanently
+  // skip a panel that hadn't finished lazy-loading yet when scrolled past
+  // (r.bottom <= 0 drops it from every future call, even once it loads).
+  function scheduleAllTiles() {
+    if (!api.onBoxes) return; // armed by bootForPage; dormant otherwise
+    for (const img of document.querySelectorAll('img')) {
+      if (!eligible(img)) continue;
+      const r = img.getBoundingClientRect();
+      if (r.height === 0) continue;
+      const last = Math.max(0, Math.floor(Math.max(0, r.height - 1) / STRIDE));
+      for (let i = 0; i <= last; i++) {
+        const key = `${img.currentSrc}#${i}`;
+        if (doneTiles.has(key) || inFlight.has(key) || _queuedTileKeys.has(key)) continue;
+        _queuedTileKeys.add(key);
+        _tileQueue.push({ img, tileIdx: i, key });
+      }
+    }
+    _pumpTileQueue();
+  }
+
   // Throttled scroll listener. capture:true so scrolls of INNER containers
   // (Ridi/Kakao viewers scroll a div, not the window — scroll events don't
   // bubble, but they do capture) reach us too.
@@ -5799,7 +5839,8 @@ const bubbleDetector = (() => {
     // Set by bootForPage to receive page-absolute boxes as tiles complete;
     // while null the whole detector (including the scroll listener) is dormant.
     onBoxes: null,
-    detect:  scheduleTiles,
+    detect:    scheduleTiles,
+    detectAll: scheduleAllTiles,
     reset()  { doneTiles.clear(); inFlight.clear(); _tileQueue.length = 0; _queuedTileKeys.clear(); },
   };
   return api;
