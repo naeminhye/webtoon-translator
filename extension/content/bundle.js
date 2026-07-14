@@ -20,6 +20,18 @@ const __DEV_TOOLS__ = true;
 // this file) since the guards themselves must survive the production build.
 const __BENCH_MODE__ = typeof window !== 'undefined' && window.__WT_BENCH_LOAD__ === true;
 
+// UI language for this feature's overlay/toast strings — see
+// extension/shared/i18n.js (currently only the "pre-translate whole
+// chapter" feature is wired through it). Read once at content-script load
+// and kept live via storage.onChanged, since Settings can be open in
+// another tab and change it while this page is up.
+if (typeof WT_I18N !== 'undefined' && chrome?.storage?.local) {
+  chrome.storage.local.get({ 'wt:locale': 'en' }, (s) => WT_I18N.setLocale(s['wt:locale']));
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes['wt:locale']) WT_I18N.setLocale(changes['wt:locale'].newValue);
+  });
+}
+
 const SITES = { NAVER: 'naver', RIDI: 'ridi', KAKAO: 'kakao' };
 const MSG    = {
   SAVE_TRANSLATIONS: 'SAVE_TRANSLATIONS',
@@ -4202,9 +4214,9 @@ function showBatchOverlay(text, onCancel) {
     '</div>' +
     '<div id="wt-batch-overlay-pct" style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.8);margin:6px 0 4px;">0%</div>' +
     '<div id="wt-batch-overlay-timer" style="font-size:11px;font-family:ui-monospace,Menlo,monospace;color:rgba(255,255,255,0.5);margin-bottom:14px;">0:00</div>' +
-    '<div style="font-size:12px;color:rgba(255,255,255,0.65);margin-bottom:16px;">Đừng đóng tab hoặc chuyển trang cho đến khi hoàn tất — bản dịch đang chạy trên toàn bộ chapter.</div>' +
+    `<div style="font-size:12px;color:rgba(255,255,255,0.65);margin-bottom:16px;">${WT_I18N.t('batch.dont_close')}</div>` +
     '<button id="wt-batch-overlay-cancel" style="background:none;border:1px solid rgba(255,255,255,0.3);' +
-    'color:rgba(255,255,255,0.85);font-size:12px;font-weight:600;padding:7px 18px;border-radius:6px;cursor:pointer;">Hủy</button>' +
+    `color:rgba(255,255,255,0.85);font-size:12px;font-weight:600;padding:7px 18px;border-radius:6px;cursor:pointer;">${WT_I18N.t('batch.cancel_btn')}</button>` +
     '</div>';
   // Swallow all interaction with the underlying page while this is up —
   // except the Cancel button itself. Checked here (not just skipped via a
@@ -4221,7 +4233,7 @@ function showBatchOverlay(text, onCancel) {
   const cancelBtn = el.querySelector('#wt-batch-overlay-cancel');
   cancelBtn.addEventListener('click', () => {
     cancelBtn.disabled = true;
-    cancelBtn.textContent = 'Đang dừng…';
+    cancelBtn.textContent = WT_I18N.t('batch.cancelling_btn');
     cancelBtn.style.opacity = '0.6';
     cancelBtn.style.cursor = 'default';
     onCancel?.();
@@ -5830,8 +5842,8 @@ function bootForPage() {
   let _batchTranslating = false;
 
   async function triggerTranslateAllPanels() {
-    if (_batchTranslating) { showToast('Đang dịch chapter này rồi…', '#f59e0b'); return; }
-    if (!images.length) { showToast('Chưa tìm thấy panel nào trên trang này.', '#f59e0b'); return; }
+    if (_batchTranslating) { showToast(WT_I18N.t('batch.already_running'), '#f59e0b'); return; }
+    if (!images.length) { showToast(WT_I18N.t('batch.no_panels'), '#f59e0b'); return; }
     _batchTranslating = true;
 
     const wasArmed = !!bubbleDetector.onBoxes;
@@ -5858,10 +5870,10 @@ function bootForPage() {
     // (30-90%, real ratio once jobs start getting created), translate
     // (90-100% — a single API call has no meaningful sub-progress).
     const STAGE_SCAN_PCT = 30, STAGE_OCR_PCT = 90;
-    showBatchOverlay('Đang quét chapter…', () => {
+    showBatchOverlay(WT_I18N.t('batch.scanning'), () => {
       _batchCancelled = true;
       bubbleDetector.onBoxes = null; // stop any further boxes from creating new jobs
-      setBatchOverlayText('Đang dừng — chờ nốt phần đang xử lý rồi lưu lại…');
+      setBatchOverlayText(WT_I18N.t('batch.stopping'));
     });
     setBatchOverlayProgress(0);
 
@@ -5904,7 +5916,7 @@ function bootForPage() {
 
       if (disposed) return;
       if (!_batchCancelled) {
-        setBatchOverlayText('Đang quét lại toàn trang (bắt các panel lỡ tải chậm)…');
+        setBatchOverlayText(WT_I18N.t('batch.rescan'));
         setBatchOverlayProgress(STAGE_SCAN_PCT);
         bubbleDetector.detectAll();
         await new Promise(r => setTimeout(r, 1500));
@@ -5930,9 +5942,10 @@ function bootForPage() {
         const remaining = jobManager.jobs.size;
         const done  = Math.max(0, _batchJobsTotal - remaining);
         const total = Math.max(_batchJobsTotal, done, 1);
+        const totalLabel = _batchJobsTotal || done;
         setBatchOverlayText(_batchCancelled
-          ? `Đang dừng… ${done}/${_batchJobsTotal || done} đoạn text đã xong, đang lưu nốt`
-          : `Đang OCR + dịch theo từng nhóm… ${done}/${_batchJobsTotal || done} đoạn text đã xong`);
+          ? WT_I18N.t('batch.stopping_progress', { done, total: totalLabel })
+          : WT_I18N.t('batch.ocr_translating', { done, total: totalLabel }));
         setBatchOverlayProgress(STAGE_SCAN_PCT + (done / total) * (STAGE_OCR_PCT - STAGE_SCAN_PCT));
         const detectIdle = _batchCancelled || bubbleDetector.isIdle();
         const jobsIdle    = jobManager.activeCount() === 0 && jobManager.queuedCount() === 0;
@@ -5947,20 +5960,20 @@ function bootForPage() {
       if (disposed) return;
       setBatchOverlayProgress(STAGE_OCR_PCT);
       if (_batchPending.length) {
-        setBatchOverlayText(`Đang dịch nốt ${_batchPending.length} đoạn text còn lại…`);
+        setBatchOverlayText(WT_I18N.t('batch.translating_remaining', { count: _batchPending.length }));
         setBatchOverlayProgress(95);
         await flushBatchTranslate();
       }
 
       setBatchOverlayProgress(100);
       if (_batchCancelled) {
-        setBatchOverlayText(`✓ Đã dừng — đã lưu ${_batchJobsTotal} đoạn đã dịch xong.`);
+        setBatchOverlayText(WT_I18N.t('batch.cancelled_overlay', { count: _batchJobsTotal }));
         await new Promise(r => setTimeout(r, 700));
-        showToast(`✓ Đã hủy — đã lưu ${_batchJobsTotal} bubble đã dịch xong.`, '#f59e0b');
+        showToast(WT_I18N.t('batch.cancelled_toast', { count: _batchJobsTotal }), '#f59e0b');
       } else {
-        setBatchOverlayText('✓ Hoàn tất!');
+        setBatchOverlayText(WT_I18N.t('batch.done'));
         await new Promise(r => setTimeout(r, 700)); // let the 100% state be visible before the overlay closes
-        showToast('✓ Đã dịch xong chapter này.');
+        showToast(WT_I18N.t('batch.done_toast'));
       }
     } finally {
       if (!disposed) window.scrollTo(0, startY);

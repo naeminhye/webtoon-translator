@@ -5,6 +5,7 @@ const __DEV_TOOLS__ = true;
 const $ = id => document.getElementById(id);
 const ENABLED_KEY = 'wt:enabled';
 const THEME_KEY   = 'wt:settings-theme'; // shares the same key settings.js's initTheme writes
+const LOCALE_KEY  = 'wt:locale';         // shares the same key settings.js's initLocale writes
 
 let activeTabId = null;
 
@@ -51,6 +52,11 @@ function refreshMeta() {
 async function init() {
   applyStoredTheme();
   $('footer-version').textContent = `v${chrome.runtime.getManifest().version}`;
+
+  const localeStored = await chrome.storage.local.get({ [LOCALE_KEY]: 'en' });
+  WT_I18N.setLocale(localeStored[LOCALE_KEY]);
+  $('btn-translate-all-label').textContent = WT_I18N.t('popup.translate_all_btn');
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab?.id ?? null;
 

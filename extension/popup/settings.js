@@ -1,6 +1,21 @@
 const $ = id => document.getElementById(id);
-const THEME_KEY = 'wt:settings-theme';
-const TAB_KEY   = 'wt:settings-tab';
+const THEME_KEY  = 'wt:settings-theme';
+const TAB_KEY    = 'wt:settings-tab';
+const LOCALE_KEY = 'wt:locale';
+
+// ── UI language ──────────────────────────────────────────────────────────
+// See extension/shared/i18n.js — currently only the pre-translate overlay's
+// strings are wired through WT_I18N; everything else stays English-only.
+async function initLocale() {
+  const stored = await chrome.storage.local.get({ [LOCALE_KEY]: 'en' });
+  WT_I18N.setLocale(stored[LOCALE_KEY]);
+  $('ui-locale').value = WT_I18N.getLocale();
+
+  $('ui-locale').addEventListener('change', async (e) => {
+    WT_I18N.setLocale(e.target.value);
+    await chrome.storage.local.set({ [LOCALE_KEY]: e.target.value });
+  });
+}
 
 // ── Version display ─────────────────────────────────────────────────────
 // Reads the real extension version from manifest.json instead of a
@@ -742,6 +757,7 @@ async function initOcrStatsSettings() {
 }
 
 initVersion();
+initLocale();
 initTheme();
 initTabs();
 initTranslationSettings();

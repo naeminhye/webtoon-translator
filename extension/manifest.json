@@ -58,7 +58,7 @@
         "https://www.lezhin.com/*/comic/*/*",
         "https://www.qtoon.co.kr/toon/view.mg*"
       ],
-      "js": ["shared/llm-adapters.js", "content/bundle.js"],
+      "js": ["shared/i18n.js", "shared/llm-adapters.js", "content/bundle.js"],
       "css": ["content/overlay.css"],
       "run_at": "document_idle"
     }
