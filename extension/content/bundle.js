@@ -4158,6 +4158,9 @@ function showToast(text, color = '#22c55e', duration = 3000) {
 // runs, so the user clicking around or navigating away mid-run would both
 // confuse the run and lose whatever OCR/translation was still in flight.
 // This overlay eats all page clicks and beforeunload warns on tab-close.
+let _batchOverlayStartedAt     = 0;
+let _batchOverlayTimerInterval = null;
+
 function showBatchOverlay(text) {
   if (!document.getElementById('wt-batch-overlay-style')) {
     const style = document.createElement('style');
@@ -4197,7 +4200,8 @@ function showBatchOverlay(text) {
     '<div style="width:100%;height:6px;background:rgba(255,255,255,0.15);border-radius:3px;overflow:hidden;">' +
     '<div id="wt-batch-overlay-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#22c55e,#3b82f6,#f59e0b);transition:width 0.35s ease;"></div>' +
     '</div>' +
-    '<div id="wt-batch-overlay-pct" style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.8);margin:6px 0 12px;">0%</div>' +
+    '<div id="wt-batch-overlay-pct" style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.8);margin:6px 0 4px;">0%</div>' +
+    '<div id="wt-batch-overlay-timer" style="font-size:11px;font-family:ui-monospace,Menlo,monospace;color:rgba(255,255,255,0.5);margin-bottom:12px;">0:00</div>' +
     '<div style="font-size:12px;color:rgba(255,255,255,0.65);">Đừng đóng tab hoặc chuyển trang cho đến khi hoàn tất — bản dịch đang chạy trên toàn bộ chapter.</div>' +
     '</div>';
   // Swallow all interaction with the underlying page while this is up.
@@ -4206,6 +4210,19 @@ function showBatchOverlay(text) {
   );
   document.body.appendChild(el);
   setBatchOverlayText(text);
+
+  // Elapsed-time readout — handy for eyeballing how long a chapter this
+  // size actually takes (OCR engine, LLM provider, chunk size all affect it).
+  _batchOverlayStartedAt = Date.now();
+  clearInterval(_batchOverlayTimerInterval);
+  const tick = () => {
+    const el2 = document.getElementById('wt-batch-overlay-timer');
+    if (!el2) return;
+    const secs = Math.floor((Date.now() - _batchOverlayStartedAt) / 1000);
+    el2.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  };
+  tick();
+  _batchOverlayTimerInterval = setInterval(tick, 1000);
   return el;
 }
 
@@ -4223,6 +4240,8 @@ function setBatchOverlayProgress(percent) {
 }
 
 function hideBatchOverlay() {
+  clearInterval(_batchOverlayTimerInterval);
+  _batchOverlayTimerInterval = null;
   document.getElementById('wt-batch-overlay')?.remove();
 }
 
