@@ -3303,8 +3303,9 @@ async function llmTranslateBatch(llmAdapter, apiKey, model, texts, targetLang, s
  *     only provider where cross-bubble context can actually help, and
  *     where fewer, larger requests are a real win.
  *   - Chrome built-in / Google: no batch endpoint we can rely on, so these
- *     still translate one line at a time — but only after all OCR is done,
- *     same two-phase order, just not a single network call.
+ *     translate with a handful of lines in flight at once (see CONCURRENCY
+ *     below) instead of a single request — still only after all OCR is
+ *     done, same two-phase order, just not one network call.
  */
 async function autoTranslateBatch(texts, { storyCtx } = {}) {
   if (!texts.length) return [];
@@ -3329,10 +3330,22 @@ async function autoTranslateBatch(texts, { storyCtx } = {}) {
     }
   }
 
-  const out = [];
-  for (const text of texts) {
-    out.push(await autoTranslate(text, { storyCtx, forceGoogle: provider === 'byok' }));
+  // Chrome built-in / Google have no batch endpoint, but each call is
+  // still independent and network/API-bound (or fully local for Chrome
+  // built-in) — running them one at a time serialized the whole chapter's
+  // translate phase for no reason. A handful run concurrently instead;
+  // capped well below BYOK's LLM chunk size since Google's free endpoint
+  // in particular can start erroring under too much concurrent load.
+  const CONCURRENCY = 6;
+  const out = new Array(texts.length);
+  let next = 0;
+  async function worker() {
+    while (next < texts.length) {
+      const i = next++;
+      out[i] = await autoTranslate(texts[i], { storyCtx, forceGoogle: provider === 'byok' });
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, texts.length) }, worker));
   return out;
 }
 
@@ -5091,6 +5104,12 @@ function bootForPage() {
   // both success and (for onnx-detect jobs) silent-cancel-on-error remove
   // the entry, so this stays accurate without a second counter to keep in sync.
   let _batchJobsTotal = 0;
+  // Job ids created during the current batch run, so its OCR/translate
+  // performance.mark()s (already emitted per-job for Suite C — see
+  // wt:detect-done/translate-start/translate-done below) can be summed up
+  // into a "where did the time go" console log once the run finishes,
+  // instead of only ever seeing one opaque total duration.
+  let _batchJobIds = [];
 
   function queueBatchTranslate(job) {
     return new Promise((resolve, reject) => {
@@ -5291,7 +5310,16 @@ function bootForPage() {
   // all behave identically.
   const ONNX_MIN_BOX_PX   = 24;   // discard sub-bubble noise
   const ONNX_MAX_BOX_PX   = 1000; // a bubble is never this tall/wide — bad box, would OCR huge crops
-  const ONNX_MAX_OVERLAP  = 0.1;  // skip boxes already covered by a job/annotation
+  const ONNX_MAX_OVERLAP  = 0.3;  // skip boxes already covered by a job/annotation.
+                                   // Was 0.1 — genuine duplicate detections (the same
+                                   // bubble caught by two overlapping tiles) overlap
+                                   // nearly 100%, so 0.1 was far stricter than needed
+                                   // for that and was instead discarding distinct,
+                                   // closely-spaced bubbles (common in dense back-and-
+                                   // forth dialogue) that only incidentally touched an
+                                   // existing box by a small margin — a likely
+                                   // contributor to bubbles missing from a full-chapter
+                                   // pre-translate run.
   const ONNX_MERGE_PAD    = 12;   // px halo used to merge fragments of one text block
   const ONNX_AUTO_MIN_SCORE = 0.32; // SFX/stylised text scores lower than bubble text;
                                     // the model's 2 classes are languages (eng/ja), not
@@ -5431,7 +5459,7 @@ function bootForPage() {
       if (findOverlapForBbox(bbox, imageIndex) > ONNX_MAX_OVERLAP) continue;
 
       createJobFromSelection({ bbox, imageEl: img, imageIndex }).then(job => {
-        if (job && _batchTranslateMode) _batchJobsTotal++;
+        if (job && _batchTranslateMode) { _batchJobsTotal++; _batchJobIds.push(job.id); }
       });
     }
   }
@@ -5858,6 +5886,7 @@ function bootForPage() {
     MAX_CONCURRENT_JOBS = 200;
     _batchTranslateMode = true;
     _batchJobsTotal = 0;
+    _batchJobIds = [];
     // Cancel doesn't discard anything already OCR'd/translated — it just
     // stops scanning for MORE bubbles and skips waiting around for new
     // ones. Whatever's already a job at the moment Cancel is clicked keeps
@@ -5981,6 +6010,44 @@ function bootForPage() {
           cancelled:   _batchCancelled,
         },
       }).catch(() => {});
+
+      // Time breakdown for whoever's staring at "why did this take 11
+      // minutes" — sums each job's own detect→translate-start (OCR) and
+      // translate-start→translate-done (translate) performance.mark()
+      // deltas (already emitted for Suite C, reused here) instead of only
+      // ever having one opaque total. OCR being the dominant chunk usually
+      // means the OCR engine itself (Tesseract/PaddleOCR) is the ceiling —
+      // it's serialized one-at-a-time on purpose (_runExclusiveOcr) even
+      // during a batch run, since none of these engines are safe to run
+      // concurrently; translate concurrency was the lever actually pulled
+      // (see autoTranslateBatch/llmTranslateBatch).
+      try {
+        // OCR is fully serialized (_runExclusiveOcr) — zero overlap between
+        // jobs — so summing each job's own OCR duration equals real OCR
+        // wall-clock time exactly. Translate is NOT serialized (concurrent
+        // requests, see autoTranslateBatch/llmTranslateBatch), so summing
+        // per-job translate durations is cumulative work time, not wall-
+        // clock — reported separately and labeled as such, not added into
+        // a "the rest was scanning" subtraction (which could go negative).
+        let ocrMs = 0, translateWorkMs = 0, measured = 0;
+        for (const jobId of _batchJobIds) {
+          const detectDone     = performance.getEntriesByName(`wt:detect-done:${jobId}`)[0]?.startTime;
+          const translateStart = performance.getEntriesByName(`wt:translate-start:${jobId}`)[0]?.startTime;
+          const translateDone  = performance.getEntriesByName(`wt:translate-done:${jobId}`)[0]?.startTime;
+          if (detectDone == null || translateStart == null) continue;
+          ocrMs += translateStart - detectDone;
+          measured++;
+          if (translateDone != null) translateWorkMs += translateDone - translateStart;
+        }
+        const totalMs = Date.now() - runStartedAt;
+        console.log(
+          `[WebtoonTranslate] Pre-translate run: ${_batchJobIds.length} bubbles, ${(totalMs / 1000).toFixed(1)}s total. ` +
+          `OCR (serialized, wall-clock): ${(ocrMs / 1000).toFixed(1)}s. ` +
+          `Translate (concurrent, cumulative work — not wall-clock): ${(translateWorkMs / 1000).toFixed(1)}s. ` +
+          `Rest (scan + waits): ~${Math.max(0, (totalMs - ocrMs) / 1000).toFixed(1)}s. ` +
+          `(${measured}/${_batchJobIds.length} jobs had usable marks)`
+        );
+      } catch { /* diagnostic only — never let this break the actual run */ }
 
       setBatchOverlayProgress(100);
       if (_batchCancelled) {
