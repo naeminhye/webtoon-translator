@@ -4190,29 +4190,20 @@ function showBatchOverlay(text, onCancel) {
   if (!document.getElementById('wt-batch-overlay-style')) {
     const style = document.createElement('style');
     style.id = 'wt-batch-overlay-style';
-    // Gooey orbiting-blob loader — two white metaballs chasing each other
-    // around a square, merging via the blur+contrast trick — reads as
-    // "processing" rather than a generic spinner.
+    // Four dots orbiting/swapping corners — reads as "processing" rather
+    // than a generic spinner.
     style.textContent =
       '.wt-batch-loader {' +
-      '  width: 64px; aspect-ratio: 1; margin: 0 auto 16px;' +
-      '  border: 8px solid #0000;' +
-      '  padding: 4px;' +
-      '  box-sizing: border-box;' +
-      '  background:' +
-      '    radial-gradient(farthest-side, #fff 98%, #0000) 0 0/16px 16px no-repeat,' +
-      '    conic-gradient(from 90deg at 8px 8px, #0000 90deg, #fff 0) content-box,' +
-      '    conic-gradient(from -90deg at 32px 32px, #0000 90deg, #fff 0) content-box,' +
-      '    #000;' +
-      '  filter: blur(3px) contrast(10);' +
-      '  animation: wt-batch-l11 2s infinite;' +
+      '  width: 32px; aspect-ratio: 1; margin: 0 auto 16px;' +
+      '  --wt-g: no-repeat radial-gradient(farthest-side, #fff 90%, #0000);' +
+      '  background: var(--wt-g), var(--wt-g), var(--wt-g), var(--wt-g);' +
+      '  background-size: 40% 40%;' +
+      '  animation: wt-batch-l46 1s infinite;' +
       '}' +
-      '@keyframes wt-batch-l11 {' +
-      '  0%   { background-position: 0 0; }' +
-      '  25%  { background-position: 100% 0; }' +
-      '  50%  { background-position: 100% 100%; }' +
-      '  75%  { background-position: 0% 100%; }' +
-      '  100% { background-position: 0% 0; }' +
+      '@keyframes wt-batch-l46 {' +
+      '  0%       { background-position: 0 0,       100% 0,   100% 100%, 0 100%; }' +
+      '  40%, 50% { background-position: 100% 100%,  100% 0,  0 0,        0 100%; }' +
+      '  90%, 100%{ background-position: 100% 100%,  0 100%,  0 0,        100% 0; }' +
       '}';
     document.head.appendChild(style);
   }
