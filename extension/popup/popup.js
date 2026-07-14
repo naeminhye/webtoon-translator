@@ -50,6 +50,7 @@ function refreshMeta() {
 
 async function init() {
   applyStoredTheme();
+  $('footer-version').textContent = `v${chrome.runtime.getManifest().version}`;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab?.id ?? null;
 

@@ -2,6 +2,15 @@ const $ = id => document.getElementById(id);
 const THEME_KEY = 'wt:settings-theme';
 const TAB_KEY   = 'wt:settings-tab';
 
+// ── Version display ─────────────────────────────────────────────────────
+// Reads the real extension version from manifest.json instead of a
+// hardcoded string, so the UI can never drift out of sync with it.
+function initVersion() {
+  const version = `v${chrome.runtime.getManifest().version}`;
+  $('navbar-version').textContent = version;
+  $('footer-version').textContent = version;
+}
+
 // ── Theme (light/dark) ──────────────────────────────────────────────────
 // Persisted separately from every other 'wt:' setting below — this is a
 // UI preference for this settings page only, not an extension behavior.
@@ -616,6 +625,7 @@ async function initOcrStatsSettings() {
   });
 }
 
+initVersion();
 initTheme();
 initTabs();
 initTranslationSettings();
