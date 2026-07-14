@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Webtoon Translator — GT Labeling</title>
+  <link rel="stylesheet" href="label.css">
+</head>
+<body>
+  <header>
+    <h1>GT Labeling</h1>
+    <select id="pageSelect"></select>
+    <button id="exportBtn">Export GT JSON</button>
+    <span class="status" id="statusMsg"></span>
+  </header>
+  <main>
+    <div class="canvas-pane">
+      <canvas id="stage"></canvas>
+    </div>
+    <div class="sidebar">
+      <h2 id="boxCount">Boxes</h2>
+      <div id="boxList"></div>
+      <div class="hint">
+        Draw: click-drag on the image.<br>
+        Move: drag a box's body.<br>
+        Resize: drag a corner handle.<br>
+        Transcribe: type in a box's text field, list rows below.<br>
+        Enter in a text field moves to the next box (spreadsheet-style) —
+        Tab/Shift+Tab work the same way natively.<br>
+        Delete a box: × button on its row.
+      </div>
+    </div>
+  </main>
+  <script type="module" src="label.js"></script>
+</body>
+</html>

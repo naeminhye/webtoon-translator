@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Webtoon Translator — bench offscreen document</title>
+</head>
+<body>
+  <!--
+    Bench offscreen document for Suites A and B. Same script set as
+    extension/offscreen/ocr.html (the real production offscreen document),
+    loaded unmodified and in the same order, plus one bench-only script
+    (offscreen-hooks.js) for Long Task collection and the blob-worker CSP
+    probe. Created on demand via chrome.offscreen.createDocument, called
+    directly from the bench page (no background-script relay needed).
+  -->
+  <script src="../vendor/tesseract/tesseract.min.js"></script>
+  <script src="../offscreen/ocr.js"></script>
+  <script src="../vendor/ort/ort.webgpu.min.js"></script>
+  <script src="../offscreen/ort-runner.js"></script>
+  <script src="../offscreen/paddle-runner.js"></script>
+  <script src="offscreen-hooks.js"></script>
+</body>
+</html>

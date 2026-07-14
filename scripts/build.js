@@ -20,16 +20,22 @@ const START_MARKER = '__DEV_TOOLS_BLOCK_START__';
 const END_MARKER   = '__DEV_TOOLS_BLOCK_END__';
 const STRIPPABLE_EXT = new Set(['.js', '.css', '.html']);
 
+// Benchmark harness (extension/bench/) — labeling tool, fixtures, later the
+// Suite A/B/C runners — has zero production footprint: never copied into
+// dist/. Top-level-only check (no nested `bench` dirs exist elsewhere).
+const SKIP_TOP_LEVEL = new Set(['bench']);
+
 function rmrf(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-function copyDir(src, dest) {
+function copyDir(src, dest, isRoot = true) {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (isRoot && SKIP_TOP_LEVEL.has(entry.name)) continue;
     const s = path.join(src, entry.name);
     const d = path.join(dest, entry.name);
-    if (entry.isDirectory()) copyDir(s, d);
+    if (entry.isDirectory()) copyDir(s, d, false);
     else fs.copyFileSync(s, d);
   }
 }
@@ -77,4 +83,4 @@ rmrf(DIST_DIR);
 copyDir(SRC_DIR, DIST_DIR);
 walk(DIST_DIR, processFile);
 
-console.log(`Production build written to ${path.relative(ROOT, DIST_DIR)}/ (__DEV_TOOLS__ = false, dev-only blocks stripped).`);
+console.log(`Production build written to ${path.relative(ROOT, DIST_DIR)}/ (__DEV_TOOLS__ = false, dev-only blocks stripped, bench/ excluded).`);

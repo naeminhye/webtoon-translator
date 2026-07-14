@@ -60,7 +60,22 @@ if (typeof GPUAdapter !== 'undefined' && !GPUAdapter.prototype.requestAdapterInf
   };
 }
 
-let _sessionPromise = null;
+// Keyed by requested execution provider so the benchmark harness (bench/,
+// see DETECT_RUN's optional `executionProvider` field below) can hold a
+// forced 'wasm' session and a forced 'webgpu' session alongside each other
+// in the same offscreen document, without disturbing the production
+// singleton. Production never sends `executionProvider`, so it always hits
+// the 'auto' key below — behavior identical to the single-session version
+// this replaced.
+const _sessions = new Map(); // key -> Promise<session>
+
+// Populated once per key inside getSession(), read (and cleared) by the
+// first _runDetection call for that key — lets the bench harness report
+// "session init time" / "first-inference warmup" as their own metrics
+// instead of folding them into the first steady-state latency sample.
+// Production never reads this (worker.js's handleDetectBubbles only looks
+// at {boxes, tileIndex}), so it's inert there.
+const _sessionTiming = new Map(); // key -> { sessionInitMs, warmupMs }
 
 async function warmUp(session) {
   // Compile graph so first real inference is not penalised.
@@ -72,50 +87,63 @@ async function warmUp(session) {
   await session.run({ images: dummy });
 }
 
-function getSession() {
-  if (_sessionPromise) return _sessionPromise;
-  _sessionPromise = (async () => {
+/**
+ * @param {'wasm'|'webgpu'|undefined} forceEp  Bench-only override. Leave
+ *   undefined in production — that's the 'auto' path: try WebGPU, fall back
+ *   to WASM, exactly as before this function took a parameter.
+ */
+function getSession(forceEp) {
+  const key = forceEp || 'auto';
+  if (_sessions.has(key)) return _sessions.get(key);
+
+  const sessionPromise = (async () => {
     const bytes = await loadModelBytes();
 
-    // Try WebGPU first, fall back to WASM explicitly so the console shows
-    // which execution provider is actually in use. The warm-up run() is
-    // covered by this same try/catch — a WebGPU session can construct
-    // successfully but still fail once run() executes (e.g. Metal-backend
-    // op/buffer limits on macOS); without covering warm-up here too, that
-    // failure would propagate straight out of getSession() with no WASM
-    // fallback, since by that point the if/else below has already committed
-    // to the (broken) WebGPU session.
-    let session;
+    // InferenceSession.create() and warmUp() timed separately so bench/'s
+    // Suite A can report "session init time" (create only, matching the
+    // plan's "model fetch excluded") distinct from "first-inference
+    // latency" (the warmup run, which for WebGPU includes shader compile).
+    async function createAndWarm(executionProviders, label) {
+      const t0 = performance.now();
+      const session = await ort.InferenceSession.create(bytes, { executionProviders, graphOptimizationLevel: 'all' });
+      const t1 = performance.now();
+      await warmUp(session);
+      const t2 = performance.now();
+      _sessionTiming.set(key, { sessionInitMs: t1 - t0, warmupMs: t2 - t1 });
+      console.info(`[ort-runner] execution provider: ${label}`);
+      return session;
+    }
+
+    if (forceEp === 'wasm')   return createAndWarm(['wasm'],   'wasm (forced, bench)');
+    if (forceEp === 'webgpu') return createAndWarm(['webgpu'], 'webgpu (forced, bench)');
+
+    // 'auto' — the only path production ever takes. Try WebGPU first, fall
+    // back to WASM explicitly so the console shows which execution provider
+    // is actually in use. The warm-up run() is covered by this same
+    // try/catch — a WebGPU session can construct successfully but still
+    // fail once run() executes (e.g. Metal-backend op/buffer limits on
+    // macOS); without covering warm-up here too, that failure would
+    // propagate straight out of getSession() with no WASM fallback, since by
+    // that point the if/else below has already committed to the (broken)
+    // WebGPU session.
     if (navigator.gpu) {
       try {
-        session = await ort.InferenceSession.create(bytes, {
-          executionProviders: ['webgpu'],
-          graphOptimizationLevel: 'all',
-        });
-        await warmUp(session);
-        console.info('[ort-runner] execution provider: webgpu');
+        return await createAndWarm(['webgpu'], 'webgpu');
       } catch (err) {
         console.warn('[ort-runner] WebGPU init/warm-up failed, falling back to WASM:', err);
-        session = null;
       }
     } else {
       console.warn('[ort-runner] navigator.gpu absent — WebGPU unavailable in this context');
     }
-    if (!session) {
-      session = await ort.InferenceSession.create(bytes, {
-        executionProviders: ['wasm'],
-        graphOptimizationLevel: 'all',
-      });
-      await warmUp(session);
-      console.info('[ort-runner] execution provider: wasm (single-thread)');
-    }
+    const session = await createAndWarm(['wasm'], 'wasm (single-thread)');
     console.debug('[ort-runner] session ready (warm-up done)');
     return session;
   })().catch(err => {
-    _sessionPromise = null; // allow retry on next call
+    _sessions.delete(key); // allow retry on next call
     throw err;
   });
-  return _sessionPromise;
+  _sessions.set(key, sessionPromise);
+  return sessionPromise;
 }
 
 // Serialize ALL ONNX Runtime inference in this offscreen document — not just
@@ -275,10 +303,20 @@ function runDetection(payload) {
   return job;
 }
 
-async function _runDetection({ dataUrl, tileIndex, confThreshold, iouThreshold }) {
-  const session = await getSession();
+async function _runDetection({ dataUrl, tileIndex, confThreshold, iouThreshold, executionProvider }) {
+  // executionProvider is undefined on every production call site (content
+  // script / worker.js never set it) — only bench/'s Suite A runner sends
+  // it, to pin a session to 'wasm' or 'webgpu' for a screening config.
+  const epKey   = executionProvider || 'auto';
+  const session = await getSession(executionProvider);
   const thresh  = confThreshold ?? CONF_THRESH;
   const iouT    = iouThreshold  ?? IOU_THRESH;
+
+  // Read once: only the call that actually triggered getSession()'s
+  // creation sees this; every later call for the same epKey gets undefined.
+  // Production ignores the extra response field entirely.
+  const coldStartTiming = _sessionTiming.get(epKey);
+  if (coldStartTiming) _sessionTiming.delete(epKey);
 
   const t0 = performance.now();
   const { tensor, scale, padX, padY, srcW, srcH } = await preprocess(dataUrl, INPUT_SIZE);
@@ -297,7 +335,12 @@ async function _runDetection({ dataUrl, tileIndex, confThreshold, iouThreshold }
     ` run=${(t2-t1).toFixed(1)}ms post=${(t3-t2).toFixed(1)}ms boxes=${boxes.length}`,
   );
 
-  return { boxes, tileIndex };
+  return {
+    boxes,
+    tileIndex,
+    timing: { preMs: t1 - t0, runMs: t2 - t1, postMs: t3 - t2 },
+    ...(coldStartTiming ? { coldStartTiming } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

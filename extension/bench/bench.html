@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Webtoon Translator — Benchmark</title>
+  <link rel="stylesheet" href="bench.css">
+</head>
+<body>
+  <header>
+    <h1>Benchmark harness</h1>
+    <p>Suite A: detection inference (comic-text-detector, ONNX Runtime Web) — EP × tile size screening</p>
+  </header>
+  <main>
+    <section>
+      <h2>Suite A — screening (synthetic placeholder corpus)</h2>
+      <p>
+        Runs against synthetic placeholder tiles (no labeled corpus needed yet) —
+        latency-only, quality columns stay blank. Every JSONL record is tagged
+        <code>corpus: "synthetic"</code> so it can never be confused with a real
+        baseline. Drives the real <code>offscreen/ort-runner.js</code> unmodified.
+      </p>
+      <button id="runBtn">Run Suite A</button>
+      <button id="downloadBtn" disabled>Download JSONL</button>
+      <span id="calibBadge"></span>
+      <div id="log"></div>
+    </section>
+
+    <section>
+      <h2>Suite B — OCR provider comparison (GT crops, real corpus)</h2>
+      <p>
+        Needs a labeled corpus (<code>fixtures/corpus.json</code> + GT files —
+        see <code>bench/label.html</code>). CER is computed per tier against
+        your transcriptions.
+      </p>
+      <p>
+        <label><input type="checkbox" class="providerCheck" value="tesseract" checked> tesseract</label><br>
+        <label><input type="checkbox" class="providerCheck" value="paddleocr-local" checked> paddleocr-local</label><br>
+        <label><input type="checkbox" class="providerCheck" value="paddleocr" checked> paddleocr (self-hosted server)
+          — <input type="text" id="paddleUrl" value="http://127.0.0.1:8868" size="24"></label>
+      </p>
+      <button id="runBBtn">Run Suite B</button>
+      <button id="downloadBBtn" disabled>Download JSONL</button>
+      <span id="calibBadgeB"></span>
+      <div id="logB"></div>
+    </section>
+  </main>
+  <script type="module" src="bench.js"></script>
+</body>
+</html>
