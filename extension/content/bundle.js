@@ -5477,13 +5477,25 @@ function bootForPage() {
   //      watcher (watchNewImages) fires and panels actually get their pixel
   //      data loaded — and so bubbles get queued for translation as early as
   //      possible instead of all at once at the very end.
+  //
+  //      Naver/Kakao-style infinite scroll only APPENDS later panels to the
+  //      DOM once the reader nears the current bottom — document.body /
+  //      documentElement.scrollHeight only grows after that happens. A
+  //      single "y >= maxScroll → we're done" check races that: if the next
+  //      batch of panels hasn't been appended yet at the moment we sample
+  //      scrollHeight, the loop concludes the chapter is over early and
+  //      every panel after that point is never even added to the DOM — no
+  //      amount of re-scanning fixes that, the <img> nodes simply don't
+  //      exist yet. So "at the bottom" isn't good enough; we require
+  //      scrollHeight AND the adapter's image count to both stay unchanged
+  //      across several consecutive checks before believing it.
   //   2. bubbleDetector.detectAll(), which — unlike the scroll-driven
   //      detect() — is NOT viewport-gated, so it catches any panel that
-  //      hadn't finished lazy-loading in time during pass 1 and would
-  //      otherwise be silently skipped forever (scheduleTiles drops an image
-  //      the moment it's scrolled above the viewport, loaded or not). Run
-  //      twice with a pause so a panel still mid-load after the first call
-  //      gets a second chance.
+  //      hadn't finished lazy-loading its pixel data in time during pass 1
+  //      and would otherwise be silently skipped (scheduleTiles drops an
+  //      image the moment it's scrolled above the viewport, loaded or not).
+  //      Run twice with a pause so a panel still mid-load after the first
+  //      call gets a second chance.
   let _batchTranslating = false;
 
   async function triggerTranslateAllPanels() {
@@ -5499,15 +5511,27 @@ function bootForPage() {
     try {
       const step = Math.max(200, Math.round(window.innerHeight * 0.8));
       let y = 0;
-      const MAX_STEPS = 500; // safety cap — a chapter this tall would be a bug elsewhere
-      for (let i = 0; i < MAX_STEPS; i++) {
+      let stableRounds = 0;
+      const STABLE_ROUNDS_NEEDED = 4; // ~4 * 700ms of no growth before we believe it
+      const MAX_STEPS = 2000; // safety cap — a chapter needing this many rounds would be a bug elsewhere
+      for (let i = 0; i < MAX_STEPS && stableRounds < STABLE_ROUNDS_NEEDED; i++) {
         if (disposed) return;
+        const beforeImageCount = images.length;
         const maxScroll = Math.max(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) - window.innerHeight);
         window.scrollTo(0, Math.min(y, maxScroll));
-        await new Promise(r => setTimeout(r, 300)); // let lazy-loaders + the scroll listener settle
+        await new Promise(r => setTimeout(r, 400)); // let lazy-loaders + the scroll listener settle
         bubbleDetector.detect();
-        if (y >= maxScroll) break;
-        y += step;
+
+        const grew = images.length > beforeImageCount || y < maxScroll;
+        if (grew) {
+          stableRounds = 0;
+          y = Math.max(y + step, maxScroll); // keep pace with newly-appended content, not just +step
+        } else {
+          // Looks like the bottom — wait a bit longer for the next batch of
+          // panels to actually get appended before trusting it.
+          stableRounds++;
+          await new Promise(r => setTimeout(r, 700));
+        }
       }
 
       if (disposed) return;
