@@ -1073,7 +1073,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && ENABLED_KEY in changes) updateBadge();
 });
 
-chrome.runtime.onInstalled.addListener(updateBadge);
+chrome.runtime.onInstalled.addListener((details) => {
+  updateBadge();
+  // First install only (not updates/browser upgrades): open the settings page
+  // so new users land somewhere actionable instead of a silent toolbar icon.
+  if (details.reason === chrome.runtime.OnInstalledReason.INSTALL) {
+    chrome.tabs.create({ url: chrome.runtime.getURL('popup/settings.html') });
+  }
+});
 chrome.runtime.onStartup.addListener(updateBadge);
 updateBadge();
 

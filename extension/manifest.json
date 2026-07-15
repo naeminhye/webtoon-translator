@@ -1,8 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "Webtoon Translator",
+  "name": "__MSG_appName__",
   "version": "0.1.0",
-  "description": "Community-driven webtoon translation overlay",
+  "description": "__MSG_appDesc__",
+  "default_locale": "en",
+  "minimum_chrome_version": "109",
+  "homepage_url": "https://github.com/naeminhye/webtoon-translator",
 
   "icons": {
     "16": "icons/icon16.png",

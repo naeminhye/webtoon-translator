@@ -1,0 +1,10 @@
+{
+  "appName": {
+    "message": "Webtoon Translator",
+    "description": "Tên extension hiển thị trên Chrome Web Store, chrome://extensions và tooltip trên thanh công cụ."
+  },
+  "appDesc": {
+    "message": "Lớp phủ bản dịch webtoon do cộng đồng đóng góp",
+    "description": "Mô tả ngắn hiển thị trên Chrome Web Store và chrome://extensions."
+  }
+}

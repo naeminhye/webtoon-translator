@@ -1,0 +1,10 @@
+{
+  "appName": {
+    "message": "Webtoon Translator",
+    "description": "Extension name shown in the Chrome Web Store listing, chrome://extensions and the toolbar tooltip."
+  },
+  "appDesc": {
+    "message": "Community-driven webtoon translation overlay",
+    "description": "Short extension description shown in the Chrome Web Store listing and chrome://extensions."
+  }
+}
