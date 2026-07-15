@@ -49,14 +49,17 @@ html, body {
   height: 30px;
   border-radius: 8px;
   background: var(--accent);
-  color: var(--on-accent);
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+/* White knockout mark on the accent tile (design handoff, variant C) */
+.brand-icon img {
+  width: 20px;
+  height: 20px;
+  display: block;
 }
 
 .brand-name {
