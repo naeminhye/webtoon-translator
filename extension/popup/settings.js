@@ -163,6 +163,18 @@ async function initOcrSettings() {
   });
 
   radios.forEach(r => r.addEventListener('change', async () => {
+    // The self-hosted engine talks to a local server; its origins live in
+    // optional_host_permissions, so ask for them right here (radio change is
+    // a user gesture, which chrome.permissions.request requires). Best-effort:
+    // the bundled server also sends permissive CORS headers, so a decline
+    // doesn't brick the feature.
+    if (r.value === 'paddleocr') {
+      try {
+        await chrome.permissions.request({ origins: ['http://127.0.0.1/*', 'http://localhost/*'] });
+      } catch (err) {
+        console.warn('[settings] local-server permission request failed:', err);
+      }
+    }
     await chrome.storage.local.set({ [OCR_PROVIDER_KEY]: r.value });
     applyProvider(r.value);
   }));
@@ -179,23 +191,41 @@ async function initOcrSettings() {
     }, 400);
   });
 
-  // Setup-guide download chips: files bundled inside the extension package
-  // (extension/assets/paddleocr-server/, a mirror of server/paddleocr/ in the
-  // repo) so users who only installed the packed extension — no git/GitHub
-  // access — can still get server.py etc. onto their machine. chrome.runtime
-  // .getURL() resolves the per-install chrome-extension:// origin; no
-  // web_accessible_resources entry is needed since this popup page already
-  // shares that origin.
-  // chrome.runtime.getURL() is always rooted at the extension package root
-  // (extension/), not relative to this script's own location.
-  const PADDLE_SERVER_ASSETS = 'assets/paddleocr-server/';
+  // Setup-guide download chips: fetched straight from the repo on GitHub
+  // (server/paddleocr/ is the canonical source) instead of being bundled in
+  // the extension package. This settings page fetches the raw file and hands
+  // the user a blob: download so the saved filename is right (a cross-origin
+  // <a download> is ignored by Chrome); raw.githubusercontent.com serves
+  // `Access-Control-Allow-Origin: *`, so no host permission is needed. If
+  // the fetch fails (offline, GitHub down), fall back to opening the raw
+  // file in a new tab so the user can save it manually.
+  const PADDLE_SERVER_RAW_BASE =
+    'https://raw.githubusercontent.com/naeminhye/webtoon-translator/main/server/paddleocr/';
   [
     ['dl-paddle-server-py',    'server.py'],
     ['dl-paddle-requirements', 'requirements.txt'],
     ['dl-paddle-dockerfile',   'Dockerfile'],
     ['dl-paddle-readme',       'README.md'],
   ].forEach(([id, filename]) => {
-    $(id).href = chrome.runtime.getURL(PADDLE_SERVER_ASSETS + filename);
+    const chip = $(id);
+    const rawUrl = PADDLE_SERVER_RAW_BASE + filename;
+    chip.href = rawUrl;
+    chip.addEventListener('click', async (e) => {
+      e.preventDefault();
+      try {
+        const res = await fetch(rawUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blobUrl = URL.createObjectURL(await res.blob());
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = filename;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
+      } catch (err) {
+        console.warn(`[settings] direct download of ${filename} failed, opening on GitHub:`, err);
+        window.open(rawUrl, '_blank');
+      }
+    });
   });
 
   // ── PaddleOCR (in-browser) model status + download/remove ────────────────
@@ -415,6 +445,41 @@ async function initTranslationSettings() {
     $('byok-model').placeholder = adapter?.modelPlaceholder || '';
   }
 
+  // ── Optional host permission per BYOK provider ───────────────────────
+  // The LLM API origins live in optional_host_permissions (not granted at
+  // install), so the browser only ever gains access to the one provider the
+  // user actually configured. While the active preset's provider origin
+  // isn't granted yet, a "Allow access to {host}" button is shown; hidden
+  // once granted.
+  const LLM_PROVIDER_ORIGINS = {
+    openai:    ['https://api.openai.com/*'],
+    anthropic: ['https://api.anthropic.com/*'],
+    gemini:    ['https://generativelanguage.googleapis.com/*'],
+  };
+
+  async function refreshByokPermission() {
+    const origins = LLM_PROVIDER_ORIGINS[getActivePreset()?.provider];
+    const row = $('byok-perm-row');
+    if (!origins) { row.classList.add('hidden'); return; }
+    const granted = await chrome.permissions.contains({ origins });
+    row.classList.toggle('hidden', granted);
+    if (!granted) {
+      const host = origins[0].replace(/^https?:\/\//, '').replace(/\/\*$/, '');
+      $('byok-perm-btn').textContent = WT_I18N.t('settings.tr.perm_btn', { host });
+    }
+  }
+
+  $('byok-perm-btn').addEventListener('click', async () => {
+    const origins = LLM_PROVIDER_ORIGINS[getActivePreset()?.provider];
+    if (!origins) return;
+    try {
+      await chrome.permissions.request({ origins });
+    } catch (err) {
+      console.warn('[settings] permission request failed:', err);
+    }
+    refreshByokPermission();
+  });
+
   // ── BYOK presets ─────────────────────────────────────────────────────
   // Each preset bundles {name, provider, model, key, mode} so users can
   // save e.g. a "Fast & cheap" and a "High quality" combo and switch
@@ -492,6 +557,7 @@ async function initTranslationSettings() {
     $('byok-model').value = preset.model || '';
     byokModeRadios.forEach(r => { r.checked = r.value === (preset.mode || 'always'); });
     updateKeyWarnings();
+    refreshByokPermission();
   }
 
   renderPresetSelect();
@@ -548,6 +614,7 @@ async function initTranslationSettings() {
   providerSelect.addEventListener('change', async (e) => {
     applyByokProviderPlaceholder(e.target.value);
     getActivePreset().provider = e.target.value;
+    refreshByokPermission();
     await persistPresets();
     await mirrorActivePresetToLegacy();
   });

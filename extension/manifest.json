@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Community-driven webtoon translation overlay",
 
-  "permissions": ["storage", "scripting", "activeTab", "offscreen", "tabs"],
+  "permissions": ["storage", "scripting", "activeTab", "offscreen"],
 
   "host_permissions": [
     "https://comic.naver.com/*",
@@ -20,12 +20,15 @@
     "https://*.pstatic.net/*",
     "https://*.kakaoentcdn.com/*",
     "https://page-edge.kakao.com/*",
-    "http://127.0.0.1/*",
-    "http://localhost/*",
     "https://github.com/*",
     "https://objects.githubusercontent.com/*",
     "https://release-assets.githubusercontent.com/*",
-    "https://translate.googleapis.com/*",
+    "https://translate.googleapis.com/*"
+  ],
+
+  "optional_host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
     "https://api.openai.com/*",
     "https://api.anthropic.com/*",
     "https://generativelanguage.googleapis.com/*"
@@ -66,12 +69,5 @@
 
   "action": {
     "default_popup": "popup/popup.html"
-  },
-
-  "web_accessible_resources": [
-    {
-      "resources": ["models/comic-text-detector.onnx"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  }
 }

@@ -11,10 +11,10 @@ URL can be set in the extension popup (Settings → OCR Engine → PaddleOCR).
 > **Don't have this repository checked out?** Open the extension's Settings
 > popup → OCR Engine → PaddleOCR (self-hosted) → "Setup guide" — it has the
 > same instructions and download links for `server.py`, `requirements.txt`,
-> `Dockerfile` and this README, so you don't need git or GitHub access.
-> (Those are copies bundled in the extension at
-> `extension/assets/paddleocr-server/`; this file is the canonical source —
-> keep both in sync when editing.)
+> `Dockerfile` and this README, so you don't need git installed. (The links
+> download the files in this directory straight from GitHub — this directory
+> is the single canonical source; nothing is bundled inside the extension
+> package.)
 
 ## Run natively
 

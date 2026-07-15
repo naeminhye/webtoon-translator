@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — Webtoon Translator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 16px; line-height: 1.7; color: #1e293b;
+      background: #f8fafc; padding: 0;
+    }
+    .container { max-width: 740px; margin: 0 auto; padding: 48px 24px 80px; background: #fff; }
+    header { margin-bottom: 48px; padding-bottom: 24px; border-bottom: 2px solid #e2e8f0; }
+    .logo { font-size: 13px; font-weight: 600; color: #6366f1; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+    h1 { font-size: 28px; font-weight: 700; color: #0f172a; margin-bottom: 8px; }
+    .effective { font-size: 14px; color: #94a3b8; }
+    h2 { font-size: 18px; font-weight: 600; color: #0f172a; margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 1px solid #f1f5f9; }
+    h3 { font-size: 15px; font-weight: 600; color: #334155; margin: 24px 0 6px; }
+    p { color: #475569; margin-bottom: 14px; }
+    ul { margin: 8px 0 16px 24px; }
+    li { color: #475569; margin-bottom: 6px; }
+    .highlight { background: #f0f9ff; border-left: 3px solid #6366f1; padding: 14px 18px; border-radius: 0 6px 6px 0; margin: 20px 0; }
+    .highlight p { margin: 0; color: #1e40af; font-weight: 500; }
+    footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid #e2e8f0; font-size: 13px; color: #94a3b8; }
+    code { background: #f1f5f9; border-radius: 4px; padding: 1px 5px; font-size: 14px; }
+    table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; font-size: 14px; }
+    th, td { text-align: left; border: 1px solid #e2e8f0; padding: 8px 10px; color: #475569; vertical-align: top; }
+    th { background: #f8fafc; color: #334155; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="logo">📖 Webtoon Translator</div>
+    <h1>Privacy Policy</h1>
+    <p class="effective">Effective date: February 1, 2026 · Last updated: July 15, 2026</p>
+  </header>
+
+  <div class="highlight">
+    <p>Short version: your translation annotations and settings stay on your device. The developer operates no server and receives no data from you — ever. However, to translate text, the Extension does send the text being translated (and, for some optional features you enable, cropped panel images) to the translation service <em>you</em> choose, such as Google Translate or an AI provider you supply your own API key for. Nothing is sent anywhere until you use a translation feature.</p>
+  </div>
+
+  <h2>1. Overview</h2>
+  <p>Webtoon Translator is a Chrome browser extension that overlays translations on webtoon reader pages. This Privacy Policy explains what data the Extension stores, what data is sent to third-party services and when, and your rights as a user.</p>
+  <p>The developer of the Extension operates no backend server, has no user accounts, and receives no data of any kind from the Extension.</p>
+
+  <h2>2. Data Stored Locally on Your Device</h2>
+  <p>The Extension stores the following data in your browser's local extension storage (<code>chrome.storage.local</code>) and cache. This data stays on your device and is never transmitted to the developer:</p>
+  <ul>
+    <li>Translation text you type or that a translation service returns</li>
+    <li>Bounding box coordinates (position of text on the panel image)</li>
+    <li>Text styling and display preferences (font, opacity, display mode, theme, UI language)</li>
+    <li>The webtoon title ID and chapter ID each annotation belongs to</li>
+    <li>Your settings, including the OCR engine choice and, if you configure one, your self-hosted OCR server URL</li>
+    <li>API keys you optionally enter for "Bring Your Own Key" (BYOK) AI translation. Keys are stored only in local extension storage and are only ever sent to the corresponding AI provider you chose them for</li>
+    <li>OCR confidence statistics (per-engine averages, counted locally)</li>
+    <li>Downloaded OCR/detection model files, cached in browser storage</li>
+  </ul>
+  <p>If you use the <strong>Export</strong> feature, a JSON file containing your annotations is saved to your device. You are solely responsible for how you share that file.</p>
+
+  <h2>3. Data Sent to Third-Party Services</h2>
+  <p>The Extension has no server of its own. To perform translation, it talks directly from your browser to the service you select. Depending on your settings, the following requests occur:</p>
+
+  <h3>3.1 Google Translate (default translation provider)</h3>
+  <p>When a bubble is translated with the default provider, the recognized Korean text is sent to <code>translate.googleapis.com</code> and the translation is returned. Google's handling of this data is governed by <a href="https://policies.google.com/privacy">Google's Privacy Policy</a>. No account or API key is involved.</p>
+
+  <h3>3.2 Chrome built-in translation (optional, on-device)</h3>
+  <p>If you select Chrome's built-in Translator, translation runs on-device using models Chrome downloads from Google. The text being translated does not leave your browser.</p>
+
+  <h3>3.3 BYOK AI providers (optional, off by default)</h3>
+  <p>If you enter your own API key for OpenAI, Anthropic, or Google Gemini, then — for the requests where that provider is used — the text to be translated, and in the vision fallback case a cropped image of the specific speech bubble/panel region, is sent to that provider's API (<code>api.openai.com</code>, <code>api.anthropic.com</code>, or <code>generativelanguage.googleapis.com</code>) using your key. That provider's own privacy policy and API data-usage terms apply. If you never configure a key, no data is ever sent to these services.</p>
+
+  <h3>3.4 Self-hosted PaddleOCR server (optional, off by default)</h3>
+  <p>If you select the self-hosted OCR engine, cropped panel images are sent to the server URL you configure — by default <code>http://127.0.0.1:8868</code>, i.e. a server running on your own machine under your control. The developer has no access to it.</p>
+
+  <h3>3.5 Model downloads from GitHub (optional)</h3>
+  <p>If you download the in-browser OCR/detection models from the Settings page, the files are fetched from this project's GitHub Releases (<code>github.com</code> and GitHub's download CDN). This is an ordinary file download: no personal data is included in the request beyond what any HTTP request exposes (such as your IP address) to GitHub, per <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub's Privacy Statement</a>.</p>
+
+  <h3>Summary</h3>
+  <table>
+    <tr><th>Service</th><th>What is sent</th><th>When</th></tr>
+    <tr><td>Google Translate</td><td>Text recognized in a bubble</td><td>Default provider, when translating</td></tr>
+    <tr><td>Chrome built-in Translator</td><td>Nothing leaves the browser</td><td>If you select it</td></tr>
+    <tr><td>OpenAI / Anthropic / Gemini</td><td>Text; for vision fallback, a cropped bubble image; your own API key</td><td>Only if you configure a key</td></tr>
+    <tr><td>Your self-hosted OCR server</td><td>Cropped panel images</td><td>Only if you select this engine</td></tr>
+    <tr><td>GitHub</td><td>Ordinary file-download request</td><td>Only when you download models</td></tr>
+  </table>
+
+  <h2>4. Data We Do NOT Collect</h2>
+  <ul>
+    <li>We do not collect your name, email address, or any personally identifiable information</li>
+    <li>We do not collect or store your browsing history</li>
+    <li>We do not use analytics, telemetry, tracking, or crash reporting of any kind</li>
+    <li>We do not sell, rent, or share any data with anyone — the developer never receives any data in the first place</li>
+    <li>The Extension does not read pages other than the supported webtoon reader pages it runs on</li>
+  </ul>
+
+  <h2>5. Permissions Explained</h2>
+  <h3>storage</h3>
+  <p>Saves your annotations, settings, and locally computed OCR statistics on your device.</p>
+  <h3>scripting, activeTab, offscreen</h3>
+  <p>Used to inject the translation overlay UI into supported webtoon reader pages and to run OCR/detection models in a background document. The Extension only activates on supported webtoon sites.</p>
+  <h3>Host permissions for webtoon sites and their image CDNs</h3>
+  <p>Allow the overlay to run on the supported reader pages (Naver Webtoon, Kakao Page, Ridi, Bomtoon, Lezhin, Qtoon) and to load panel images for on-device OCR. The Extension does not modify page content — overlays are separate elements drawn on top.</p>
+  <h3>translate.googleapis.com</h3>
+  <p>The default translation provider (Section 3.1).</p>
+  <h3>github.com and GitHub download CDNs</h3>
+  <p>Fetching optional OCR/detection model files you request from Settings (Section 3.5).</p>
+  <h3>Optional host permissions (requested only if you enable the feature)</h3>
+  <p><code>api.openai.com</code>, <code>api.anthropic.com</code>, <code>generativelanguage.googleapis.com</code> — BYOK AI translation (Section 3.3). <code>127.0.0.1</code> / <code>localhost</code> — your self-hosted OCR server (Section 3.4). Chrome asks for your consent when you enable these features; they are not granted at install time.</p>
+
+  <h2>6. Data Retention &amp; Deletion</h2>
+  <p>All Extension data lives in your browser's local storage until you:</p>
+  <ul>
+    <li>Delete annotations or reset stats from the Extension's own UI</li>
+    <li>Remove downloaded models from Settings</li>
+    <li>Uninstall the Extension (removes all stored data)</li>
+  </ul>
+  <p>Data sent to a third-party translation service is retained according to that service's own policy; the Extension has no control over it.</p>
+
+  <h2>7. Children's Privacy</h2>
+  <p>The Extension does not knowingly collect data from children under 13. It contains no features directed at children and collects no personal information from any user regardless of age.</p>
+
+  <h2>8. Changes to This Policy</h2>
+  <p>If we make material changes to this Privacy Policy, we will update the dates above and publish the updated policy at this URL. Continued use of the Extension after changes constitutes acceptance of the updated policy.</p>
+
+  <h2>9. Contact</h2>
+  <p>If you have questions about this Privacy Policy, please open an issue on the project's GitHub repository (<a href="https://github.com/naeminhye/webtoon-translator">github.com/naeminhye/webtoon-translator</a>) or contact us via the Chrome Web Store developer contact page.</p>
+
+  <!-- Version below is free text, not read from anywhere — keep it in sync
+       with package.json / extension/manifest.json when bumping the version,
+       then run `npm run check:version` (also enforced by `npm run build`). -->
+  <footer>
+    <p>Webtoon Translator · Chrome Extension · This policy applies to version 0.1.0 and later.</p>
+  </footer>
+</div>
+</body>
+</html>
