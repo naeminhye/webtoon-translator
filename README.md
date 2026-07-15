@@ -82,9 +82,6 @@ extension/
 │   ├── paddle-det.onnx          PaddleOCR detector (not committed — fetched via Settings or dev script)
 │   ├── paddle-rec-korean.onnx   PaddleOCR Korean recognizer (not committed)
 │   └── korean_dict.txt          PaddleOCR recognizer charset (committed)
-├── assets/
-│   └── paddleocr-server/        Mirror of server/paddleocr/ bundled in the package, so the setup guide
-│                                 in Settings can offer direct downloads without a git checkout
 └── vendor/
     ├── tesseract/                Tesseract.js + Korean LSTM model (offline)
     └── ort/                     ONNX Runtime Web (offline)
@@ -105,7 +102,7 @@ scripts/
 ### Versioning
 
 `package.json`, `extension/manifest.json`, and the "applies to version …" line in
-`data/publish/privacy-policy.html` must all agree. Run `npm run check:version` after bumping
+`docs/privacy-policy.html` must all agree. Run `npm run check:version` after bumping
 the version (also enforced automatically by `npm run build`).
 
 ### Load the extension

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Fails if package.json, extension/manifest.json, and the version mentioned
- * in data/publish/privacy-policy.html ever drift apart. The privacy policy
+ * in docs/privacy-policy.html ever drift apart. The privacy policy
  * line is free text (not read from anywhere), so nothing else catches this —
  * run `npm run check:version` after bumping the version, or wire it into CI.
  */
@@ -13,7 +13,7 @@ const ROOT = path.resolve(__dirname, '..');
 const pkg      = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'extension/manifest.json'), 'utf8'));
 
-const privacyPath = path.join(ROOT, 'data/publish/privacy-policy.html');
+const privacyPath = path.join(ROOT, 'docs/privacy-policy.html');
 const privacyHtml = fs.readFileSync(privacyPath, 'utf8');
 const privacyMatch = privacyHtml.match(/applies to version ([\d.]+) and later/);
 
@@ -26,9 +26,9 @@ if (!privacyMatch) {
 }
 
 const versions = {
-  'package.json':                     pkg.version,
-  'extension/manifest.json':          manifest.version,
-  'data/publish/privacy-policy.html': privacyMatch[1],
+  'package.json':             pkg.version,
+  'extension/manifest.json':  manifest.version,
+  'docs/privacy-policy.html': privacyMatch[1],
 };
 
 const distinct = new Set(Object.values(versions));
@@ -40,7 +40,7 @@ if (distinct.size > 1) {
   }
   console.error(
     '\nUpdate package.json, extension/manifest.json, and the ' +
-    '"applies to version …" line in data/publish/privacy-policy.html so ' +
+    '"applies to version …" line in docs/privacy-policy.html so ' +
     'they all match, then re-run this check.'
   );
   process.exit(1);

@@ -394,6 +394,16 @@
           </div>
         </div>
         <p class="field-hint" data-i18n="settings.tr.model_hint">Which provider your key is for, and the exact model name to request.</p>
+
+        <!-- Optional host permission for the selected provider's API — shown
+             only while not yet granted (see refreshByokPermission in settings.js) -->
+        <div id="byok-perm-row" class="hidden">
+          <div class="btn-row">
+            <button type="button" id="byok-perm-btn" class="btn-primary"></button>
+          </div>
+          <p class="field-hint" data-i18n="settings.tr.perm_hint">Chrome asks for your consent before the extension may contact this provider — a one-time prompt per provider.</p>
+        </div>
+
         <div class="field-label" style="margin-top:16px" data-i18n="settings.tr.mode_label">Translation Mode</div>
         <div class="byok-mode-group">
           <label class="byok-mode-option">
